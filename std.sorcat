@@ -1,0 +1,9 @@
+extern fn printf(string: s) <int>;
+
+pub fn print(string: s) <void> {
+    printf(s);
+}
+pub fn println(string: text) <void> {
+    print(text);
+    print("\n");
+}

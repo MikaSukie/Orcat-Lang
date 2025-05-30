@@ -1,0 +1,57 @@
+// math.sorcat
+
+pub fn max(int: a, int: b) <int> {
+    if (a > b) { return a; }
+    else { return b; }
+}
+
+pub fn min(int: a, int: b) <int> {
+    if (a < b) { return a; } else { return b; }
+}
+
+pub fn abs(int: x) <int> {
+    if (x < 0) { return x-x*2; } else { return x; }
+}
+
+// Rounds down to nearest multiple of 1 (works for integers)
+pub fn floor(int: x) <int> {
+    return x;
+}
+
+// Rounds up to nearest multiple of 1 (no-op for ints, included for future float support)
+pub fn ceil(int: x) <int> {
+    return x;
+}
+
+// Integer power (x^exp), only for exp >= 0
+pub fn pow(int: x, int: exp) <int> {
+    int result = 1;
+    int i = 0;
+    while (i < exp) {
+        result = result * x;
+        i = i + 1;
+    }
+    return result;
+}
+
+// Clamps value between min and max
+pub fn clamp(int: value, int: min_val, int: max_val) <int> {
+    if (value < min_val) {
+        return min_val;
+    } else if (value > max_val) {
+        return max_val;
+    } else {
+        return value;
+    }
+}
+
+// Returns 1 if positive, -1 if negative, 0 if zero
+pub fn sign(int: x) <int> {
+    if (x > 0) {
+        return 1;
+    } else if (x < 0) {
+        return -1;
+    } else {
+        return 0;
+    }
+}

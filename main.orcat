@@ -1,0 +1,5 @@
+import "std.sorcat";
+fn main() <int> {
+    println("hello");
+    return 0;
+}
