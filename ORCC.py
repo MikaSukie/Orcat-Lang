@@ -1,12 +1,8 @@
-#!/usr/bin/env python3
 import sys
 from typing import List, Optional, Tuple, Union, Dict
 from dataclasses import dataclass
 import copy
 TYPE_TOKENS = {'IDENT', 'INT', 'FLOAT', 'STRING', 'BOOL', 'CHAR', 'VOID'}
-# ────────────────
-# Token Definitions
-# ────────────────
 string_constants: List[str] = []
 @dataclass
 class Token:
@@ -74,7 +70,6 @@ def lex(source: str) -> List[Token]:
             col = 1
             continue
         if c == '/' and i + 1 < len(source) and source[i+1] == '/':
-            # Skip until end of line
             while i < len(source) and source[i] != '\n':
                 i += 1
             continue
@@ -137,7 +132,7 @@ def lex(source: str) -> List[Token]:
                     col += 1
             if i >= len(source) or source[i] != '"':
                 raise RuntimeError(f"Unclosed string literal at {line}:{start_col}")
-            i += 1  # skip closing quote
+            i += 1
             col += 1
             tokens.append(Token('STRING', val, line, start_col))
             continue
@@ -167,7 +162,7 @@ def lex(source: str) -> List[Token]:
                     raise RuntimeError(f"Unclosed character literal at {line}:{start_col}")
             if i >= len(source) or source[i] != "'":
                 raise RuntimeError(f"Unclosed character literal at {line}:{start_col}")
-            i += 1  # skip closing apostrophe
+            i += 1
             col += 1
             tokens.append(Token('CHAR', val, line, start_col))
             continue
@@ -179,9 +174,6 @@ def lex(source: str) -> List[Token]:
         raise RuntimeError(f"Unrecognized character '{c}' at {line}:{col}")
     tokens.append(Token('EOF', '', line, col))
     return tokens
-# ────────────────
-# AST Definitions
-# ────────────────
 @dataclass
 class Expr: pass
 @dataclass
@@ -246,9 +238,6 @@ class Program:
     funcs: List[Func]
     imports: List[str]
     macros: List[MacroDef]
-# ────────────────
-# Parser
-# ────────────────
 class Parser:
     def __init__(self, tokens: List[Token]):
         self.tokens = tokens
@@ -343,7 +332,6 @@ class Parser:
         return self.parse_expr_stmt()
     def parse_var_decl(self) -> VarDecl:
         access = 'priv'
-        # Handle optional visibility keyword (pub/priv/prot)
         if self.peek().kind in {'PUB', 'PRIV', 'PROT'}:
             access = self.bump().kind.lower()
         if self.peek().kind in TYPE_TOKENS and self.peek().kind != 'IDENT':
@@ -466,9 +454,6 @@ class Parser:
             body_stmts.append(self.parse_stmt())
         self.expect('RBRACE')
         return MacroDef(name, params, body_stmts)
-# ────────────────
-# Code Generation (LLVM IR)
-# ────────────────
 tmp_id = 0
 def new_tmp() -> str:
     global tmp_id
@@ -811,9 +796,6 @@ def check_types(prog: Program):
         for stmt in (func.body or []):
             check_stmt(stmt, func.ret_type)
         env.pop()
-# ────────────────
-# Macro Expansion
-# ────────────────
 def expand_macros(prog: Program) -> Program:
     macro_dict: Dict[str, MacroDef] = {m.name: m for m in prog.macros}
 
@@ -928,12 +910,15 @@ def expand_macros(prog: Program) -> Program:
         else:
             new_funcs.append(fn)
     return Program(new_funcs, prog.imports, [])
-# ────────────────
-# Main Entrypoint
-# ────────────────
+import ctypes
 def main():
     if len(sys.argv) != 4 or sys.argv[2] != "-o":
-        print("Usage: ORCC.py <input.sorcat|.orcat> -o <output.ll>")
+        ctypes.windll.user32.MessageBoxW(
+            None,
+            "Usage: ORCC.exe <input.sorcat|.orcat> -o <output.ll>",
+            "ORCC.exe",
+            0x10
+        )
         return
     inp = sys.argv[1]
     outp = sys.argv[3]
