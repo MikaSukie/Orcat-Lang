@@ -20,7 +20,7 @@ SINGLE_CHARS = {
     '(': 'LPAREN', ')': 'RPAREN', '{': 'LBRACE', '}': 'RBRACE',
     ',': 'COMMA', ';': 'SEMI', ':': 'COLON', '=': 'EQUAL',
     '+': 'PLUS', '-': 'MINUS', '*': 'STAR', '/': 'SLASH',
-    '<': 'LT', '>': 'GT', '[': 'LBRACKET', ']': 'RBRACKET'
+    '<': 'LT', '>': 'GT', '[': 'LBRACKET', ']': 'RBRACKET', '?': 'QUESTION'
 }
 MULTI_CHARS = {
     '==': 'EQEQ', '!=': 'NEQ', '<=': 'LE', '>=': 'GE', '->': 'ARROW'
@@ -252,6 +252,11 @@ class MacroUse(Stmt):
     name: str
     args: List[Expr]
 @dataclass
+class Ternary(Expr):
+    cond: Expr
+    then_expr: Expr
+    else_expr: Expr
+@dataclass
 class Func:
     access: str
     name: str
@@ -474,6 +479,11 @@ class Parser:
         left = self.parse_primary()
         while True:
             op_token = self.peek()
+            if self.match('QUESTION'):
+                then_expr = self.parse_expr()
+                self.expect('COLON')
+                else_expr = self.parse_expr()
+                left = Ternary(left, then_expr, else_expr)
             if op_token.kind not in {'PLUS', 'MINUS', 'STAR', 'SLASH', 'EQEQ', 'NEQ', 'LT', 'LE', 'GT', 'GE'}:
                 break
             op_prec = self.get_precedence(op_token.kind)
@@ -504,6 +514,10 @@ class Parser:
             return BoolLit(True)
         if t.kind == 'FALSE':
             return BoolLit(False)
+        if t.kind == 'LPAREN':
+            expr = self.parse_expr()
+            self.expect('RPAREN')
+            return expr
         if t.kind == 'IDENT':
             if self.peek().kind == 'LBRACKET':
                 self.bump()
@@ -575,6 +589,28 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
         val = 1 if expr.value else 0
         out.append(f"  {tmp} = add i1 0, {val}")
         return tmp
+    if isinstance(expr, Ternary):
+        cond_val = gen_expr(expr.cond, out)
+        then_lbl = new_label("tern_then")
+        else_lbl = new_label("tern_else")
+        end_lbl = new_label("tern_end")
+        out.append(f"  br i1 {cond_val}, label %{then_lbl}, label %{else_lbl}")
+        out.append(f"{then_lbl}:")
+        then_val = gen_expr(expr.then_expr, out)
+        then_tmp = new_tmp()
+        then_ty = type_map[infer_type(expr.then_expr)]
+        out.append(f"  {then_tmp} = add {then_ty} 0, {then_val}")
+        out.append(f"  br label %{end_lbl}")
+        out.append(f"{else_lbl}:")
+        else_val = gen_expr(expr.else_expr, out)
+        else_tmp = new_tmp()
+        else_ty = type_map[infer_type(expr.else_expr)]
+        out.append(f"  {else_tmp} = add {else_ty} 0, {else_val}")
+        out.append(f"  br label %{end_lbl}")
+        out.append(f"{end_lbl}:")
+        phi_tmp = new_tmp()
+        out.append(f"  {phi_tmp} = phi {then_ty} [{then_tmp}, %{then_lbl}], [{else_tmp}, %{else_lbl}]")
+        return phi_tmp
     if isinstance(expr, Index):
         if not isinstance(expr.array, Var):
             raise RuntimeError(f"Only direct variable array indexing is supported, got: {expr.array}")
@@ -887,6 +923,15 @@ def check_types(prog: Program):
             if not typ:
                 raise TypeError(f"Use of undeclared variable '{expr.name}'")
             return typ
+        if isinstance(expr, Ternary):
+            cond = check_expr(expr.cond)
+            if cond != 'bool':
+                raise TypeError("Ternary condition must be bool")
+            then_t = check_expr(expr.then_expr)
+            else_t = check_expr(expr.else_expr)
+            if then_t != else_t:
+                raise TypeError(f"Ternary branches must match: {then_t} vs {else_t}")
+            return then_t
         if isinstance(expr, BinOp):
             left = check_expr(expr.left)
             right = check_expr(expr.right)
@@ -1006,7 +1051,6 @@ def check_types(prog: Program):
         env.pop()
 def expand_macros(prog: Program) -> Program:
     macro_dict: Dict[str, MacroDef] = {m.name: m for m in prog.macros}
-
     def substitute_expr(expr: Expr, mapping: Dict[str, Expr]) -> Expr:
         if isinstance(expr, IntLit):
             return IntLit(expr.value)
@@ -1121,6 +1165,7 @@ def expand_macros(prog: Program) -> Program:
 def main():
     if len(sys.argv) != 4 or sys.argv[2] != "-o":
         print("Usage: ORCC.exe {filename}.orcat|.sorcat -o {filename}.ll")
+        return
     inp = sys.argv[1]
     outp = sys.argv[3]
     with open(inp) as f:
