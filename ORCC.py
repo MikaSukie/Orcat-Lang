@@ -1118,7 +1118,6 @@ def expand_macros(prog: Program) -> Program:
         else:
             new_funcs.append(fn)
     return Program(new_funcs, prog.imports, [], prog.structs, prog.enums)
-import ctypes
 def main():
     if len(sys.argv) != 4 or sys.argv[2] != "-o":
         print("Usage: ORCC.exe {filename}.orcat|.sorcat -o {filename}.ll")
