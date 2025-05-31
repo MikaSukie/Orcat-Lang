@@ -1,4 +1,4 @@
-extern fn printf(string: s) <int>;
+pub extern fn printf(string: s) <int>;
 
 pub fn print(string: s) <void> {
     printf(s);
