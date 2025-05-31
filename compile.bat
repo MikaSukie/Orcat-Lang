@@ -1,2 +1,2 @@
-clear
-python3 ORCC.py main.orcat -o out.ll
+cls
+.\ORCC.exe main.orcat -o out.ll
