@@ -347,33 +347,42 @@ class Parser:
     def parse_func(self) -> Func:
         access = 'priv'
         is_extern = False
-        if self.peek().kind == 'EXTERN':
-            is_extern = True
-            self.bump()
-        elif self.peek().kind in {'PUB', 'PRIV', 'PROT'}:
-            access = self.bump().kind.lower()
+        while True:
+            tk = self.peek().kind
+            if tk == 'EXTERN':
+                is_extern = True
+                self.bump()
+                continue
+            if tk in {'PUB', 'PRIV', 'PROT'}:
+                access = self.bump().kind.lower()
+                continue
+            break
         self.expect('FN')
         name = self.expect('IDENT').value
         self.expect('LPAREN')
-        params = []
+        params: List[Tuple[str, str]] = []
         if self.peek().kind != 'RPAREN':
             while True:
-                if self.peek().kind in TYPE_TOKENS:
+                if self.peek().kind in TYPE_TOKENS or self.peek().kind == 'IDENT':
                     typ = self.bump().value
                     pname = self.expect('IDENT').value
                     params.append((typ, pname))
                 else:
-                    raise SyntaxError(f"Expected type, got {self.peek().kind} at "
-                                      f"{self.peek().line}:{self.peek().col}")
+                    raise SyntaxError(
+                        f"Expected type, got {self.peek().kind} "
+                        f"at {self.peek().line}:{self.peek().col}"
+                    )
                 if not self.match('COMMA'):
                     break
         self.expect('RPAREN')
         self.expect('LT')
-        if self.peek().kind in TYPE_TOKENS:
+        if self.peek().kind in TYPE_TOKENS or self.peek().kind == 'IDENT':
             ret_type = self.bump().value
         else:
-            raise SyntaxError(f"Expected return type, got {self.peek().kind} at "
-                              f"{self.peek().line}:{self.peek().col}")
+            raise SyntaxError(
+                f"Expected return type, got {self.peek().kind} "
+                f"at {self.peek().line}:{self.peek().col}"
+            )
         self.expect('GT')
         if is_extern:
             self.expect('SEMI')
@@ -880,21 +889,12 @@ def compile_program(prog: Program) -> str:
         ""
     ])
     lines.extend(struct_llvm_defs)
-    lines.append("")
-    for imp in prog.imports:
-        with open(imp, 'r') as f:
-            src = f.read()
-        tokens = lex(src)
-        parser = Parser(tokens)
-        sub_prog = parser.parse()
-        sub_prog = expand_macros(sub_prog)
-        check_types(sub_prog)
-        for func in sub_prog.funcs:
-            lines += gen_func(func)
+    if struct_llvm_defs:
+        lines.append("")
     for fn in prog.funcs:
         lines += gen_func(fn)
-    lines.extend(string_constants)
     if string_constants:
+        lines.extend(string_constants)
         lines.append("")
     string_constants.clear()
     return "\n".join(lines)
@@ -1176,16 +1176,23 @@ def main():
     prog = expand_macros(prog)
     all_funcs = []
     all_macros = []
+    seen_imports = set()
     for imp in prog.imports:
+        if imp in seen_imports:
+            continue
+        seen_imports.add(imp)
         with open(imp, 'r') as f:
-            src = f.read()
-        tokens = lex(src)
-        parser = Parser(tokens)
-        sub_prog = parser.parse()
+            imported_src = f.read()
+        imported_tokens = lex(imported_src)
+        imported_parser = Parser(imported_tokens)
+        sub_prog = imported_parser.parse()
         sub_prog = expand_macros(sub_prog)
         check_types(sub_prog)
-        all_funcs.extend(sub_prog.funcs)
-        all_macros.extend(sub_prog.macros)
+        for func in sub_prog.funcs:
+            if func.access == 'pub':
+                all_funcs.append(func)
+        for macro in sub_prog.macros:
+            all_macros.append(macro)
     prog.funcs = all_funcs + prog.funcs
     prog.macros = all_macros + prog.macros
     check_types(prog)
