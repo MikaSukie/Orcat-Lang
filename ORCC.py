@@ -14,13 +14,13 @@ KEYWORDS = {
     'fn', 'fnmacro', 'if', 'else', 'while', 'return',
     'import', 'pub', 'priv', 'prot', 'extern',
     'int', 'float', 'bool', 'char', 'string', 'void',
-    'true', 'false'
+    'true', 'false', 'struct', 'enum'
 }
 SINGLE_CHARS = {
     '(': 'LPAREN', ')': 'RPAREN', '{': 'LBRACE', '}': 'RBRACE',
     ',': 'COMMA', ';': 'SEMI', ':': 'COLON', '=': 'EQUAL',
     '+': 'PLUS', '-': 'MINUS', '*': 'STAR', '/': 'SLASH',
-    '<': 'LT', '>': 'GT'
+    '<': 'LT', '>': 'GT', '[': 'LBRACKET', ']': 'RBRACKET'
 }
 MULTI_CHARS = {
     '==': 'EQEQ', '!=': 'NEQ', '<=': 'LE', '>=': 'GE', '->': 'ARROW'
@@ -195,6 +195,15 @@ class BinOp(Expr): op: str; left: Expr; right: Expr
 @dataclass
 class Call(Expr): name: str; args: List[Expr]
 @dataclass
+class EnumVariant:
+    name: str
+    typ: Optional[str]
+@dataclass
+class EnumDef(Stmt):
+    name: str
+    type_param: Optional[str]
+    variants: List[EnumVariant]
+@dataclass
 class VarDecl(Stmt):
     access: str
     typ: str
@@ -202,6 +211,19 @@ class VarDecl(Stmt):
     expr: Optional[Expr]
 @dataclass
 class Assign(Stmt): name: str; expr: Expr
+@dataclass
+class StructField:
+    name: str
+    typ: str
+@dataclass
+class IndexAssign(Stmt):
+    array: str
+    index: Expr
+    value: Expr
+@dataclass
+class StructDef(Stmt):
+    name: str
+    fields: List[StructField]
 @dataclass
 class IfStmt(Stmt):
     cond: Expr
@@ -222,6 +244,10 @@ class MacroDef(Stmt):
     params: List[str]
     body: List[Stmt]
 @dataclass
+class Index(Expr):
+    array: Expr
+    index: Expr
+@dataclass
 class MacroUse(Stmt):
     name: str
     args: List[Expr]
@@ -238,6 +264,8 @@ class Program:
     funcs: List[Func]
     imports: List[str]
     macros: List[MacroDef]
+    structs: List[StructDef]
+    enums: List[EnumDef]
 class Parser:
     def __init__(self, tokens: List[Token]):
         self.tokens = tokens
@@ -261,6 +289,8 @@ class Parser:
         funcs = []
         imports = []
         macros = []
+        structs = []
+        enums = []
         while self.peek().kind != 'EOF':
             if self.match('IMPORT'):
                 path = self.expect('STRING').value
@@ -268,9 +298,47 @@ class Parser:
                 imports.append(path)
             elif self.peek().kind == 'FNMACRO':
                 macros.append(self.parse_macro_def())
+            elif self.peek().kind == 'STRUCT':
+                structs.append(self.parse_struct_def())
+            elif self.peek().kind == 'ENUM':
+                enums.append(self.parse_enum_def())
             else:
                 funcs.append(self.parse_func())
-        return Program(funcs, imports, macros)
+        return Program(funcs, imports, macros, structs, enums)
+    def parse_enum_def(self) -> EnumDef:
+        self.expect('ENUM')
+        name = self.expect('IDENT').value
+        type_param: Optional[str] = None
+        if self.match('LT'):
+            type_param = self.expect('IDENT').value
+            self.expect('GT')
+        self.expect('LBRACE')
+        variants: List[EnumVariant] = []
+        while self.peek().kind != 'RBRACE':
+            variant_name = self.expect('IDENT').value
+            variant_type: Optional[str] = None
+            if self.match('COLON'):
+                variant_type = self.expect('IDENT').value
+            self.expect('SEMI')
+            variants.append(EnumVariant(variant_name, variant_type))
+        self.expect('RBRACE')
+        return EnumDef(name, type_param, variants)
+    def parse_struct_def(self) -> StructDef:
+        self.expect('STRUCT')
+        name = self.expect('IDENT').value
+        self.expect('LBRACE')
+        fields = []
+        while self.peek().kind != 'RBRACE':
+            if self.peek().kind in TYPE_TOKENS:
+                typ = self.bump().value
+                fname = self.expect('IDENT').value
+            else:
+                raise SyntaxError(
+                    f"Expected type in struct field, got {self.peek().kind} at {self.peek().line}:{self.peek().col}")
+            self.expect('SEMI')
+            fields.append(StructField(fname, typ))
+        self.expect('RBRACE')
+        return StructDef(name, fields)
     def parse_func(self) -> Func:
         access = 'priv'
         is_extern = False
@@ -287,12 +355,11 @@ class Parser:
             while True:
                 if self.peek().kind in TYPE_TOKENS:
                     typ = self.bump().value
+                    pname = self.expect('IDENT').value
+                    params.append((typ, pname))
                 else:
                     raise SyntaxError(f"Expected type, got {self.peek().kind} at "
                                       f"{self.peek().line}:{self.peek().col}")
-                self.expect('COLON')
-                pname = self.expect('IDENT').value
-                params.append((typ, pname))
                 if not self.match('COMMA'):
                     break
         self.expect('RPAREN')
@@ -317,12 +384,14 @@ class Parser:
         return stmts
     def parse_stmt(self) -> Stmt:
         t = self.peek()
-        if t.kind in {'PUB', 'PRIV', 'PROT'} or (t.kind in TYPE_TOKENS and t.kind != 'IDENT'):
-            return self.parse_var_decl()
         if t.kind == 'IDENT' and self.tokens[self.pos + 1].kind == 'EQUAL':
             return self.parse_assign()
+        if t.kind == 'IDENT' and self.tokens[self.pos + 1].kind == 'LBRACKET':
+            return self.parse_index_assign()
         if t.kind == 'IDENT' and self.tokens[self.pos + 1].kind == 'LPAREN':
             return self.parse_expr_stmt()
+        if t.kind in {'PUB', 'PRIV', 'PROT'} or t.kind in TYPE_TOKENS or t.kind == 'IDENT':
+            return self.parse_var_decl()
         if t.kind == 'IF':
             return self.parse_if()
         if t.kind == 'WHILE':
@@ -334,19 +403,30 @@ class Parser:
         access = 'priv'
         if self.peek().kind in {'PUB', 'PRIV', 'PROT'}:
             access = self.bump().kind.lower()
-        if self.peek().kind in TYPE_TOKENS and self.peek().kind != 'IDENT':
+        if self.peek().kind in TYPE_TOKENS or self.peek().kind == 'IDENT':
             typ = self.bump().value
+            if self.match('LBRACKET'):
+                size_tok = self.expect('INT')
+                self.expect('RBRACKET')
+                typ += f"[{size_tok.value}]"
         else:
             raise SyntaxError(
-                f"Expected type (one of {TYPE_TOKENS}), got {self.peek().kind} "
-                f"at {self.peek().line}:{self.peek().col}"
-            )
+                f"Expected type (one of {TYPE_TOKENS} or user-defined), got {self.peek().kind} at {self.peek().line}:{self.peek().col}")
         name = self.expect('IDENT').value
         expr = None
         if self.match('EQUAL'):
             expr = self.parse_expr()
         self.expect('SEMI')
         return VarDecl(access, typ, name, expr)
+    def parse_index_assign(self) -> IndexAssign:
+        arr_name = self.expect('IDENT').value
+        self.expect('LBRACKET')
+        index = self.parse_expr()
+        self.expect('RBRACKET')
+        self.expect('EQUAL')
+        value = self.parse_expr()
+        self.expect('SEMI')
+        return IndexAssign(arr_name, index, value)
     def parse_assign(self) -> Assign:
         name = self.expect('IDENT').value
         self.expect('EQUAL')
@@ -425,9 +505,14 @@ class Parser:
         if t.kind == 'FALSE':
             return BoolLit(False)
         if t.kind == 'IDENT':
+            if self.peek().kind == 'LBRACKET':
+                self.bump()
+                index_expr = self.parse_expr()
+                self.expect('RBRACKET')
+                return Index(Var(t.value), index_expr)
             if self.peek().kind == 'LPAREN':
                 self.bump()
-                args = []
+                args: List[Expr] = []
                 if self.peek().kind != 'RPAREN':
                     while True:
                         args.append(self.parse_expr())
@@ -472,6 +557,7 @@ type_map = {
     'string': 'i8*',
     'void': 'void'
 }
+struct_llvm_defs: List[str] = []
 symbol_table = SymbolTable()
 func_table: Dict[str, str] = {}
 def gen_expr(expr: Expr, out: List[str]) -> str:
@@ -489,6 +575,22 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
         val = 1 if expr.value else 0
         out.append(f"  {tmp} = add i1 0, {val}")
         return tmp
+    if isinstance(expr, Index):
+        if not isinstance(expr.array, Var):
+            raise RuntimeError(f"Only direct variable array indexing is supported, got: {expr.array}")
+        var_name = expr.array.name
+        idx = gen_expr(expr.index, out)
+        arr_info = symbol_table.lookup(var_name)
+        if not arr_info:
+            raise RuntimeError(f"Undefined array: {var_name}")
+        llvm_ty, name = arr_info
+        base_ty_start = llvm_ty.find('x') + 2
+        base_ty = llvm_ty[base_ty_start:-1]
+        tmp_ptr = new_tmp()
+        tmp_val = new_tmp()
+        out.append(f"  {tmp_ptr} = getelementptr inbounds {llvm_ty}, {llvm_ty}* %{name}_addr, i32 0, i32 {idx}")
+        out.append(f"  {tmp_val} = load {base_ty}, {base_ty}* {tmp_ptr}")
+        return tmp_val
     if isinstance(expr, StrLit):
         tmp = new_tmp()
         label = f"@.str{len(string_constants)}"
@@ -518,7 +620,7 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
         result = symbol_table.lookup(expr.name)
         if result is None:
             raise RuntimeError(f"Undefined variable: {expr.name}")
-        typ, name = result
+        typ, name = symbol_table.lookup(expr.name)
         tmp = new_tmp()
         out.append(f"  {tmp} = load {typ}, {typ}* %{name}_addr")
         return tmp
@@ -572,28 +674,61 @@ def infer_type(expr: Expr) -> str:
         if result is None:
             raise RuntimeError(f"Undefined variable: {expr.name}")
         llvm_ty, _ = result
-        for k, v in type_map.items():
-            if v == llvm_ty:
-                return k
+        if llvm_ty.startswith('[') and ' x ' in llvm_ty and llvm_ty.endswith(']'):
+            inside = llvm_ty[1:-1]
+            elem_llvm = inside.split(' x ')[1]
+            for high, low in type_map.items():
+                if low == elem_llvm:
+                    return high
+            return elem_llvm
+        for high, low in type_map.items():
+            if low == llvm_ty:
+                return high
         return llvm_ty
     if isinstance(expr, BinOp):
         left_type = infer_type(expr.left)
         right_type = infer_type(expr.right)
         if left_type != right_type:
             raise RuntimeError(f"Type mismatch in binary op '{expr.op}': {left_type} vs {right_type}")
+        if expr.op in {'==', '!=', '<', '<=', '>', '>='}:
+            return 'bool'
         return left_type
     if isinstance(expr, Call):
         if expr.name not in func_table:
             raise RuntimeError(f"Call to undefined function '{expr.name}'")
         ret_llvm_ty = func_table[expr.name]
-        for k, v in type_map.items():
-            if v == ret_llvm_ty:
-                return k
+        for high, low in type_map.items():
+            if low == ret_llvm_ty:
+                return high
         return ret_llvm_ty
+    if isinstance(expr, Index):
+        if not isinstance(expr.array, Var):
+            raise RuntimeError(f"Only direct variable array indexing is supported, got: {expr.array}")
+        arr_name = expr.array.name
+        arr_info = symbol_table.lookup(arr_name)
+        if not arr_info:
+            raise RuntimeError(f"Undefined array: {arr_name}")
+        llvm_ty, _ = arr_info
+        if not (llvm_ty.startswith('[') and ' x ' in llvm_ty and llvm_ty.endswith(']')):
+            raise RuntimeError(f"Attempting to index non-array type '{llvm_ty}'")
+        inside = llvm_ty[1:-1]
+        elem_llvm = inside.split(' x ')[1]
+        for high, low in type_map.items():
+            if low == elem_llvm:
+                return high
+        return elem_llvm
     raise RuntimeError(f"Cannot infer type for expression: {expr}")
 def gen_stmt(stmt: Stmt, out: List[str]):
     if isinstance(stmt, VarDecl):
-        llvm_ty = type_map[stmt.typ]
+        if "[" in stmt.typ:
+            base, count = stmt.typ.split("[")
+            count = count[:-1]
+            llvm_base = type_map[base]
+            llvm_ty = f"[{count} x {llvm_base}]"
+        elif stmt.typ in type_map:
+            llvm_ty = type_map[stmt.typ]
+        else:
+            llvm_ty = f"%struct.{stmt.typ}"
         out.append(f"  %{stmt.name}_addr = alloca {llvm_ty}")
         symbol_table.declare(stmt.name, llvm_ty, stmt.name)
         if stmt.expr:
@@ -603,6 +738,15 @@ def gen_stmt(stmt: Stmt, out: List[str]):
         val = gen_expr(stmt.expr, out)
         llvm_ty, _ = symbol_table.lookup(stmt.name)
         out.append(f"  store {llvm_ty} {val}, {llvm_ty}* %{stmt.name}_addr")
+    elif isinstance(stmt, IndexAssign):
+        idx = gen_expr(stmt.index, out)
+        val = gen_expr(stmt.value, out)
+        llvm_ty, name = symbol_table.lookup(stmt.array)
+        base_ty_start = llvm_ty.find('x') + 2
+        base_ty = llvm_ty[base_ty_start:-1]
+        tmp_ptr = new_tmp()
+        out.append(f"  {tmp_ptr} = getelementptr inbounds {llvm_ty}, {llvm_ty}* %{name}_addr, i32 0, i32 {idx}")
+        out.append(f"  store {base_ty} {val}, {base_ty}* {tmp_ptr}")
     elif isinstance(stmt, IfStmt):
         cond = gen_expr(stmt.cond, out)
         then_lbl = new_label('then')
@@ -683,7 +827,24 @@ def gen_func(fn: Func) -> List[str]:
     return out
 def compile_program(prog: Program) -> str:
     string_constants.clear()
-    lines = []
+    struct_llvm_defs: List[str] = []
+    for sdef in prog.structs:
+        field_tys: List[str] = []
+        for fld in sdef.fields:
+            if fld.typ in type_map:
+                field_tys.append(type_map[fld.typ])
+            else:
+                field_tys.append(f"%struct.{fld.typ}")
+        llvm_line = f"%struct.{sdef.name} = type {{ {', '.join(field_tys)} }}"
+        struct_llvm_defs.append(llvm_line)
+    lines: List[str] = []
+    lines.extend([
+        "; ModuleID = 'orcat'",
+        "source_filename = \"main.orcat\"",
+        ""
+    ])
+    lines.extend(struct_llvm_defs)
+    lines.append("")
     for imp in prog.imports:
         with open(imp, 'r') as f:
             src = f.read()
@@ -692,26 +853,35 @@ def compile_program(prog: Program) -> str:
         sub_prog = parser.parse()
         sub_prog = expand_macros(sub_prog)
         check_types(sub_prog)
-        for f in sub_prog.funcs:
-            lines += gen_func(f)
+        for func in sub_prog.funcs:
+            lines += gen_func(func)
     for fn in prog.funcs:
         lines += gen_func(fn)
-    return "\n".join([
-        "; ModuleID = 'orcat'",
-        'source_filename = "main.orcat"',
-        "",
-        *string_constants,
-        *lines
-    ])
+    lines.extend(string_constants)
+    if string_constants:
+        lines.append("")
+    string_constants.clear()
+    return "\n".join(lines)
 def check_types(prog: Program):
     env = TypeEnv()
     funcs = {f.name: f for f in prog.funcs}
+    struct_defs: Dict[str, StructDef] = {s.name: s for s in prog.structs}
+    enum_defs:   Dict[str, EnumDef]   = {e.name: e for e in prog.enums}
+    for struct_name in struct_defs:
+        env.declare(struct_name, struct_name)
+    for enum_name in enum_defs:
+        env.declare(enum_name, enum_name)
     def check_expr(expr: Expr) -> str:
-        if isinstance(expr, IntLit): return 'int'
-        if isinstance(expr, FloatLit): return 'float'
-        if isinstance(expr, BoolLit): return 'bool'
-        if isinstance(expr, CharLit): return 'char'
-        if isinstance(expr, StrLit): return 'string'
+        if isinstance(expr, IntLit):
+            return 'int'
+        if isinstance(expr, FloatLit):
+            return 'float'
+        if isinstance(expr, BoolLit):
+            return 'bool'
+        if isinstance(expr, CharLit):
+            return 'char'
+        if isinstance(expr, StrLit):
+            return 'string'
         if isinstance(expr, Var):
             typ = env.lookup(expr.name)
             if not typ:
@@ -722,6 +892,8 @@ def check_types(prog: Program):
             right = check_expr(expr.right)
             if left != right:
                 raise TypeError(f"Type mismatch: {left} {expr.op} {right}")
+            if expr.op in {"==", "!=", "<", ">", "<=", ">="}:
+                return "bool"
             return left
         if isinstance(expr, Call):
             if expr.name not in funcs:
@@ -733,21 +905,41 @@ def check_types(prog: Program):
                 actual_type = check_expr(arg)
                 if actual_type != expected_type:
                     raise TypeError(
-                        f"Argument type mismatch in call to '{expr.name}': expected {expected_type}, got {actual_type}")
+                        f"Argument type mismatch in call to '{expr.name}': "
+                        f"expected {expected_type}, got {actual_type}"
+                    )
             return fn.ret_type
+        if isinstance(expr, Index):
+            var_typ = env.lookup(expr.array.name)
+            if not var_typ:
+                raise TypeError(f"Indexing undeclared variable '{expr.array.name}'")
+            if '[' not in var_typ or not var_typ.endswith(']'):
+                raise TypeError(f"Attempting to index non-array type '{var_typ}'")
+            base_type = var_typ.split('[', 1)[0]
+            idx_type = check_expr(expr.index)
+            if idx_type != 'int':
+                raise TypeError(f"Array index must be 'int', got '{idx_type}'")
+            return base_type
         raise TypeError(f"Unsupported expression: {expr}")
     def check_stmt(stmt: Stmt, expected_ret: str):
         if isinstance(stmt, VarDecl):
             if env.lookup(stmt.name):
                 raise TypeError(f"Variable '{stmt.name}' already declared")
-            if stmt.typ not in type_map:
-                raise TypeError(f"Unknown type '{stmt.typ}'")
-            env.declare(stmt.name, stmt.typ)
+            raw_typ = stmt.typ
+            if '[' in raw_typ and raw_typ.endswith(']'):
+                base_type = raw_typ.split('[', 1)[0]
+            else:
+                base_type = raw_typ
+            if base_type not in type_map and base_type not in struct_defs and base_type not in enum_defs:
+                raise TypeError(f"Unknown type '{raw_typ}'")
+            env.declare(stmt.name, raw_typ)
             if stmt.expr:
                 expr_type = check_expr(stmt.expr)
-                if expr_type != stmt.typ:
+                if expr_type != raw_typ:
                     raise TypeError(
-                        f"Type mismatch in variable init '{stmt.name}': expected {stmt.typ}, got {expr_type}")
+                        f"Type mismatch in variable init '{stmt.name}': "
+                        f"expected {raw_typ}, got {expr_type}"
+                    )
         elif isinstance(stmt, Assign):
             var_type = env.lookup(stmt.name)
             if not var_type:
@@ -755,6 +947,20 @@ def check_types(prog: Program):
             expr_type = check_expr(stmt.expr)
             if expr_type != var_type:
                 raise TypeError(f"Assign type mismatch: {var_type} = {expr_type}")
+        elif isinstance(stmt, IndexAssign):
+            arr_name = stmt.array
+            var_type = env.lookup(arr_name)
+            if not var_type:
+                raise TypeError(f"Index‐assign to undeclared variable '{arr_name}'")
+            if '[' not in var_type or not var_type.endswith(']'):
+                raise TypeError(f"Index‐assign to non-array variable '{var_type}'")
+            base_type = var_type.split('[', 1)[0]
+            idx_type = check_expr(stmt.index)
+            if idx_type != 'int':
+                raise TypeError(f"Array index must be 'int', got '{idx_type}'")
+            val_type = check_expr(stmt.value)
+            if val_type != base_type:
+                raise TypeError(f"Index‐assign type mismatch: array of {base_type}, got {val_type}")
         elif isinstance(stmt, IfStmt):
             cond_type = check_expr(stmt.cond)
             if cond_type != 'bool':
@@ -768,7 +974,7 @@ def check_types(prog: Program):
                 if isinstance(stmt.else_body, list):
                     for s in stmt.else_body:
                         check_stmt(s, expected_ret)
-                elif isinstance(stmt.else_body, IfStmt):
+                else:
                     check_stmt(stmt.else_body, expected_ret)
                 env.pop()
         elif isinstance(stmt, WhileStmt):
@@ -789,12 +995,14 @@ def check_types(prog: Program):
                     raise TypeError(f"Return without value in function returning {expected_ret}")
         elif isinstance(stmt, ExprStmt):
             check_expr(stmt.expr)
+        else:
+            raise TypeError(f"Unsupported statement: {stmt}")
     for func in prog.funcs:
         env.push()
-        for typ, name in func.params:
-            env.declare(name, typ)
-        for stmt in (func.body or []):
-            check_stmt(stmt, func.ret_type)
+        for (param_typ, param_name) in func.params:
+            env.declare(param_name, param_typ)
+        for s in (func.body or []):
+            check_stmt(s, func.ret_type)
         env.pop()
 def expand_macros(prog: Program) -> Program:
     macro_dict: Dict[str, MacroDef] = {m.name: m for m in prog.macros}
@@ -909,17 +1117,11 @@ def expand_macros(prog: Program) -> Program:
             )
         else:
             new_funcs.append(fn)
-    return Program(new_funcs, prog.imports, [])
+    return Program(new_funcs, prog.imports, [], prog.structs, prog.enums)
 import ctypes
 def main():
     if len(sys.argv) != 4 or sys.argv[2] != "-o":
-        ctypes.windll.user32.MessageBoxW(
-            None,
-            "Usage: ORCC.exe <input.sorcat|.orcat> -o <output.ll>",
-            "ORCC.exe",
-            0x10
-        )
-        return
+        print("Usage: ORCC.exe {filename}.orcat|.sorcat -o {filename}.ll")
     inp = sys.argv[1]
     outp = sys.argv[3]
     with open(inp) as f:
