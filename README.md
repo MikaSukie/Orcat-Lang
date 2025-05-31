@@ -1,2 +1,2 @@
 Currently In Active Development.</br>
-Not Ready For Release.
+"Small" compiler but still working on standard libraries. Syntax has been built.
