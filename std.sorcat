@@ -1,9 +1,12 @@
 pub extern fn printf(string: s) <int>;
 
-pub fn print(string: s) <void> {
+pub fn print(string s) <void> {
     printf(s);
 }
-pub fn println(string: text) <void> {
+pub fn println(string text) <void> {
     print(text);
     print("\n");
+}
+pub fn add(int a, int b) <int> {
+    return a+b;
 }
