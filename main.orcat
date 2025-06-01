@@ -1,5 +1,29 @@
 import "std.sorcat";
+
 fn main() <int> {
-    println("hello");
+    int variable = 0;
+    float v1 = 1.0;
+    while (variable != 99) {
+        variable = variable + 1;
+        v1 = v1 + 1.0;
+        if (fizz(v1) == 0.0) {
+            print("fizz\n");
+        }
+        if (buzz(v1) == 0.0) {
+            print("buzz\n");
+        }
+        if (fizzbuzz(v1) == true) {
+            print("fizzbuzz\n");
+        }
+    }
     return 0;
+}
+pub fn fizz(float v1) <float> {
+    return modulo(v1, 3.0);
+}
+pub fn buzz(float v1) <float> {
+    return modulo(v1, 5.0);
+}
+pub fn fizzbuzz(float v1) <bool> {
+    return and(fizz(v1) == 0.0, buzz(v1) == 0.0);
 }
