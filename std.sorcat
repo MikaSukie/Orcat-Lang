@@ -1,4 +1,4 @@
-pub extern fn printf(string: s) <int>;
+pub extern fn printf(string s) <int>;
 
 pub fn print(string s) <void> {
     printf(s);
@@ -7,6 +7,16 @@ pub fn println(string text) <void> {
     print(text);
     print("\n");
 }
-pub fn add(int a, int b) <int> {
-    return a+b;
+pub fn modulo(float a, float b) <float> {
+    float q = a / b;
+    float r = a - q * b;
+    return r;
+}
+
+pub fn and(bool a, bool b) <bool> {
+    return a ? b : false;
+}
+
+pub fn or(bool a, bool b) <bool> {
+    return a ? true : b;
 }
