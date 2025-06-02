@@ -1,0 +1,4 @@
+pub extern fn print(string s) <void>;
+pub fn newline() <void> {
+    print("\n");
+}
