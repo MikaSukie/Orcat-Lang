@@ -1,5 +1,5 @@
 cls
 .\ORCC.exe main.orcat -o out.ll
-clang out.ll -o main.exe
+clang out.ll orcatRT.c -o main.exe
 .\main.exe
-echo %ERRORLEVEL%
+echo exit code: %ERRORLEVEL%
