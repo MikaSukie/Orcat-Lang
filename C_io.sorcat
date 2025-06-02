@@ -1,3 +1,9 @@
+pub extern fn input(string input) <string>;
+pub extern fn iinput(string input) <int>;
+pub extern fn binput(string input) <bool>;
+pub extern fn finput(string input) <float>;
+pub extern fn sinput(string input) <string>;
+
 pub extern fn print(string s) <void>;
 pub fn newline() <void> {
     print("\n");
