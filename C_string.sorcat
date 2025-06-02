@@ -9,8 +9,10 @@ pub extern fn itostr(int i)    <string>;
 pub extern fn ftostr(float f)<string>;
 pub extern fn btostr(bool b)  <string>;
 pub extern fn tostr(string s)<string>;
+
 /*
 // String Builder example
+
     string builder = sb_create();
     builder = sb_append_str(builder, tostr("Hello, "));
     builder = sb_append_str(builder, tostr("Orcat!  Number="));
@@ -20,7 +22,6 @@ pub extern fn tostr(string s)<string>;
     builder = sb_append_str(builder, tostr(", flag="));
     builder = sb_append_bool(builder, false);
 
-    // Now finish and print (we add a newline)
     string result = sb_finish(builder);
     print(result);
     print("\n");
