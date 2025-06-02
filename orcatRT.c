@@ -41,7 +41,7 @@ static char* concat_and_free(char* a, char* b) {
         return NULL;
     }
     memcpy(out, a, la);
-    memcpy(out + la, b, lb + 1);
+    memcpy(out + la, b, lb + 1); // +1 to copy '\0'
     free(a);
     free(b);
     return out;
@@ -72,4 +72,45 @@ char* sb_append_bool(char* builder, bool bb) {
 
 char* sb_finish(char* builder) {
     return builder;
+}
+char* input(const char* prompt) {
+    printf("%s", prompt);
+    fflush(stdout);
+    char buf[1024];
+    if (fgets(buf, sizeof(buf), stdin) == NULL) return NULL;
+    size_t len = strlen(buf);
+    if (len && buf[len - 1] == '\n') buf[len - 1] = '\0';
+    return _strdup(buf);
+}
+
+int iinput(const char* prompt) {
+    char* s = input(prompt);
+    fflush(stdout);
+    if (!s) return 0;
+    int val = atoi(s);
+    free(s);
+    return val;
+}
+
+double finput(const char* prompt) {
+    char* s = input(prompt);
+    fflush(stdout);
+    if (!s) return 0.0;
+    double val = atof(s);
+    free(s);
+    return val;
+}
+
+bool binput(const char* prompt) {
+    char* s = input(prompt);
+    fflush(stdout);
+    if (!s) return false;
+    bool result = (strcmp(s, "true") == 0 || strcmp(s, "1") == 0);
+    free(s);
+    return result;
+}
+
+char* sinput(const char* prompt) {
+    fflush(stdout);
+    return input(prompt);
 }
