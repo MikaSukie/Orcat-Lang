@@ -5,6 +5,14 @@
 #include <string.h>
 #include <stdbool.h>
 
+int Cmalloc(int size) {
+    return (int)(intptr_t)malloc((size_t)size);
+}
+
+void Cfree(int ptr) {
+    free((void*)(intptr_t)ptr);
+}
+
 char* itostr(int x) {
     char* buf = (char*)malloc(32);
     if (!buf) return NULL;
