@@ -2,7 +2,10 @@ import sys
 from typing import List, Optional, Tuple, Union, Dict
 from dataclasses import dataclass
 import copy
-TYPE_TOKENS = {'IDENT', 'INT', 'FLOAT', 'STRING', 'BOOL', 'CHAR', 'VOID'}
+TYPE_TOKENS = {
+    'IDENT', 'INT', 'INT8', 'INT16', 'INT32', 'INT64',
+    'FLOAT', 'STRING', 'BOOL', 'CHAR', 'VOID'
+}
 @dataclass
 class Token:
     kind: str
@@ -12,7 +15,8 @@ class Token:
 KEYWORDS = {
     'fn', 'fnmacro', 'if', 'else', 'while', 'return',
     'import', 'pub', 'priv', 'prot', 'extern',
-    'int', 'float', 'bool', 'char', 'string', 'void',
+    'int', 'int8', 'int16', 'int32', 'int64',
+    'float', 'bool', 'char', 'string', 'void',
     'true', 'false', 'struct', 'enum', 'match'
 }
 SINGLE_CHARS = {
@@ -695,8 +699,22 @@ def new_label(base='L') -> str:
     global label_id
     label_id += 1
     return f"{base}{label_id}"
+def unify_int_types(t1: str, t2: str) -> Optional[str]:
+    rank = {
+        "int8": 1, "int16": 2, "int32": 3, "int64": 4,
+        "int": 4
+    }
+    for t in [t1, t2]:
+        if t not in rank and not t.startswith("int"):
+            return None
+    return max(t1, t2, key=lambda t: rank.get(t, 0))
+
 type_map = {
-    'int': 'i32',
+    'int': 'i64',
+    'int8': 'i8',
+    'int16': 'i16',
+    'int32': 'i32',
+    'int64': 'i64',
     'float': 'double',
     'bool': 'i1',
     'char': 'i8',
@@ -711,7 +729,9 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 
     if isinstance(expr, IntLit):
         tmp = new_tmp()
-        out.append(f"  {tmp} = add i32 0, {expr.value}")
+        inferred = infer_type(expr)
+        llvm_ty = type_map[inferred]
+        out.append(f"  {tmp} = add {llvm_ty} 0, {expr.value}")
         return tmp
 
     if isinstance(expr, FloatLit):
@@ -972,11 +992,14 @@ def infer_type(expr: Expr) -> str:
     if isinstance(expr, BinOp):
         left_type = infer_type(expr.left)
         right_type = infer_type(expr.right)
-        if left_type != right_type:
-            raise RuntimeError(f"Type mismatch in binary op '{expr.op}': {left_type} vs {right_type}")
+        common = unify_int_types(left_type, right_type)
+        if not common:
+            if left_type != right_type:
+                raise RuntimeError(f"Type mismatch in binary op '{expr.op}': {left_type} vs {right_type}")
+            common = left_type
         if expr.op in {'==', '!=', '<', '<=', '>', '>='}:
             return 'bool'
-        return left_type
+        return common
 
     if isinstance(expr, Call):
         if expr.name not in func_table:
@@ -1020,20 +1043,40 @@ def infer_type(expr: Expr) -> str:
     raise RuntimeError(f"Cannot infer type for expression: {expr}")
 def gen_stmt(stmt: Stmt, out: List[str]):
     if isinstance(stmt, VarDecl):
-        if "[" in stmt.typ:
-            base, count = stmt.typ.split("[")
-            count = count[:-1]
-            llvm_base = type_map[base]
-            llvm_ty = f"[{count} x {llvm_base}]"
-        elif stmt.typ in type_map:
-            llvm_ty = type_map[stmt.typ]
-        else:
-            llvm_ty = f"%struct.{stmt.typ}"
-        out.append(f"  %{stmt.name}_addr = alloca {llvm_ty}")
-        symbol_table.declare(stmt.name, llvm_ty, stmt.name)
-        if stmt.expr:
-            val = gen_expr(stmt.expr, out)
-            out.append(f"  store {llvm_ty} {val}, {llvm_ty}* %{stmt.name}_addr")
+        if isinstance(stmt, VarDecl):
+            if "[" in stmt.typ:
+                base, count = stmt.typ.split("[")
+                count = count[:-1]
+                llvm_base = type_map[base]
+                llvm_ty = f"[{count} x {llvm_base}]"
+            elif stmt.typ in type_map:
+                llvm_ty = type_map[stmt.typ]
+            else:
+                llvm_ty = f"%struct.{stmt.typ}"
+            out.append(f"  %{stmt.name}_addr = alloca {llvm_ty}")
+            symbol_table.declare(stmt.name, llvm_ty, stmt.name)
+
+            if stmt.expr:
+                val = gen_expr(stmt.expr, out)
+                src_type = type_map[infer_type(stmt.expr)]
+                dst_type = llvm_ty
+
+                if src_type != dst_type:
+                    def bitsize(ty: str) -> int:
+                        return int(ty[1:])
+
+                    src_bits = bitsize(src_type)
+                    dst_bits = bitsize(dst_type)
+
+                    cast_tmp = new_tmp()
+                    if src_bits > dst_bits:
+                        out.append(f"  {cast_tmp} = trunc {src_type} {val} to {dst_type}")
+                    else:
+                        out.append(f"  {cast_tmp} = sext {src_type} {val} to {dst_type}")
+                    val = cast_tmp
+
+                out.append(f"  store {dst_type} {val}, {dst_type}* %{stmt.name}_addr")
+
     elif isinstance(stmt, Assign):
         val = gen_expr(stmt.expr, out)
         llvm_ty, _ = symbol_table.lookup(stmt.name)
@@ -1150,14 +1193,17 @@ def gen_func(fn: Func) -> List[str]:
         symbol_table.declare(name, llvm_ty, name)
     for stmt in fn.body:
         gen_stmt(stmt, out)
-    if fn.ret_type == 'int':
-        out.append("  ret i32 0")
-    elif fn.ret_type == 'float':
-        out.append("  ret double 0.0")
-    elif fn.ret_type == 'bool':
-        out.append("  ret i1 0")
-    elif fn.ret_type == 'void':
+    llvm_ret = type_map[fn.ret_type]
+    if llvm_ret == 'void':
         out.append("  ret void")
+    elif llvm_ret == 'double':
+        out.append(f"  ret {llvm_ret} 0.0")
+    else:
+        if llvm_ret.startswith('i'):
+            out.append(f"  ret {llvm_ret} 0")
+        else:
+            out.append(f"  ret {llvm_ret} null")
+
     out.append("}")
     symbol_table.pop()
     return out
@@ -1259,12 +1305,13 @@ def check_types(prog: Program):
                     return "float"
                 else:
                     raise TypeError(f"Modulo '%' requires int or float, got {left} and {right}")
-            if left != right:
+            common = unify_int_types(left, right)
+            if not common:
                 raise TypeError(f"Type mismatch: {left} {expr.op} {right}")
 
             if expr.op in {"==", "!=", "<", ">", "<=", ">="}:
                 return "bool"
-            return left
+            return common
 
         if isinstance(expr, Call):
             if expr.name not in funcs:
@@ -1274,7 +1321,8 @@ def check_types(prog: Program):
                 raise TypeError(f"Arity mismatch in call to '{expr.name}'")
             for arg_expr, (expected_type, _) in zip(expr.args, fn.params):
                 actual_type = check_expr(arg_expr)
-                if actual_type != expected_type:
+                common = unify_int_types(actual_type, expected_type)
+                if actual_type != expected_type and (not common or common != expected_type):
                     raise TypeError(
                         f"Argument type mismatch in call to '{expr.name}': "
                         f"expected {expected_type}, got {actual_type}"
@@ -1341,7 +1389,12 @@ def check_types(prog: Program):
             env.declare(stmt.name, raw_typ)
             if stmt.expr:
                 expr_type = check_expr(stmt.expr)
-                if expr_type != raw_typ:
+                if isinstance(stmt.expr, IntLit):
+                    int_targets = {"int8", "int16", "int32", "int64"}
+                    if raw_typ in int_targets:
+                        return
+                common = unify_int_types(expr_type, raw_typ)
+                if expr_type != raw_typ and (not common or common != raw_typ):
                     raise TypeError(
                         f"Type mismatch in variable init '{stmt.name}': expected {raw_typ}, got {expr_type}"
                     )
@@ -1398,8 +1451,10 @@ def check_types(prog: Program):
         elif isinstance(stmt, ReturnStmt):
             if stmt.expr:
                 actual = check_expr(stmt.expr)
-                if actual != expected_ret:
+                common = unify_int_types(actual, expected_ret)
+                if actual != expected_ret and (not common or common != expected_ret):
                     raise TypeError(f"Return type mismatch: expected {expected_ret}, got {actual}")
+
             else:
                 if expected_ret != 'void':
                     raise TypeError(f"Return without value in function returning {expected_ret}")
