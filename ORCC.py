@@ -709,6 +709,16 @@ def unify_int_types(t1: str, t2: str) -> Optional[str]:
             return None
     return max(t1, t2, key=lambda t: rank.get(t, 0))
 
+def unify_types(t1: str, t2: str) -> Optional[str]:
+    if t1 == t2:
+        return t1
+    int_common = unify_int_types(t1, t2)
+    if int_common:
+        return int_common
+    if (t1, t2) in {("float", "int"), ("int", "float")}:
+        return "float"
+    return None
+
 type_map = {
     'int': 'i64',
     'int8': 'i8',
@@ -1305,7 +1315,7 @@ def check_types(prog: Program):
                     return "float"
                 else:
                     raise TypeError(f"Modulo '%' requires int or float, got {left} and {right}")
-            common = unify_int_types(left, right)
+            common = unify_types(left, right)
             if not common:
                 raise TypeError(f"Type mismatch: {left} {expr.op} {right}")
 
@@ -1447,7 +1457,6 @@ def check_types(prog: Program):
             for s in stmt.body:
                 check_stmt(s, expected_ret)
             env.pop()
-
         elif isinstance(stmt, ReturnStmt):
             if stmt.expr:
                 actual = check_expr(stmt.expr)
@@ -1458,17 +1467,14 @@ def check_types(prog: Program):
             else:
                 if expected_ret != 'void':
                     raise TypeError(f"Return without value in function returning {expected_ret}")
-
         elif isinstance(stmt, ExprStmt):
             check_expr(stmt.expr)
-
         elif isinstance(stmt, Match):
             enum_typ = check_expr(stmt.expr)
             if enum_typ not in enum_defs:
                 raise TypeError(f"Cannot match on non-enum type '{enum_typ}'")
             enum_def = enum_defs[enum_typ]
             defined_variants = {v.name for v in enum_def.variants}
-
             seen_variants = set()
             for case in stmt.cases:
                 if case.variant not in defined_variants:
@@ -1489,10 +1495,8 @@ def check_types(prog: Program):
             if seen_variants != defined_variants:
                 missing = defined_variants - seen_variants
                 raise TypeError(f"Non‐exhaustive match on '{enum_typ}', missing {missing}")
-
         else:
             raise TypeError(f"Unsupported statement: {stmt}")
-
     for func in prog.funcs:
         env.push()
         for (param_typ, param_name) in func.params:
@@ -1502,7 +1506,6 @@ def check_types(prog: Program):
         env.pop()
 def expand_macros(prog: Program) -> Program:
     macro_dict: Dict[str, MacroDef] = {m.name: m for m in prog.macros}
-
     def substitute_expr(expr: Expr, mapping: Dict[str, Expr]) -> Expr:
         if isinstance(expr, IntLit):
             return IntLit(expr.value)
@@ -1528,7 +1531,6 @@ def expand_macros(prog: Program) -> Program:
                 new_args.append(substitute_expr(a, mapping))
             return Call(expr.name, new_args)
         raise RuntimeError(f"Unsupported Expr in macro substitution: {expr}")
-
     def substitute_stmt(stmt: Stmt, mapping: Dict[str, Expr]) -> Stmt:
         if isinstance(stmt, VarDecl):
             init_copy = substitute_expr(stmt.expr, mapping) if stmt.expr else None
@@ -1566,7 +1568,6 @@ def expand_macros(prog: Program) -> Program:
             new_expr = substitute_expr(stmt.expr, mapping)
             return ExprStmt(new_expr)
         raise RuntimeError(f"Unsupported Stmt in macro substitution: {stmt}")
-
     def expand_stmt_list(stmts: List[Stmt]) -> List[Stmt]:
         result: List[Stmt] = []
         for stmt in stmts:
@@ -1624,7 +1625,6 @@ def expand_macros(prog: Program) -> Program:
         else:
             new_funcs.append(fn)
     return Program(new_funcs, prog.imports, [], prog.structs, prog.enums)
-
 def main():
     if len(sys.argv) != 4 or sys.argv[2] != "-o":
         print("Usage: ORCC.exe {filename}.orcat|.sorcat -o {filename}.ll")
