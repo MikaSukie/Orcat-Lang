@@ -4,13 +4,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdint.h>
+#include <inttypes.h>
 
-int Cmalloc(int size) {
-    return (int)(intptr_t)malloc((size_t)size);
+uintptr_t Cmalloc(int size) {
+    return (uintptr_t)malloc((size_t)size);
 }
 
-void Cfree(int ptr) {
-    free((void*)(intptr_t)ptr);
+void Cfree(uintptr_t ptr) {
+    free((void*)ptr);
 }
 
 char* itostr(int x) {
@@ -31,12 +33,24 @@ char* btostr(bool b) {
     return _strdup(b ? "true" : "false");
 }
 
-char* tostr(char* s) {
+char* tostr(const char* s) {
     return _strdup(s);
 }
 
-void print(char* s) {
+void free_str(char* s) {
+    free(s);
+}
+
+void print(const char* s) {
     printf("%s", s);
+}
+
+void println(const char* s) {
+    printf("%s\n", s);
+}
+
+void eprint(const char* s) {
+    fprintf(stderr, "%s", s);
 }
 
 static char* concat_and_free(char* a, char* b) {
@@ -49,7 +63,7 @@ static char* concat_and_free(char* a, char* b) {
         return NULL;
     }
     memcpy(out, a, la);
-    memcpy(out + la, b, lb + 1); // +1 to copy '\0'
+    memcpy(out + la, b, lb + 1);
     free(a);
     free(b);
     return out;
@@ -60,7 +74,7 @@ char* sb_create() {
 }
 
 char* sb_append_str(char* builder, char* s) {
-    return concat_and_free(builder, s);
+    return concat_and_free(builder, _strdup(s));
 }
 
 char* sb_append_int(char* builder, int x) {
@@ -81,6 +95,7 @@ char* sb_append_bool(char* builder, bool bb) {
 char* sb_finish(char* builder) {
     return builder;
 }
+
 char* input(const char* prompt) {
     printf("%s", prompt);
     fflush(stdout);
@@ -93,7 +108,6 @@ char* input(const char* prompt) {
 
 int iinput(const char* prompt) {
     char* s = input(prompt);
-    fflush(stdout);
     if (!s) return 0;
     int val = atoi(s);
     free(s);
@@ -102,7 +116,6 @@ int iinput(const char* prompt) {
 
 double finput(const char* prompt) {
     char* s = input(prompt);
-    fflush(stdout);
     if (!s) return 0.0;
     double val = atof(s);
     free(s);
@@ -111,7 +124,6 @@ double finput(const char* prompt) {
 
 bool binput(const char* prompt) {
     char* s = input(prompt);
-    fflush(stdout);
     if (!s) return false;
     bool result = (strcmp(s, "true") == 0 || strcmp(s, "1") == 0);
     free(s);
@@ -119,6 +131,5 @@ bool binput(const char* prompt) {
 }
 
 char* sinput(const char* prompt) {
-    fflush(stdout);
     return input(prompt);
 }
