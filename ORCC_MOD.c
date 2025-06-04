@@ -22,6 +22,34 @@ char* itostr(int x) {
     return buf;
 }
 
+char* i64tostr(int64_t val) {
+    char* buf = malloc(32);
+    if (!buf) return NULL;
+    snprintf(buf, 32, "%" PRId64, val);
+    return buf;
+}
+
+char* i32tostr(int32_t val) {
+    char* buf = malloc(16);
+    if (!buf) return NULL;
+    snprintf(buf, 16, "%" PRId32, val);
+    return buf;
+}
+
+char* i16tostr(int16_t val) {
+    char* buf = malloc(8);
+    if (!buf) return NULL;
+    snprintf(buf, 8, "%" PRId16, val);
+    return buf;
+}
+
+char* i8tostr(int8_t val) {
+    char* buf = malloc(8);
+    if (!buf) return NULL;
+    snprintf(buf, 8, "%" PRId8, val);
+    return buf;
+}
+
 char* ftostr(double f) {
     char* buf = (char*)malloc(64);
     if (!buf) return NULL;
