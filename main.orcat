@@ -4,9 +4,13 @@ import "C_io.sorcat";
 
 fn main() <int> {
     int variable = 0;
+    int64 extreme = 10000000000;
+    int32 extreme1 = 10000;
+    int16 extreme2 = 100;
+    int8 extreme3  = 10;
     while (variable != 99) {
         variable = variable + 1;
-        if (and(variable % 3 == 0, variable % 5 == 0)) {
+        if (variable % 3 == 0 && variable % 5 == 0) {
             print("fizzbuzz\n");
         }
         else if (variable % 3 == 0) {
@@ -20,5 +24,9 @@ fn main() <int> {
             newline();
         }
     }
+    print(i64tostr(extreme)+tostr("\n"));
+    print(i32tostr(extreme1)+tostr("\n"));
+    print(i16tostr(extreme2)+tostr("\n"));
+    print(i8tostr(extreme3)+tostr("\n"));
     return 0;
 }
