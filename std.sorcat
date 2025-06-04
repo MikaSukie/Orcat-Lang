@@ -1,1 +1,2 @@
-// no standard lib for now.
+//stdlib
+pub extern fn system(string s)<void>;
