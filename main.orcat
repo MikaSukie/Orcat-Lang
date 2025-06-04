@@ -8,6 +8,7 @@ fn main() <int> {
     int32 extreme1 = 10000;
     int16 extreme2 = 100;
     int8 extreme3  = 10;
+    float extreme4 = 0.00005f;
     while (variable != 99) {
         variable = variable + 1;
         if (variable % 3 == 0 && variable % 5 == 0) {
@@ -28,5 +29,6 @@ fn main() <int> {
     print(i32tostr(extreme1)+tostr("\n"));
     print(i16tostr(extreme2)+tostr("\n"));
     print(i8tostr(extreme3)+tostr("\n"));
+    print(ftostr(extreme4)+tostr("\n"));
     return 0;
 }
