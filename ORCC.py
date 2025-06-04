@@ -17,7 +17,7 @@ KEYWORDS = {
     'import', 'pub', 'priv', 'prot', 'extern',
     'int', 'int8', 'int16', 'int32', 'int64',
     'float', 'bool', 'char', 'string', 'void',
-    'true', 'false', 'struct', 'enum', 'match'
+    'true', 'false', 'struct', 'enum', 'match', 'nomd'
 }
 SINGLE_CHARS = {
     '(': 'LPAREN',   ')': 'RPAREN',   '{': 'LBRACE',   '}': 'RBRACE',
@@ -241,6 +241,7 @@ class VarDecl(Stmt):
     typ: str
     name: str
     expr: Optional[Expr]
+    nomd: bool = False
 @dataclass
 class Assign(Stmt): name: str; expr: Expr
 @dataclass
@@ -330,6 +331,7 @@ enum_variant_map: Dict[str, List[Tuple[str, Optional[str]]]] = {}
 
 class Parser:
     def __init__(self, tokens: List[Token]):
+        self.declared_vars: Dict[str, VarDecl] = {}
         self.tokens = tokens
         self.pos = 0
     def peek(self) -> Token:
@@ -469,7 +471,7 @@ class Parser:
             return self.parse_index_assign()
         if t.kind == 'IDENT' and self.tokens[self.pos + 1].kind == 'LPAREN':
             return self.parse_expr_stmt()
-        if t.kind in {'PUB', 'PRIV', 'PROT'} or t.kind in TYPE_TOKENS or t.kind == 'IDENT':
+        if t.kind in {'PUB', 'PRIV', 'PROT', 'NOMD'} or t.kind in TYPE_TOKENS or t.kind == 'IDENT':
             return self.parse_var_decl()
         if t.kind == 'IF':
             return self.parse_if()
@@ -503,8 +505,12 @@ class Parser:
         return Match(expr_to_match, cases)
     def parse_var_decl(self) -> VarDecl:
         access = 'priv'
+        nomd = False
         if self.peek().kind in {'PUB', 'PRIV', 'PROT'}:
             access = self.bump().kind.lower()
+        if self.peek().kind == 'NOMD':
+            self.bump()
+            nomd = True
         if self.peek().kind in TYPE_TOKENS or self.peek().kind == 'IDENT':
             typ = self.bump().value
             if self.match('LBRACKET'):
@@ -519,7 +525,9 @@ class Parser:
         if self.match('EQUAL'):
             expr = self.parse_expr()
         self.expect('SEMI')
-        return VarDecl(access, typ, name, expr)
+        var_decl = VarDecl(access, typ, name, expr, nomd)
+        self.declared_vars[name] = var_decl
+        return var_decl
     def parse_index_assign(self) -> IndexAssign:
         arr_name = self.expect('IDENT').value
         self.expect('LBRACKET')
@@ -529,12 +537,19 @@ class Parser:
         value = self.parse_expr()
         self.expect('SEMI')
         return IndexAssign(arr_name, index, value)
+
     def parse_assign(self) -> Assign:
         name = self.expect('IDENT').value
+
+        decl = self.declared_vars.get(name)
+        if decl and decl.nomd:
+            raise RuntimeError(f"Cannot assign to 'nomd' variable '{name}'")
+
         self.expect('EQUAL')
         expr = self.parse_expr()
         self.expect('SEMI')
         return Assign(name, expr)
+
     def parse_if(self) -> IfStmt:
         self.expect('IF')
         self.expect('LPAREN')
@@ -959,19 +974,16 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
                                 new_cases.append(MatchCase(case.variant, case.binding, new_body0))
                             return Match(new_expr0, new_cases)
                         raise RuntimeError(f"Unsupported Stmt in generic substitution: {s}")
-
                     new_body = [replace_in_stmt(stmt) for stmt in base_fn.body] if base_fn.body else None
                     new_fn = Func(base_fn.access, mononame, [], new_params, new_ret, new_body, base_fn.is_extern)
                     all_funcs.append(new_fn)
                     func_table[mononame] = type_map.get(new_ret, f"%struct.{new_ret}")
                     llvm_lines = gen_func(new_fn)
                     out.insert(0, "\n".join(llvm_lines))
-
                 ret_ty = type_map.get(actual, f"%struct.{actual}")
                 tmp2 = new_tmp()
                 out.append(f"  {tmp2} = call {ret_ty} @{mononame}({', '.join(args_ir)})")
                 return tmp2
-
         ret_ty = func_table.get(expr.name, 'i32')
         if ret_ty == 'void':
             out.append(f"  call void @{expr.name}({', '.join(args_ir)})")
@@ -980,9 +992,7 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
             tmp2 = new_tmp()
             out.append(f"  {tmp2} = call {ret_ty} @{expr.name}({', '.join(args_ir)})")
             return tmp2
-
     raise RuntimeError(f"Unhandled expr: {expr}")
-
 def infer_type(expr: Expr) -> str:
     if isinstance(expr, IntLit):
         return 'int'
@@ -994,7 +1004,6 @@ def infer_type(expr: Expr) -> str:
         return 'char'
     if isinstance(expr, StrLit):
         return 'string'
-
     if isinstance(expr, Var):
         result = symbol_table.lookup(expr.name)
         if result is None:
@@ -1028,7 +1037,6 @@ def infer_type(expr: Expr) -> str:
         if expr.op in {'==', '!=', '<', '<=', '>', '>='}:
             return 'bool'
         return common
-
     if isinstance(expr, Call):
         if expr.name not in func_table:
             raise RuntimeError(f"Call to undefined function '{expr.name}'")
@@ -1039,7 +1047,6 @@ def infer_type(expr: Expr) -> str:
         if ret_llvm_ty.startswith("%struct.") and ret_llvm_ty.endswith("*"):
             return ret_llvm_ty[len("%struct."):-1] + "*"
         return ret_llvm_ty
-
     if isinstance(expr, Index):
         if not isinstance(expr.array, Var):
             raise RuntimeError(f"Only direct variable array indexing is supported, got: {expr.array}")
@@ -1056,7 +1063,6 @@ def infer_type(expr: Expr) -> str:
             if low == elem_llvm:
                 return high
         return elem_llvm
-
     if isinstance(expr, Ternary):
         then_t = infer_type(expr.then_expr)
         else_t = infer_type(expr.else_expr)
@@ -1067,7 +1073,6 @@ def infer_type(expr: Expr) -> str:
         possible = expr.__dict__.get("name", "")
         if isinstance(possible, str) and possible.endswith("*"):
             return possible
-
     raise RuntimeError(f"Cannot infer type for expression: {expr}")
 def gen_stmt(stmt: Stmt, out: List[str]):
     if isinstance(stmt, VarDecl):
@@ -1083,19 +1088,15 @@ def gen_stmt(stmt: Stmt, out: List[str]):
                 llvm_ty = f"%struct.{stmt.typ}"
             out.append(f"  %{stmt.name}_addr = alloca {llvm_ty}")
             symbol_table.declare(stmt.name, llvm_ty, stmt.name)
-
             if stmt.expr:
                 val = gen_expr(stmt.expr, out)
                 src_type = type_map[infer_type(stmt.expr)]
                 dst_type = llvm_ty
-
                 if src_type != dst_type:
                     def bitsize(ty: str) -> int:
                         return int(ty[1:])
-
                     src_bits = bitsize(src_type)
                     dst_bits = bitsize(dst_type)
-
                     cast_tmp = new_tmp()
                     if src_bits > dst_bits:
                         out.append(f"  {cast_tmp} = trunc {src_type} {val} to {dst_type}")
@@ -1463,7 +1464,6 @@ def check_types(prog: Program):
                 common = unify_int_types(actual, expected_ret)
                 if actual != expected_ret and (not common or common != expected_ret):
                     raise TypeError(f"Return type mismatch: expected {expected_ret}, got {actual}")
-
             else:
                 if expected_ret != 'void':
                     raise TypeError(f"Return without value in function returning {expected_ret}")
