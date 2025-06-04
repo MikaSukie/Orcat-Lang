@@ -116,14 +116,26 @@ def lex(source: str) -> List[Token]:
             start = i
             while i < len(source) and source[i].isdigit():
                 i += 1
+            is_float = False
             if i < len(source) and source[i] == '.':
                 i += 1
                 while i < len(source) and source[i].isdigit():
                     i += 1
-                val = source[start:i]
+                is_float = True
+            if i < len(source) and source[i] in {'e', 'E'}:
+                i += 1
+                if i < len(source) and source[i] in {'+', '-'}:
+                    i += 1
+                while i < len(source) and source[i].isdigit():
+                    i += 1
+                is_float = True
+            if i < len(source) and source[i] in {'f', 'F'}:
+                i += 1
+                is_float = True
+            val = source[start:i]
+            if is_float:
                 tokens.append(Token('FLOAT', val, line, col))
             else:
-                val = source[start:i]
                 tokens.append(Token('INT', val, line, col))
             col += len(val)
             continue
@@ -611,7 +623,8 @@ class Parser:
                 return IntLit(int(t.value))
 
             if t.kind == 'FLOAT':
-                return FloatLit(float(t.value))
+                val = t.value.rstrip('fF')
+                return FloatLit(float(val))
 
             if t.kind == 'STRING':
                 return StrLit(t.value)
@@ -735,6 +748,9 @@ struct_llvm_defs: List[str] = []
 symbol_table = SymbolTable()
 func_table: Dict[str, str] = {}
 def gen_expr(expr: Expr, out: List[str]) -> str:
+    def format_float(val: float) -> str:
+        return f"{val:.8e}"
+
     global string_constants
 
     if isinstance(expr, IntLit):
@@ -746,7 +762,9 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 
     if isinstance(expr, FloatLit):
         tmp = new_tmp()
-        out.append(f"  {tmp} = fadd double 0.0, {expr.value}")
+        #float_val = f"{expr.value:.8e}"
+        float_val = format_float(expr.value)
+        out.append(f"  {tmp} = fadd double 0.0, {float_val}")
         return tmp
 
     if isinstance(expr, BoolLit):
@@ -1084,9 +1102,7 @@ def gen_stmt(stmt: Stmt, out: List[str]):
                     else:
                         out.append(f"  {cast_tmp} = sext {src_type} {val} to {dst_type}")
                     val = cast_tmp
-
                 out.append(f"  store {dst_type} {val}, {dst_type}* %{stmt.name}_addr")
-
     elif isinstance(stmt, Assign):
         val = gen_expr(stmt.expr, out)
         llvm_ty, _ = symbol_table.lookup(stmt.name)
@@ -1213,7 +1229,6 @@ def gen_func(fn: Func) -> List[str]:
             out.append(f"  ret {llvm_ret} 0")
         else:
             out.append(f"  ret {llvm_ret} null")
-
     out.append("}")
     symbol_table.pop()
     return out
@@ -1268,7 +1283,6 @@ def check_types(prog: Program):
         env.declare(struct_name, struct_name)
     for enum_name in enum_defs:
         env.declare(enum_name, enum_name)
-
     def check_expr(expr: Expr) -> str:
         if isinstance(expr, IntLit):
             return 'int'
@@ -1280,13 +1294,11 @@ def check_types(prog: Program):
             return 'char'
         if isinstance(expr, StrLit):
             return 'string'
-
         if isinstance(expr, Var):
             typ = env.lookup(expr.name)
             if not typ:
                 raise TypeError(f"Use of undeclared variable '{expr.name}'")
             return typ
-
         if isinstance(expr, Ternary):
             cond_type = check_expr(expr.cond)
             if cond_type != 'bool':
@@ -1296,7 +1308,6 @@ def check_types(prog: Program):
             if then_t != else_t:
                 raise TypeError(f"Ternary branches must match: {then_t} vs {else_t}")
             return then_t
-
         if isinstance(expr, BinOp):
             left = check_expr(expr.left)
             right = check_expr(expr.right)
@@ -1318,11 +1329,9 @@ def check_types(prog: Program):
             common = unify_types(left, right)
             if not common:
                 raise TypeError(f"Type mismatch: {left} {expr.op} {right}")
-
             if expr.op in {"==", "!=", "<", ">", "<=", ">="}:
                 return "bool"
             return common
-
         if isinstance(expr, Call):
             if expr.name not in funcs:
                 raise TypeError(f"Call to undeclared function '{expr.name}'")
@@ -1338,7 +1347,6 @@ def check_types(prog: Program):
                         f"expected {expected_type}, got {actual_type}"
                     )
             return fn.ret_type
-
         if isinstance(expr, Index):
             var_typ = env.lookup(expr.array.name)
             if not var_typ:
@@ -1350,7 +1358,6 @@ def check_types(prog: Program):
             if idx_type != 'int':
                 raise TypeError(f"Array index must be 'int', got '{idx_type}'")
             return base_type
-
         if isinstance(expr, FieldAccess):
             base_type = check_expr(expr.base)
             if base_type not in struct_defs:
@@ -1360,7 +1367,6 @@ def check_types(prog: Program):
                 if fname == expr.field:
                     return ftyp
             raise TypeError(f"Struct '{base_type}' has no field '{expr.field}'")
-
         if isinstance(expr, StructInit):
             if expr.name not in struct_defs:
                 raise TypeError(f"Unknown struct type '{expr.name}' in initializer")
@@ -1382,9 +1388,7 @@ def check_types(prog: Program):
                 missing = all_field_names - seen_fields
                 raise TypeError(f"Struct '{expr.name}' initializer missing fields {missing}")
             return expr.name
-
         raise TypeError(f"Unsupported expression: {expr}")
-
     def check_stmt(stmt: Stmt, expected_ret: str):
         if isinstance(stmt, VarDecl):
             if env.lookup(stmt.name):
@@ -1408,7 +1412,6 @@ def check_types(prog: Program):
                     raise TypeError(
                         f"Type mismatch in variable init '{stmt.name}': expected {raw_typ}, got {expr_type}"
                     )
-
         elif isinstance(stmt, Assign):
             var_type = env.lookup(stmt.name)
             if not var_type:
@@ -1416,7 +1419,6 @@ def check_types(prog: Program):
             expr_type = check_expr(stmt.expr)
             if expr_type != var_type:
                 raise TypeError(f"Assign type mismatch: {var_type} = {expr_type}")
-
         elif isinstance(stmt, IndexAssign):
             arr_name = stmt.array
             var_type = env.lookup(arr_name)
@@ -1431,7 +1433,6 @@ def check_types(prog: Program):
             val_type = check_expr(stmt.value)
             if val_type != base_type:
                 raise TypeError(f"Index‐assign type mismatch: array of {base_type}, got {val_type}")
-
         elif isinstance(stmt, IfStmt):
             cond_type = check_expr(stmt.cond)
             if cond_type != 'bool':
@@ -1448,7 +1449,6 @@ def check_types(prog: Program):
                 else:
                     check_stmt(stmt.else_body, expected_ret)
                 env.pop()
-
         elif isinstance(stmt, WhileStmt):
             cond_type = check_expr(stmt.cond)
             if cond_type != 'bool':
