@@ -762,6 +762,7 @@ type_map = {
 struct_llvm_defs: List[str] = []
 symbol_table = SymbolTable()
 func_table: Dict[str, str] = {}
+
 def gen_expr(expr: Expr, out: List[str]) -> str:
     def format_float(val: float) -> str:
         return f"{val:.8e}"
@@ -777,7 +778,6 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 
     if isinstance(expr, FloatLit):
         tmp = new_tmp()
-        #float_val = f"{expr.value:.8e}"
         float_val = format_float(expr.value)
         out.append(f"  {tmp} = fadd double 0.0, {float_val}")
         return tmp
