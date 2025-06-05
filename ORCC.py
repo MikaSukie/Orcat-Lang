@@ -17,7 +17,8 @@ KEYWORDS = {
     'import', 'pub', 'priv', 'prot', 'extern',
     'int', 'int8', 'int16', 'int32', 'int64',
     'float', 'bool', 'char', 'string', 'void',
-    'true', 'false', 'struct', 'enum', 'match', 'nomd'
+    'true', 'false', 'struct', 'enum', 'match', 'nomd',
+    'pin'
 }
 SINGLE_CHARS = {
     '(': 'LPAREN',   ')': 'RPAREN',   '{': 'LBRACE',   '}': 'RBRACE',
@@ -223,6 +224,11 @@ class StrLit(Expr): value: str
 @dataclass
 class Var(Expr): name: str
 @dataclass
+class GlobalVar:
+    typ: str
+    name: str
+    expr: Optional[Expr]
+@dataclass
 class BinOp(Expr): op: str; left: Expr; right: Expr
 @dataclass
 class Call(Expr): name: str; args: List[Expr]
@@ -322,13 +328,12 @@ class Program:
     macros: List[MacroDef]
     structs: List[StructDef]
     enums: List[EnumDef]
-
+    globals: List[GlobalVar]
 string_constants: List[str] = []
 struct_field_map: Dict[str, List[str]] = {}
 generated_mono: Dict[str, bool] = {}
 all_funcs: List[Func] = []
 enum_variant_map: Dict[str, List[Tuple[str, Optional[str]]]] = {}
-
 class Parser:
     def __init__(self, tokens: List[Token]):
         self.declared_vars: Dict[str, VarDecl] = {}
@@ -355,11 +360,17 @@ class Parser:
         macros = []
         structs = []
         enums = []
+        globals = []
         while self.peek().kind != 'EOF':
             if self.match('IMPORT'):
                 path = self.expect('STRING').value
                 self.expect('SEMI')
                 imports.append(path)
+            elif self.match('PIN'):
+                globals.append(self.parse_global())
+            elif self.peek().kind == 'NOMD':
+                decl = self.parse_var_decl()
+                globals.append(GlobalVar(decl.typ, decl.name, decl.expr))
             elif self.peek().kind == 'FNMACRO':
                 macros.append(self.parse_macro_def())
             elif self.peek().kind == 'STRUCT':
@@ -368,7 +379,17 @@ class Parser:
                 enums.append(self.parse_enum_def())
             else:
                 funcs.append(self.parse_func())
-        return Program(funcs, imports, macros, structs, enums)
+        return Program(funcs, imports, macros, structs, enums, globals)
+    def parse_global(self) -> GlobalVar:
+        if self.peek().kind not in TYPE_TOKENS and self.peek().kind != 'IDENT':
+            raise SyntaxError(f"Expected type after 'pin', got {self.peek().kind}")
+        typ = self.bump().value
+        name = self.expect('IDENT').value
+        expr = None
+        if self.match('EQUAL'):
+            expr = self.parse_expr()
+        self.expect('SEMI')
+        return GlobalVar(typ, name, expr)
     def parse_enum_def(self) -> EnumDef:
         self.expect('ENUM')
         name = self.expect('IDENT').value
@@ -406,7 +427,6 @@ class Parser:
     def parse_func(self) -> Func:
         access = 'priv'
         is_extern = False
-
         while True:
             tk = self.peek().kind
             if tk == 'EXTERN':
@@ -417,9 +437,7 @@ class Parser:
                 access = self.bump().kind.lower()
                 continue
             break
-
         self.expect('FN')
-
         type_params: List[str] = []
         if self.peek().kind == 'LT':
             self.bump()
@@ -428,7 +446,6 @@ class Parser:
                 if not self.match('COMMA'):
                     break
             self.expect('GT')
-
         name = self.expect('IDENT').value
         self.expect('LPAREN')
         params: List[Tuple[str, str]] = []
@@ -486,7 +503,6 @@ class Parser:
         expr_to_match = self.parse_expr()
         self.expect('RPAREN')
         self.expect('LBRACE')
-
         cases: List[MatchCase] = []
         while self.peek().kind != 'RBRACE':
             variant_name = self.expect('IDENT').value
@@ -537,19 +553,15 @@ class Parser:
         value = self.parse_expr()
         self.expect('SEMI')
         return IndexAssign(arr_name, index, value)
-
     def parse_assign(self) -> Assign:
         name = self.expect('IDENT').value
-
         decl = self.declared_vars.get(name)
         if decl and decl.nomd:
             raise RuntimeError(f"Cannot assign to 'nomd' variable '{name}'")
-
         self.expect('EQUAL')
         expr = self.parse_expr()
         self.expect('SEMI')
         return Assign(name, expr)
-
     def parse_if(self) -> IfStmt:
         self.expect('IF')
         self.expect('LPAREN')
@@ -587,7 +599,6 @@ class Parser:
         expr = self.parse_expr()
         self.expect('SEMI')
         return ExprStmt(expr)
-
     def parse_expr(self, min_prec: int = 0) -> Expr:
         left = self.parse_primary()
         while True:
@@ -629,37 +640,28 @@ class Parser:
             'AND': 1,
             'OR': 0
         }.get(op, 0)
-
     def parse_primary(self) -> Expr:
         def parse_atom() -> Expr:
             t = self.bump()
-
             if t.kind == 'INT':
                 return IntLit(int(t.value))
-
             if t.kind == 'FLOAT':
                 val = t.value.rstrip('fF')
                 return FloatLit(float(val))
-
             if t.kind == 'STRING':
                 return StrLit(t.value)
-
             if t.kind == 'CHAR':
                 return CharLit(t.value)
-
             if t.kind == 'TRUE':
                 return BoolLit(True)
             if t.kind == 'FALSE':
                 return BoolLit(False)
-
             if t.kind == 'LPAREN':
                 expr = self.parse_expr()
                 self.expect('RPAREN')
                 return expr
-
             if t.kind == 'IDENT':
                 base = Var(t.value)
-
                 if self.peek().kind == 'LBRACE':
                     self.bump()
                     fields_list: List[Tuple[str, Expr]] = []
@@ -671,7 +673,6 @@ class Parser:
                         fields_list.append((fname, fexpr))
                     self.expect('RBRACE')
                     return StructInit(t.value, fields_list)
-
                 if self.peek().kind == 'LPAREN':
                     self.bump()
                     args: List[Expr] = []
@@ -682,19 +683,14 @@ class Parser:
                                 break
                     self.expect('RPAREN')
                     return Call(t.value, args)
-
                 if self.peek().kind == 'LBRACKET':
                     self.bump()
                     index_expr = self.parse_expr()
                     self.expect('RBRACKET')
                     return Index(base, index_expr)
-
                 return base
-
             raise SyntaxError(f"Unexpected token: {t.kind} at {t.line}:{t.col}")
-
         expr: Expr = parse_atom()
-
         while self.peek().kind == 'DOT':
             self.bump()
             field_name = self.expect('IDENT').value
@@ -736,7 +732,6 @@ def unify_int_types(t1: str, t2: str) -> Optional[str]:
         if t not in rank and not t.startswith("int"):
             return None
     return max(t1, t2, key=lambda t: rank.get(t, 0))
-
 def unify_types(t1: str, t2: str) -> Optional[str]:
     if t1 == t2:
         return t1
@@ -746,7 +741,6 @@ def unify_types(t1: str, t2: str) -> Optional[str]:
     if (t1, t2) in {("float", "int"), ("int", "float")}:
         return "float"
     return None
-
 type_map = {
     'int': 'i64',
     'int8': 'i8',
@@ -762,32 +756,26 @@ type_map = {
 struct_llvm_defs: List[str] = []
 symbol_table = SymbolTable()
 func_table: Dict[str, str] = {}
-
 def gen_expr(expr: Expr, out: List[str]) -> str:
     def format_float(val: float) -> str:
         return f"{val:.8e}"
-
     global string_constants
-
     if isinstance(expr, IntLit):
         tmp = new_tmp()
         inferred = infer_type(expr)
         llvm_ty = type_map[inferred]
         out.append(f"  {tmp} = add {llvm_ty} 0, {expr.value}")
         return tmp
-
     if isinstance(expr, FloatLit):
         tmp = new_tmp()
         float_val = format_float(expr.value)
         out.append(f"  {tmp} = fadd double 0.0, {float_val}")
         return tmp
-
     if isinstance(expr, BoolLit):
         tmp = new_tmp()
         val = 1 if expr.value else 0
         out.append(f"  {tmp} = add i1 0, {val}")
         return tmp
-
     if isinstance(expr, Ternary):
         cond_val = gen_expr(expr.cond, out)
         then_lbl = new_label("tern_then")
@@ -810,7 +798,6 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
         phi_tmp = new_tmp()
         out.append(f"  {phi_tmp} = phi {then_ty} [{then_tmp}, %{then_lbl}], [{else_tmp}, %{else_lbl}]")
         return phi_tmp
-
     if isinstance(expr, Index):
         if not isinstance(expr.array, Var):
             raise RuntimeError(f"Only direct variable array indexing is supported, got: {expr.array}")
@@ -827,7 +814,6 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
         out.append(f"  {tmp_ptr} = getelementptr inbounds {llvm_ty}, {llvm_ty}* %{name}_addr, i32 0, i32 {idx}")
         out.append(f"  {tmp_val} = load {base_ty}, {base_ty}* {tmp_ptr}")
         return tmp_val
-
     if isinstance(expr, StrLit):
         tmp = new_tmp()
         label = f"@.str{len(string_constants)}"
@@ -853,16 +839,17 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
             f"[{length} x i8]* {label}, i32 0, i32 0"
         )
         return tmp
-
     if isinstance(expr, Var):
         result = symbol_table.lookup(expr.name)
         if result is None:
             raise RuntimeError(f"Undefined variable: {expr.name}")
         typ, name = result
         tmp = new_tmp()
-        out.append(f"  {tmp} = load {typ}, {typ}* %{name}_addr")
+        if name.startswith('@'):
+            out.append(f"  {tmp} = load {typ}, {typ}* {name}")
+        else:
+            out.append(f"  {tmp} = load {typ}, {typ}* %{name}_addr")
         return tmp
-
     if isinstance(expr, BinOp):
         lhs = gen_expr(expr.left, out)
         rhs = gen_expr(expr.right, out)
@@ -871,22 +858,18 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
             tmp = new_tmp()
             out.append(f"  {tmp} = call i8* @sb_append_str(i8* {lhs}, i8* {rhs})")
             return tmp
-
         llvm_ty = type_map[ty]
         tmp = new_tmp()
-
         if expr.op == '%':
             op = 'srem'
             if llvm_ty == 'double':
                 op = 'frem'
             out.append(f"  {tmp} = {op} {llvm_ty} {lhs}, {rhs}")
             return tmp
-
         if expr.op in {'&&', '||'}:
             op = 'and' if expr.op == '&&' else 'or'
             out.append(f"  {tmp} = {op} {llvm_ty} {lhs}, {rhs}")
             return tmp
-
         if llvm_ty == 'double':
             op = {
                 '+': 'fadd', '-': 'fsub', '*': 'fmul', '/': 'fdiv',
@@ -899,10 +882,8 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
                 '==': 'icmp eq', '!=': 'icmp ne',
                 '<': 'icmp slt', '<=': 'icmp sle', '>': 'icmp sgt', '>=': 'icmp sge'
             }.get(expr.op)
-
         out.append(f"  {tmp} = {op} {llvm_ty} {lhs}, {rhs}")
         return tmp
-
     if isinstance(expr, Call):
         args_ir: List[str] = []
         arg_types: List[str] = []
@@ -912,7 +893,6 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
             arg_types.append(ty2)
             llvm_ty = type_map.get(ty2, f"%struct.{ty2}")
             args_ir.append(f"{llvm_ty} {a}")
-
         if expr.name in func_table:
             base_fn = next((f for f in all_funcs if f.name == expr.name), None)
             if base_fn and base_fn.type_params:
@@ -922,7 +902,6 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
                     subst_map = {base_fn.type_params[0]: actual}
                     new_params = [(subst_map.get(p[0], p[0]), p[1]) for p in base_fn.params]
                     new_ret = subst_map.get(base_fn.ret_type, base_fn.ret_type)
-
                     def replace_in_expr(e: Expr) -> Expr:
                         if isinstance(e, Var):
                             if e.name in subst_map:
@@ -935,7 +914,6 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
                         if isinstance(e, FieldAccess):
                             return FieldAccess(replace_in_expr(e.base), e.field)
                         return e
-
                     def replace_in_stmt(s: Stmt) -> Stmt:
                         if isinstance(s, VarDecl):
                             typ = subst_map.get(s.typ, s.typ)
@@ -1246,6 +1224,37 @@ def compile_program(prog: Program) -> str:
         "source_filename = \"main.orcat\"",
         ""
     ]
+    for g in prog.globals:
+        llvm_ty = type_map.get(g.typ, f"%struct.{g.typ}")
+        initializer = "zeroinitializer"
+        if isinstance(g.expr, IntLit):
+            initializer = str(g.expr.value)
+        elif isinstance(g.expr, FloatLit):
+            initializer = f"{g.expr.value:.8e}"
+        elif isinstance(g.expr, BoolLit):
+            initializer = "1" if g.expr.value else "0"
+        elif isinstance(g.expr, CharLit):
+            initializer = str(ord(g.expr.value))
+        elif isinstance(g.expr, StrLit):
+            label = f"@.str{len(string_constants)}"
+            esc = ""
+            for ch in g.expr.value:
+                if ch == '\n': esc += r'\0A'
+                elif ch == '\t': esc += r'\09'
+                elif ch == '\\': esc += r'\\'
+                elif ch == '"': esc += r'\"'
+                else: esc += ch
+            length = len(g.expr.value) + 1
+            string_constants.append(
+                f'{label} = private unnamed_addr constant [{length} x i8] c"{esc}\\00"'
+            )
+            initializer = f"getelementptr inbounds ([{length} x i8], [{length} x i8]* {label}, i32 0, i32 0)"
+            llvm_ty = "i8*"
+        if initializer.startswith("getelementptr"):
+            lines.append(f"@{g.name} = global {llvm_ty} {initializer}")
+        else:
+            lines.append(f"@{g.name} = global {llvm_ty} {initializer}")
+        symbol_table.declare(g.name, llvm_ty, f"@{g.name}")
     struct_llvm_defs: List[str] = []
     for sdef in prog.structs:
         field_tys: List[str] = []
@@ -1275,6 +1284,8 @@ def compile_program(prog: Program) -> str:
 def check_types(prog: Program):
     env = TypeEnv()
     funcs = {f.name: f for f in prog.funcs}
+    for g in prog.globals:
+        env.declare(g.name, g.typ)
     struct_defs: Dict[str, StructDef] = {s.name: s for s in prog.structs}
     enum_defs:   Dict[str, EnumDef]   = {e.name: e for e in prog.enums}
     struct_field_map: Dict[str, List[Tuple[str, str]]] = {}
@@ -1624,7 +1635,7 @@ def expand_macros(prog: Program) -> Program:
             )
         else:
             new_funcs.append(fn)
-    return Program(new_funcs, prog.imports, [], prog.structs, prog.enums)
+    return Program(new_funcs, prog.imports, [], prog.structs, prog.enums, prog.globals)
 def main():
     if len(sys.argv) != 4 or sys.argv[2] != "-o":
         print("Usage: ORCC.exe {filename}.orcat|.sorcat -o {filename}.ll")
