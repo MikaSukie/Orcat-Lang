@@ -836,8 +836,7 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
         )
         out.append(
             f"  {tmp} = getelementptr inbounds [{length} x i8], "
-            f"[{length} x i8]* {label}, i32 0, i32 0"
-        )
+            f"[{length} x i8]* {label}, i32 0, i32 0")
         return tmp
     if isinstance(expr, Var):
         result = symbol_table.lookup(expr.name)
@@ -848,7 +847,10 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
         if name.startswith('@'):
             out.append(f"  {tmp} = load {typ}, {typ}* {name}")
         else:
-            out.append(f"  {tmp} = load {typ}, {typ}* %{name}_addr")
+            if name.startswith('@'):
+                out.append(f"  {tmp} = load {typ}, {typ}* {name}")
+            else:
+                out.append(f"  {tmp} = load {typ}, {typ}* %{name}_addr")
         return tmp
     if isinstance(expr, BinOp):
         lhs = gen_expr(expr.left, out)
@@ -1084,8 +1086,11 @@ def gen_stmt(stmt: Stmt, out: List[str]):
                 out.append(f"  store {dst_type} {val}, {dst_type}* %{stmt.name}_addr")
     elif isinstance(stmt, Assign):
         val = gen_expr(stmt.expr, out)
-        llvm_ty, _ = symbol_table.lookup(stmt.name)
-        out.append(f"  store {llvm_ty} {val}, {llvm_ty}* %{stmt.name}_addr")
+        llvm_ty, ir_name = symbol_table.lookup(stmt.name)
+        if ir_name.startswith('@'):
+            out.append(f"  store {llvm_ty} {val}, {llvm_ty}* {ir_name}")
+        else:
+            out.append(f"  store {llvm_ty} {val}, {llvm_ty}* %{ir_name}_addr")
     elif isinstance(stmt, IndexAssign):
         idx = gen_expr(stmt.index, out)
         val = gen_expr(stmt.value, out)
@@ -1222,8 +1227,7 @@ def compile_program(prog: Program) -> str:
     lines: List[str] = [
         "; ModuleID = 'orcat'",
         "source_filename = \"main.orcat\"",
-        ""
-    ]
+        ""]
     for g in prog.globals:
         llvm_ty = type_map.get(g.typ, f"%struct.{g.typ}")
         initializer = "zeroinitializer"
@@ -1246,8 +1250,7 @@ def compile_program(prog: Program) -> str:
                 else: esc += ch
             length = len(g.expr.value) + 1
             string_constants.append(
-                f'{label} = private unnamed_addr constant [{length} x i8] c"{esc}\\00"'
-            )
+                f'{label} = private unnamed_addr constant [{length} x i8] c"{esc}\\00"')
             initializer = f"getelementptr inbounds ([{length} x i8], [{length} x i8]* {label}, i32 0, i32 0)"
             llvm_ty = "i8*"
         if initializer.startswith("getelementptr"):
@@ -1328,8 +1331,7 @@ def check_types(prog: Program):
             if expr.op in {"&&", "||"}:
                 if left != "bool" or right != "bool":
                     raise TypeError(
-                        f"Logical '{expr.op}' requires both operands to be bool, got {left} and {right}"
-                    )
+                        f"Logical '{expr.op}' requires both operands to be bool, got {left} and {right}")
                 return "bool"
             if expr.op == "%":
                 if left == "int" and right == "int":
@@ -1356,8 +1358,7 @@ def check_types(prog: Program):
                 if actual_type != expected_type and (not common or common != expected_type):
                     raise TypeError(
                         f"Argument type mismatch in call to '{expr.name}': "
-                        f"expected {expected_type}, got {actual_type}"
-                    )
+                        f"expected {expected_type}, got {actual_type}")
             return fn.ret_type
         if isinstance(expr, Index):
             var_typ = env.lookup(expr.array.name)
@@ -1392,8 +1393,7 @@ def check_types(prog: Program):
                 actual_type = check_expr(fexpr)
                 if actual_type != declared_type:
                     raise TypeError(
-                        f"Struct '{expr.name}' field '{fname}': expected '{declared_type}', got '{actual_type}'"
-                    )
+                        f"Struct '{expr.name}' field '{fname}': expected '{declared_type}', got '{actual_type}'")
                 seen_fields.add(fname)
             all_field_names = {fn for (fn, _) in expected_fields}
             if seen_fields != all_field_names:
