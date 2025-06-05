@@ -1,14 +1,15 @@
 import "logic.sorcat";
 import "C_string.sorcat";
 import "C_io.sorcat";
-
+pin int x = 2;
+nomd int y = 2;
 fn main() <int> {
     int variable = 0;
     int64 extreme = 10000000000;
     int32 extreme1 = 10000;
     int16 extreme2 = 100;
     int8 extreme3  = 10;
-    float extreme4 = 0.00005f;
+    nomd int f = 20;
     while (variable != 99) {
         variable = variable + 1;
         if (variable % 3 == 0 && variable % 5 == 0) {
@@ -29,6 +30,6 @@ fn main() <int> {
     print(i32tostr(extreme1)+tostr("\n"));
     print(i16tostr(extreme2)+tostr("\n"));
     print(i8tostr(extreme3)+tostr("\n"));
-    print(ftostr(extreme4)+tostr("\n"));
+    print(itostr(x)+itostr(y));
     return 0;
 }
