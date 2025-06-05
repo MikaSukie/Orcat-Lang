@@ -1422,8 +1422,7 @@ def check_types(prog: Program):
                 common = unify_int_types(expr_type, raw_typ)
                 if expr_type != raw_typ and (not common or common != raw_typ):
                     raise TypeError(
-                        f"Type mismatch in variable init '{stmt.name}': expected {raw_typ}, got {expr_type}"
-                    )
+                        f"Type mismatch in variable init '{stmt.name}': expected {raw_typ}, got {expr_type}")
         elif isinstance(stmt, Assign):
             var_type = env.lookup(stmt.name)
             if not var_type:
@@ -1589,8 +1588,7 @@ def expand_macros(prog: Program) -> Program:
                     if len(call.args) != len(macro_def.params):
                         raise RuntimeError(
                             f"Macro '{call.name}' expects {len(macro_def.params)} args, "
-                            f"got {len(call.args)}"
-                        )
+                            f"got {len(call.args)}")
                     mapping: Dict[str, Expr] = {}
                     for param_name, arg_expr in zip(macro_def.params, call.args):
                         mapping[param_name] = copy.deepcopy(arg_expr)
@@ -1623,16 +1621,7 @@ def expand_macros(prog: Program) -> Program:
         if fn.body:
             expanded = expand_stmt_list(fn.body)
             new_funcs.append(
-                Func(
-                    fn.access,
-                    fn.name,
-                    fn.type_params,
-                    fn.params,
-                    fn.ret_type,
-                    expanded,
-                    fn.is_extern
-                )
-            )
+                Func(fn.access, fn.name, fn.type_params, fn.params, fn.ret_type, expanded, fn.is_extern))
         else:
             new_funcs.append(fn)
     return Program(new_funcs, prog.imports, [], prog.structs, prog.enums, prog.globals)
