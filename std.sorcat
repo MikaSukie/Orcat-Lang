@@ -1,2 +1,5 @@
 //stdlib
 pub extern fn system(string s)<void>;
+pub extern fn ilength(int integer)<int>;
+pub extern fn flength(float decimal)<int>;
+pub extern fn slength(string str)<int>;
