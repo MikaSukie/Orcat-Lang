@@ -1620,7 +1620,7 @@ def expand_macros(prog: Program) -> Program:
         if fn.body:
             expanded = expand_stmt_list(fn.body)
             new_funcs.append(
-                Func(fn.access, fn.name, fn.type_params, fn.params, fn.ret_type, expanded, fn.is_exter)
+                Func(fn.access, fn.name, fn.type_params, fn.params, fn.ret_type, expanded, fn.is_extern)
             )
         else:
             new_funcs.append(fn)
