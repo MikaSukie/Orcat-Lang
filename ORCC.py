@@ -2,6 +2,7 @@ import sys
 from typing import List, Optional, Tuple, Union, Dict
 from dataclasses import dataclass
 import copy
+import re
 TYPE_TOKENS = {
     'IDENT', 'INT', 'INT8', 'INT16', 'INT32', 'INT64',
     'FLOAT', 'STRING', 'BOOL', 'CHAR', 'VOID'
@@ -60,6 +61,11 @@ class TypeEnv:
             if name in scope:
                 return scope[name]
         return None
+def extract_array_base_type(llvm_ty: str) -> str:
+    match = re.match(r'\[\d+\s*x\s+(.+)\]', llvm_ty)
+    if not match:
+        raise RuntimeError(f"Cannot extract element type from: {llvm_ty}")
+    return match.group(1)
 def lex(source: str) -> List[Token]:
     tokens: List[Token] = []
     i, line, col = 0, 1, 1
@@ -625,19 +631,12 @@ class Parser:
         return left
     def get_precedence(self, op: str) -> int:
         return {
-            'STAR': 5,
-            'SLASH': 5,
-            'PERCENT': 5,
-            'PLUS': 4,
-            'MINUS': 4,
-            'LT': 3,
-            'LE': 3,
-            'GT': 3,
-            'GE': 3,
-            'EQEQ': 2,
-            'NEQ': 2,
-            'AND': 1,
-            'OR': 0
+            'STAR': 5, 'SLASH': 5, 'PERCENT': 5,
+            'PLUS': 4, 'MINUS': 4,
+            'LT': 3, 'LE': 3,
+            'GT': 3, 'GE': 3,
+            'EQEQ': 2, 'NEQ': 2,
+            'AND': 1, 'OR': 0
         }.get(op, 0)
     def parse_primary(self) -> Expr:
         def parse_atom() -> Expr:
@@ -723,10 +722,7 @@ def new_label(base='L') -> str:
     label_id += 1
     return f"{base}{label_id}"
 def unify_int_types(t1: str, t2: str) -> Optional[str]:
-    rank = {
-        "int8": 1, "int16": 2, "int32": 3, "int64": 4,
-        "int": 4
-    }
+    rank = {"int8": 1, "int16": 2, "int32": 3, "int64": 4, "int": 4}
     for t in [t1, t2]:
         if t not in rank and not t.startswith("int"):
             return None
@@ -741,16 +737,8 @@ def unify_types(t1: str, t2: str) -> Optional[str]:
         return "float"
     return None
 type_map = {
-    'int': 'i64',
-    'int8': 'i8',
-    'int16': 'i16',
-    'int32': 'i32',
-    'int64': 'i64',
-    'float': 'double',
-    'bool': 'i1',
-    'char': 'i8',
-    'string': 'i8*',
-    'void': 'void'
+    'int': 'i64', 'int8': 'i8', 'int16': 'i16', 'int32': 'i32',
+    'int64': 'i64', 'float': 'double', 'bool': 'i1', 'char': 'i8', 'string': 'i8*', 'void': 'void'
 }
 struct_llvm_defs: List[str] = []
 symbol_table = SymbolTable()
@@ -806,11 +794,20 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
         if not arr_info:
             raise RuntimeError(f"Undefined array: {var_name}")
         llvm_ty, name = arr_info
-        base_ty_start = llvm_ty.find('x') + 2
-        base_ty = llvm_ty[base_ty_start:-1]
+        base_ty = extract_array_base_type(llvm_ty)
         tmp_ptr = new_tmp()
         tmp_val = new_tmp()
-        out.append(f"  {tmp_ptr} = getelementptr inbounds {llvm_ty}, {llvm_ty}* %{name}_addr, i32 0, i32 {idx}")
+        idx_ty = infer_type(expr.index)
+        idx_llvm = type_map[idx_ty]
+        if idx_llvm != "i32":
+            idx_cast = new_tmp()
+            if idx_llvm.startswith("i") and int(idx_llvm[1:]) > 32:
+                out.append(f"  {idx_cast} = trunc {idx_llvm} {idx} to i32")
+            else:
+                out.append(f"  {idx_cast} = sext {idx_llvm} {idx} to i32")
+        else:
+            idx_cast = idx
+        out.append(f"  {tmp_ptr} = getelementptr inbounds {llvm_ty}, {llvm_ty}* %{name}_addr, i32 0, i32 {idx_cast}")
         out.append(f"  {tmp_val} = load {base_ty}, {base_ty}* {tmp_ptr}")
         return tmp_val
     if isinstance(expr, StrLit):
@@ -831,8 +828,7 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
                 esc += ch
         length = len(raw) + 1
         string_constants.append(
-            f'{label} = private unnamed_addr constant [{length} x i8] c"{esc}\\00"'
-        )
+            f'{label} = private unnamed_addr constant [{length} x i8] c"{esc}\\00"')
         out.append(
             f"  {tmp} = getelementptr inbounds [{length} x i8], "
             f"[{length} x i8]* {label}, i32 0, i32 0")
@@ -846,10 +842,7 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
         if name.startswith('@'):
             out.append(f"  {tmp} = load {typ}, {typ}* {name}")
         else:
-            if name.startswith('@'):
-                out.append(f"  {tmp} = load {typ}, {typ}* {name}")
-            else:
-                out.append(f"  {tmp} = load {typ}, {typ}* %{name}_addr")
+            out.append(f"  {tmp} = load {typ}, {typ}* %{name}_addr")
         return tmp
     if isinstance(expr, BinOp):
         lhs = gen_expr(expr.left, out)
@@ -873,14 +866,12 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
             return tmp
         if llvm_ty == 'double':
             op = {
-                '+': 'fadd', '-': 'fsub', '*': 'fmul', '/': 'fdiv',
-                '==': 'fcmp oeq', '!=': 'fcmp one',
+                '+': 'fadd', '-': 'fsub', '*': 'fmul', '/': 'fdiv', '==': 'fcmp oeq', '!=': 'fcmp one',
                 '<': 'fcmp olt', '<=': 'fcmp ole', '>': 'fcmp ogt', '>=': 'fcmp oge'
             }.get(expr.op)
         else:
             op = {
-                '+': 'add', '-': 'sub', '*': 'mul', '/': 'sdiv',
-                '==': 'icmp eq', '!=': 'icmp ne',
+                '+': 'add', '-': 'sub', '*': 'mul', '/': 'sdiv', '==': 'icmp eq', '!=': 'icmp ne',
                 '<': 'icmp slt', '<=': 'icmp sle', '>': 'icmp sgt', '>=': 'icmp sge'
             }.get(expr.op)
         out.append(f"  {tmp} = {op} {llvm_ty} {lhs}, {rhs}")
@@ -1094,10 +1085,19 @@ def gen_stmt(stmt: Stmt, out: List[str]):
         idx = gen_expr(stmt.index, out)
         val = gen_expr(stmt.value, out)
         llvm_ty, name = symbol_table.lookup(stmt.array)
-        base_ty_start = llvm_ty.find('x') + 2
-        base_ty = llvm_ty[base_ty_start:-1]
+        base_ty = extract_array_base_type(llvm_ty)
         tmp_ptr = new_tmp()
-        out.append(f"  {tmp_ptr} = getelementptr inbounds {llvm_ty}, {llvm_ty}* %{name}_addr, i32 0, i32 {idx}")
+        idx_ty = infer_type(stmt.index)
+        idx_llvm = type_map[idx_ty]
+        if idx_llvm != "i32":
+            idx_cast = new_tmp()
+            if idx_llvm.startswith("i") and int(idx_llvm[1:]) > 32:
+                out.append(f"  {idx_cast} = trunc {idx_llvm} {idx} to i32")
+            else:
+                out.append(f"  {idx_cast} = sext {idx_llvm} {idx} to i32")
+        else:
+            idx_cast = idx
+        out.append(f"  {tmp_ptr} = getelementptr inbounds {llvm_ty}, {llvm_ty}* %{name}_addr, i32 0, i32 {idx_cast}")
         out.append(f"  store {base_ty} {val}, {base_ty}* {tmp_ptr}")
     elif isinstance(stmt, IfStmt):
         cond = gen_expr(stmt.cond, out)
