@@ -27,7 +27,6 @@ SINGLE_CHARS = {
     '/': 'SLASH',    '<': 'LT',       '>': 'GT',       '[': 'LBRACKET',
     ']': 'RBRACKET', '?': 'QUESTION', '.': 'DOT', ':': 'COLON', '%': 'PERCENT'
 }
-
 MULTI_CHARS = {
     '==': 'EQEQ', '!=': 'NEQ', '<=': 'LE', '>=': 'GE', '->': 'ARROW', '&&': 'AND',  '||': 'OR'
 }
@@ -1621,7 +1620,8 @@ def expand_macros(prog: Program) -> Program:
         if fn.body:
             expanded = expand_stmt_list(fn.body)
             new_funcs.append(
-                Func(fn.access, fn.name, fn.type_params, fn.params, fn.ret_type, expanded, fn.is_extern))
+                Func(fn.access, fn.name, fn.type_params, fn.params, fn.ret_type, expanded, fn.is_exter)
+            )
         else:
             new_funcs.append(fn)
     return Program(new_funcs, prog.imports, [], prog.structs, prog.enums, prog.globals)
