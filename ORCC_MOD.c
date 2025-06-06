@@ -161,3 +161,31 @@ bool binput(const char* prompt) {
 char* sinput(const char* prompt) {
     return input(prompt);
 }
+
+int ilength(int x) {
+    if (x == 0) return 1;
+    int length = 0;
+    if (x < 0) {
+        length++;
+        x = -x;
+    }
+    while (x > 0) {
+        length++;
+        x /= 10;
+    }
+    return length;
+}
+
+int flength(double f) {
+    char buf[64];
+    int len = snprintf(buf, sizeof(buf), "%f", f);
+    if (len < 0) return 0;
+    while (len > 0 && buf[len-1] == '0') len--;
+    if (len > 0 && buf[len-1] == '.') len--;
+    return len;
+}
+
+int slength(const char* s) {
+    if (!s) return 0;
+    return (int)strlen(s);
+}
