@@ -189,3 +189,51 @@ int slength(const char* s) {
     if (!s) return 0;
     return (int)strlen(s);
 }
+
+char* read_file(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return _strdup("");
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    rewind(f);
+    char* buf = (char*)malloc(len + 1);
+    if (!buf) {
+        fclose(f);
+        return _strdup("");
+    }
+    size_t r = fread(buf, 1, len, f);
+    buf[r] = '\0';
+    fclose(f);
+    return buf;
+}
+
+bool write_file(const char* path, const char* content) {
+    FILE* f = fopen(path, "wb");
+    if (!f) return false;
+    size_t len = strlen(content);
+    size_t w = fwrite(content, 1, len, f);
+    fclose(f);
+    return w == len;
+}
+
+bool append_file(const char* path, const char* content) {
+    FILE* f = fopen(path, "ab");
+    if (!f) return false;
+    size_t len = strlen(content);
+    size_t w = fwrite(content, 1, len, f);
+    fclose(f);
+    return w == len;
+}
+
+bool file_exists(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (f) {
+        fclose(f);
+        return true;
+    }
+    return false;
+}
+
+char* read_lines(const char* path) {
+    return read_file(path);
+}
