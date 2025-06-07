@@ -1,0 +1,22 @@
+pub extern fn read_file(string path) <string>;
+pub extern fn write_file(string path, string content) <bool>;
+pub extern fn append_file(string path, string content) <bool>;
+pub extern fn file_exists(string path) <bool>;
+pub extern fn read_lines(string path) <string>;
+pub extern fn free_str(string s) <void>;
+
+pub fn try_read_file(string path) <string> {
+    if (file_exists(path)) {
+        return read_file(path);
+    } else {
+        return "";
+    }
+}
+
+pub fn save_text(string path, string text) <bool> {
+    return write_file(path, text);
+}
+
+pub fn add_text(string path, string text) <bool> {
+    return append_file(path, text);
+}
