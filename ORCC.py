@@ -1207,11 +1207,12 @@ def gen_func(fn: Func) -> List[str]:
         out.append("  ret void")
     elif llvm_ret == 'double':
         out.append(f"  ret {llvm_ret} 0.0")
+    elif llvm_ret == 'i8*':
+        out.append("  ret i8* null")
+    elif llvm_ret.startswith('i'):
+        out.append(f"  ret {llvm_ret} 0")
     else:
-        if llvm_ret.startswith('i'):
-            out.append(f"  ret {llvm_ret} 0")
-        else:
-            out.append(f"  ret {llvm_ret} null")
+        out.append(f"  ret {llvm_ret} null")
     out.append("}")
     symbol_table.pop()
     return out
@@ -1620,8 +1621,7 @@ def expand_macros(prog: Program) -> Program:
         if fn.body:
             expanded = expand_stmt_list(fn.body)
             new_funcs.append(
-                Func(fn.access, fn.name, fn.type_params, fn.params, fn.ret_type, expanded, fn.is_extern)
-            )
+                Func(fn.access, fn.name, fn.type_params, fn.params, fn.ret_type, expanded, fn.is_extern))
         else:
             new_funcs.append(fn)
     return Program(new_funcs, prog.imports, [], prog.structs, prog.enums, prog.globals)
