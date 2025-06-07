@@ -737,8 +737,8 @@ def unify_types(t1: str, t2: str) -> Optional[str]:
         return "float"
     return None
 type_map = {
-    'int': 'i64', 'int8': 'i8', 'int16': 'i16', 'int32': 'i32',
-    'int64': 'i64', 'float': 'double', 'bool': 'i1', 'char': 'i8', 'string': 'i8*', 'void': 'void'
+    'int': 'i64', 'int8': 'i8', 'int16': 'i16', 'int32': 'i32', 'void': 'void',
+    'int64': 'i64', 'float': 'double', 'bool': 'i1', 'char': 'i8', 'string': 'i8*'
 }
 struct_llvm_defs: List[str] = []
 symbol_table = SymbolTable()
