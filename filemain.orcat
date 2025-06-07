@@ -1,0 +1,20 @@
+import "std.sorcat";
+import "C_string.sorcat";
+import "C_io.sorcat";
+import "C_fileio.sorcat";
+
+fn main() <int> {
+    string path = "example.txt";
+    /*
+    string msg = "Hello Orcat!\n";
+    bool ok = save_text(path, msg);
+    if (ok) {
+        print("File written.\n");
+    }
+    */
+
+    string data = read_lines(path);
+    print(data);
+    free_str(data);
+    return 0;
+}
