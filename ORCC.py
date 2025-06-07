@@ -6,7 +6,7 @@ import re
 TYPE_TOKENS = {
     'IDENT', 'INT', 'INT8', 'INT16', 'INT32', 'INT64',
     'FLOAT', 'STRING', 'BOOL', 'CHAR', 'VOID'
-}
+    }
 @dataclass
 class Token:
     kind: str
@@ -20,17 +20,17 @@ KEYWORDS = {
     'float', 'bool', 'char', 'string', 'void',
     'true', 'false', 'struct', 'enum', 'match', 'nomd',
     'pin'
-}
+    }
 SINGLE_CHARS = {
     '(': 'LPAREN',   ')': 'RPAREN',   '{': 'LBRACE',   '}': 'RBRACE',
     ',': 'COMMA',    ';': 'SEMI',
     '=': 'EQUAL',    '+': 'PLUS',     '-': 'MINUS',    '*': 'STAR',
     '/': 'SLASH',    '<': 'LT',       '>': 'GT',       '[': 'LBRACKET',
-    ']': 'RBRACKET', '?': 'QUESTION', '.': 'DOT', ':': 'COLON', '%': 'PERCENT'
-}
+    ']': 'RBRACKET', '?': 'QUESTION', '.': 'DOT', ':': 'COLON', '%': 'PERCENT', '!': 'BANG'
+    }
 MULTI_CHARS = {
     '==': 'EQEQ', '!=': 'NEQ', '<=': 'LE', '>=': 'GE', '->': 'ARROW', '&&': 'AND',  '||': 'OR'
-}
+    }
 class SymbolTable:
     def __init__(self):
         self.scopes: List[Dict[str, Tuple[str, str]]] = [{}]
@@ -208,6 +208,7 @@ def lex(source: str) -> List[Token]:
             tokens.append(Token(SINGLE_CHARS[c], c, line, col))
             i += 1
             col += 1
+            matched = True
             continue
         raise RuntimeError(f"Unrecognized character '{c}' at {line}:{col}")
     tokens.append(Token('EOF', '', line, col))
@@ -463,8 +464,7 @@ class Parser:
                 else:
                     raise SyntaxError(
                         f"Expected type, got {self.peek().kind} "
-                        f"at {self.peek().line}:{self.peek().col}"
-                    )
+                        f"at {self.peek().line}:{self.peek().col}")
                 if not self.match('COMMA'):
                     break
         self.expect('RPAREN')
@@ -639,6 +639,10 @@ class Parser:
             'AND': 1, 'OR': 0
         }.get(op, 0)
     def parse_primary(self) -> Expr:
+        if self.peek().kind == 'BANG':
+            self.bump()
+            inner = self.parse_primary()
+            return Call("!", [inner])
         def parse_atom() -> Expr:
             t = self.bump()
             if t.kind == 'INT':
@@ -885,6 +889,14 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
             arg_types.append(ty2)
             llvm_ty = type_map.get(ty2, f"%struct.{ty2}")
             args_ir.append(f"{llvm_ty} {a}")
+        if expr.name == "!" and len(expr.args) == 1:
+            arg = gen_expr(expr.args[0], out)
+            arg_ty = infer_type(expr.args[0])
+            if arg_ty != "bool":
+                raise RuntimeError(f"Unary ! requires bool, got {arg_ty}")
+            tmp = new_tmp()
+            out.append(f"  {tmp} = xor i1 {arg}, true")
+            return tmp
         if expr.name in func_table:
             base_fn = next((f for f in all_funcs if f.name == expr.name), None)
             if base_fn and base_fn.type_params:
@@ -1008,6 +1020,10 @@ def infer_type(expr: Expr) -> str:
             return 'bool'
         return common
     if isinstance(expr, Call):
+        if expr.name == "!" and len(expr.args) == 1:
+            if infer_type(expr.args[0]) != "bool":
+                raise RuntimeError("Unary ! requires bool operand")
+            return "bool"
         if expr.name not in func_table:
             raise RuntimeError(f"Call to undefined function '{expr.name}'")
         ret_llvm_ty = func_table[expr.name]
@@ -1347,6 +1363,11 @@ def check_types(prog: Program):
                 return "bool"
             return common
         if isinstance(expr, Call):
+            if expr.name == "!" and len(expr.args) == 1:
+                arg_type = check_expr(expr.args[0])
+                if arg_type != "bool":
+                    raise TypeError("Unary ! requires a bool")
+                return "bool"
             if expr.name not in funcs:
                 raise TypeError(f"Call to undeclared function '{expr.name}'")
             fn = funcs[expr.name]
