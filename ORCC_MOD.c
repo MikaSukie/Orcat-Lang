@@ -15,53 +15,53 @@ void Cfree(uintptr_t ptr) {
     free((void*)ptr);
 }
 
-char* itostr(int x) {
+char* istr(int x) {
     char* buf = (char*)malloc(32);
     if (!buf) return NULL;
     sprintf(buf, "%d", x);
     return buf;
 }
 
-char* i64tostr(int64_t val) {
+char* i64str(int64_t val) {
     char* buf = malloc(32);
     if (!buf) return NULL;
     snprintf(buf, 32, "%" PRId64, val);
     return buf;
 }
 
-char* i32tostr(int32_t val) {
+char* i32str(int32_t val) {
     char* buf = malloc(16);
     if (!buf) return NULL;
     snprintf(buf, 16, "%" PRId32, val);
     return buf;
 }
 
-char* i16tostr(int16_t val) {
+char* i16str(int16_t val) {
     char* buf = malloc(8);
     if (!buf) return NULL;
     snprintf(buf, 8, "%" PRId16, val);
     return buf;
 }
 
-char* i8tostr(int8_t val) {
+char* i8str(int8_t val) {
     char* buf = malloc(8);
     if (!buf) return NULL;
     snprintf(buf, 8, "%" PRId8, val);
     return buf;
 }
 
-char* ftostr(double f) {
+char* fstr(double f) {
     char* buf = (char*)malloc(64);
     if (!buf) return NULL;
     sprintf(buf, "%f", f);
     return buf;
 }
 
-char* btostr(bool b) {
+char* bstr(bool b) {
     return _strdup(b ? "true" : "false");
 }
 
-char* tostr(const char* s) {
+char* str(const char* s) {
     return _strdup(s);
 }
 
@@ -106,17 +106,17 @@ char* sb_append_str(char* builder, char* s) {
 }
 
 char* sb_append_int(char* builder, int x) {
-    char* num = itostr(x);
+    char* num = istr(x);
     return concat_and_free(builder, num);
 }
 
 char* sb_append_float(char* builder, double f) {
-    char* num = ftostr(f);
+    char* num = fstr(f);
     return concat_and_free(builder, num);
 }
 
 char* sb_append_bool(char* builder, bool bb) {
-    char* boo = btostr(bb);
+    char* boo = bstr(bb);
     return concat_and_free(builder, boo);
 }
 
@@ -236,4 +236,8 @@ bool file_exists(const char* path) {
 
 char* read_lines(const char* path) {
     return read_file(path);
+}
+
+bool streq(const char* a, const char* b) {
+    return strcmp(a, b) == 0;
 }
