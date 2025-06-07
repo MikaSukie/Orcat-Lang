@@ -1,8 +1,6 @@
-import sys
+import copy, re, os, sys
 from typing import List, Optional, Tuple, Union, Dict
 from dataclasses import dataclass
-import copy
-import re
 TYPE_TOKENS = {
     'IDENT', 'INT', 'INT8', 'INT16', 'INT32', 'INT64',
     'FLOAT', 'STRING', 'BOOL', 'CHAR', 'VOID'
@@ -369,9 +367,24 @@ class Parser:
         globals = []
         while self.peek().kind != 'EOF':
             if self.match('IMPORT'):
-                path = self.expect('STRING').value
-                self.expect('SEMI')
-                imports.append(path)
+                while True:
+                    if self.peek().kind == 'STRING':
+                        raw = self.bump().value
+                    elif self.peek().kind == 'IDENT':
+                        raw = self.bump().value
+                    else:
+                        raise SyntaxError(f"Expected import path, got {self.peek().kind} at {self.peek().line}:{self.peek().col}")
+
+                    imports.append(raw)
+
+                    if self.peek().kind == 'SEMI':
+                        self.bump()
+                        break
+                    elif self.peek().kind == 'COMMA':
+                        self.bump()
+                        continue
+                    else:
+                        raise SyntaxError(f"Expected ',' or ';' in import list, got {self.peek().kind} at {self.peek().line}:{self.peek().col}")
             elif self.match('PIN'):
                 globals.append(self.parse_global())
             elif self.peek().kind == 'NOMD':
@@ -1661,11 +1674,30 @@ def main():
     all_funcs = []
     all_macros = []
     seen_imports = set()
+    seen_func_signatures = set()
+    seen_macro_names = set()
     for imp in prog.imports:
-        if imp in seen_imports:
+        candidates = []
+        if imp.endswith(".or"):
+            candidates.append(imp + "cat")
+        elif imp.endswith(".sor"):
+            candidates.append(imp + "cat")
+        elif imp.endswith(".orcat") or imp.endswith(".sorcat"):
+            candidates.append(imp)
+        else:
+            candidates.append(imp + ".orcat")
+            candidates.append(imp + ".sorcat")
+        resolved_path = None
+        for path in candidates:
+            if os.path.exists(path):
+                resolved_path = os.path.abspath(path)
+                break
+        if not resolved_path:
+            raise RuntimeError(f"Import '{imp}' not found. Tried: {candidates}")
+        if resolved_path in seen_imports:
             continue
-        seen_imports.add(imp)
-        with open(imp, 'r', encoding="utf-8", errors="ignore") as f:
+        seen_imports.add(resolved_path)
+        with open(resolved_path, 'r', encoding="utf-8", errors="ignore") as f:
             imported_src = f.read()
         imported_tokens = lex(imported_src)
         imported_parser = Parser(imported_tokens)
@@ -1674,9 +1706,14 @@ def main():
         check_types(sub_prog)
         for func in sub_prog.funcs:
             if func.access == 'pub':
-                all_funcs.append(func)
+                sig = (func.name, len(func.params), func.is_extern)
+                if sig not in seen_func_signatures:
+                    all_funcs.append(func)
+                    seen_func_signatures.add(sig)
         for macro in sub_prog.macros:
-            all_macros.append(macro)
+            if macro.name not in seen_macro_names:
+                all_macros.append(macro)
+                seen_macro_names.add(macro.name)
     prog.funcs = all_funcs + prog.funcs
     prog.macros = all_macros + prog.macros
     check_types(prog)
