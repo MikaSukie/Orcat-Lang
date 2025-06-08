@@ -8,14 +8,14 @@ pub extern fn sb_finish(string b)            <string>;
 // ─── “builder” functions that just return/consume a string ────────────
 
 // ─── to_string functions ───────────────────────────────────────────────
-pub extern fn istr(int i)    <string>;
-pub extern fn i8str(int8 i)    <string>;
-pub extern fn i16str(int16 i)    <string>;
-pub extern fn i32str(int32 i)    <string>;
-pub extern fn i64str(int64 i)    <string>;
-pub extern fn fstr(float f)<string>;
-pub extern fn bstr(bool b)  <string>;
-pub extern fn str(string s)<string>;
+pub extern fn itostr(int i)    <string>;
+pub extern fn i8tostr(int8 i)    <string>;
+pub extern fn i16tostr(int16 i)    <string>;
+pub extern fn i32tostr(int32 i)    <string>;
+pub extern fn i64tostr(int64 i)    <string>;
+pub extern fn ftostr(float f)<string>;
+pub extern fn btostr(bool b)  <string>;
+pub extern fn tostr(string s)<string>;
 // ─── to_string functions ───────────────────────────────────────────────
 
 // ─── String Builder example ────────────────────────────────────────────────
