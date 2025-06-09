@@ -267,6 +267,6 @@ char* rmtrz(double val) {
     if (p > buf && *p == '.') {
         *p = '\0';
     }
-    char* result = strdup(buf);
+    char* result = _strdup(buf);
     return result;
 }
