@@ -241,3 +241,18 @@ char* read_lines(const char* path) {
 bool streq(const char* a, const char* b) {
     return strcmp(a, b) == 0;
 }
+
+double todouble(int x) {
+    return (double)x;
+}
+
+int toint(double x) {
+    return (int)x;
+}
+
+int rtoint(double x) {
+    if (x >= 0)
+        return (int)(x + 0.5);
+    else
+        return (int)(x - 0.5);
+}
