@@ -106,17 +106,17 @@ char* sb_append_str(char* builder, char* s) {
 }
 
 char* sb_append_int(char* builder, int x) {
-    char* num = istr(x);
+    char* num = itostr(x);
     return concat_and_free(builder, num);
 }
 
 char* sb_append_float(char* builder, double f) {
-    char* num = fstr(f);
+    char* num = ftostr(f);
     return concat_and_free(builder, num);
 }
 
 char* sb_append_bool(char* builder, bool bb) {
-    char* boo = bstr(bb);
+    char* boo = btostr(bb);
     return concat_and_free(builder, boo);
 }
 
@@ -127,8 +127,8 @@ char* sb_finish(char* builder) {
 char* input(const char* prompt) {
     printf("%s", prompt);
     fflush(stdout);
-    char buf[1024];
-    if (fgets(buf, sizeof(buf), stdin) == NULL) return NULL;
+    char buf[sizeof(prompt)];
+    if (fgets(buf, sizeof(prompt), stdin) == NULL) return NULL;
     size_t len = strlen(buf);
     if (len && buf[len - 1] == '\n') buf[len - 1] = '\0';
     return _strdup(buf);
