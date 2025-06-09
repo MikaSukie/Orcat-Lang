@@ -1,0 +1,25 @@
+import std;
+import C_types;
+import C_io;
+import C_fileio;
+
+pin string item = "";
+pin float price = 0.0;
+pin int quantity = 0;
+pin string currency = "$";
+pin float total = 0.0;
+pub fn main() <int> {
+    process();
+    return 0;
+}
+pub fn process() <void> {
+    item     = sinput("What item would you like to buy?: ");
+    price    = finput("What is the price for each?: ");
+    quantity = iinput("How many would you like?: ");
+    total    = price * todouble(quantity);
+    string possesive = "";
+    if (quantity > 1) {
+        possesive = "s";
+    }
+    print(tostr("You have bought ")+itostr(quantity)+" "+item+possesive+" which costed "+currency+rmtrz(total)+"\n");
+}

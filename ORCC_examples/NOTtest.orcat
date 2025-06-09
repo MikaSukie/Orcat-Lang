@@ -1,0 +1,11 @@
+import "C_io.sorcat";
+
+fn main() <int> {
+    bool b = true;
+    if (!b) {
+        print("should not print");
+    } else {
+        print("works!");
+    }
+    return 0;
+}
