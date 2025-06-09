@@ -1,0 +1,29 @@
+llvm.globals {
+    declare void @spawn_async_task(void ()*)
+}
+
+reg(1) {
+    kw: "async"
+    type: function
+    syntax {
+        <access>;
+        kw;
+        "fn";
+        <name>;
+        (params);
+        <returntype>;
+        {actions};
+    }
+}
+
+reg(1).actions {
+    <selfname> = ign(1).name
+    action {
+        define void @__launch_<selfname>() {
+        entry:
+          call void @<selfname>()
+          ret void
+        }
+        call void @spawn_async_task(void ()* @__launch_<selfname>)
+    }
+}
