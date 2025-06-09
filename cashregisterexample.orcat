@@ -17,5 +17,9 @@ pub fn process() <void> {
     price    = finput("What is the price for each?: ");
     quantity = iinput("How many would you like?: ");
     total    = price * todouble(quantity);
-    print(tostr(currency)+rmtrz(total)+"\n");
+    string possesive = "";
+    if (quantity > 1) {
+        possesive = "s";
+    }
+    print(tostr("You have bought ")+itostr(quantity)+" "+item+possesive+" which costed "+currency+rmtrz(total)+"\n");
 }
