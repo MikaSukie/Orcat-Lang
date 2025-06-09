@@ -1,4 +1,4 @@
-import copy, re, os, toml, argparse
+import copy, re, os, tomllib, argparse
 from typing import List, Optional, Tuple, Union, Dict
 from dataclasses import dataclass
 extension_registry = {
@@ -1677,8 +1677,8 @@ def expand_macros(prog: Program) -> Program:
             new_funcs.append(fn)
     return Program(new_funcs, prog.imports, [], prog.structs, prog.enums, prog.globals)
 def load_extensions(config_path="ORCC.config"):
-    with open(config_path, "r", encoding="utf-8", errors="ignore") as f:
-        config = toml.load(f)
+    with open(config_path, "rb") as f:
+        config = tomllib.load(f)
     for fname in config.get("extensions", {}).get("load", []):
         parse_modcat_file(fname)
 def parse_modcat_file(fname):
