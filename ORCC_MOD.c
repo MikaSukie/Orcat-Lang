@@ -258,15 +258,18 @@ int rtoint(double x) {
 }
 char* rmtrz(double val) {
     char buf[64];
-    snprintf(buf, sizeof(buf), "%.15f", val);
-    char* p = buf + strlen(buf) - 1;
-    while (p > buf && *p == '0') {
-        *p = '\0';
-        p--;
+    snprintf(buf, sizeof(buf), "%.15g", val);
+    char* dot = strchr(buf, '.');
+    if (dot) {
+        char* end = buf + strlen(buf) - 1;
+        while (end > dot && *end == '0') {
+            *end = '\0';
+            end--;
+        }
+        if (end == dot) {
+            *end = '\0';
+        }
     }
-    if (p > buf && *p == '.') {
-        *p = '\0';
-    }
-    char* result = _strdup(buf);
-    return result;
+
+    return _strdup(buf);
 }
