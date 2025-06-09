@@ -256,3 +256,17 @@ int rtoint(double x) {
     else
         return (int)(x - 0.5);
 }
+char* rmtrz(double val) {
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%.15f", val);
+    char* p = buf + strlen(buf) - 1;
+    while (p > buf && *p == '0') {
+        *p = '\0';
+        p--;
+    }
+    if (p > buf && *p == '.') {
+        *p = '\0';
+    }
+    char* result = strdup(buf);
+    return result;
+}
