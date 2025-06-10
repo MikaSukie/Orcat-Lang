@@ -1726,9 +1726,9 @@ def main():
     parser = argparse.ArgumentParser(description="Orcat Compiler")
     parser.add_argument("input", help="Input source file (.orcat or .sorcat)")
     parser.add_argument("-o", "--output", required=True, help="Output LLVM IR file (.ll)")
-    parser.add_argument("--config", default="ORCC.config", help="Path to extension config file (default: ORCC.config)")
+    parser.add_argument("--config", help="Path to extension config file", default=None)
     args = parser.parse_args()
-    if args.config != "ORCC.config" or os.path.exists(args.config):
+    if args.config:
         try:
             load_extensions(args.config)
         except Exception as e:
