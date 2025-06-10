@@ -1,6 +1,10 @@
-import copy, re, os, sys
+import copy, re, os, tomllib, argparse
 from typing import List, Optional, Tuple, Union, Dict
 from dataclasses import dataclass
+extension_registry = {
+    "llvm.globals": [],
+    "registrations": {}
+}
 TYPE_TOKENS = {
     'IDENT', 'INT', 'INT8', 'INT16', 'INT32', 'INT64',
     'FLOAT', 'STRING', 'BOOL', 'CHAR', 'VOID'
@@ -444,8 +448,9 @@ class Parser:
         self.expect('RBRACE')
         return StructDef(name, fields)
     def parse_func(self) -> Func:
-        access = 'priv'
+        access = 'pub'
         is_extern = False
+        modifiers = []
         while True:
             tk = self.peek().kind
             if tk == 'EXTERN':
@@ -454,6 +459,9 @@ class Parser:
                 continue
             if tk in {'PUB', 'PRIV', 'PROT'}:
                 access = self.bump().kind.lower()
+                continue
+            if tk != 'FN' and tk.lower() in KEYWORDS:
+                modifiers.append(self.bump().value)
                 continue
             break
         self.expect('FN')
@@ -1231,6 +1239,13 @@ def gen_func(fn: Func) -> List[str]:
         symbol_table.declare(name, llvm_ty, name)
     for stmt in fn.body:
         gen_stmt(stmt, out)
+    for reg in extension_registry["registrations"].values():
+        if reg.get("type") == "function" and fn.name.startswith("__launch_"):
+            action_lines = reg.get("actions", [])
+            for line in action_lines:
+                if "<selfname>" in line:
+                    line = line.replace("<selfname>", fn.name[len("__launch_"):])
+                out.append(f"  {line}")
     llvm_ret = type_map[fn.ret_type]
     if llvm_ret == 'void':
         out.append("  ret void")
@@ -1257,6 +1272,8 @@ def compile_program(prog: Program) -> str:
         "; ModuleID = 'orcat'",
         "source_filename = \"main.orcat\"",
         ""]
+    for global_line in extension_registry["llvm.globals"]:
+        lines.append(global_line)
     for g in prog.globals:
         llvm_ty = type_map.get(g.typ, f"%struct.{g.typ}")
         initializer = "zeroinitializer"
@@ -1659,17 +1676,70 @@ def expand_macros(prog: Program) -> Program:
         else:
             new_funcs.append(fn)
     return Program(new_funcs, prog.imports, [], prog.structs, prog.enums, prog.globals)
+def load_extensions(config_path="ORCC.config"):
+    with open(config_path, "rb") as f:
+        config = tomllib.load(f)
+    for fname in config.get("extensions", {}).get("load", []):
+        parse_modcat_file(fname)
+def parse_modcat_file(fname):
+    with open(fname, "r", encoding="utf-8", errors="ignore") as f:
+        lines = f.readlines()
+    block = None
+    reg_id = None
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("//"):
+            continue
+        if line.startswith("llvm.globals"):
+            block = "llvm.globals"
+            continue
+        elif line.startswith("reg("):
+            reg_id = int(line[4:line.index(")")])
+            extension_registry["registrations"][reg_id] = {}
+            block = f"reg:{reg_id}"
+            continue
+        elif line.startswith(f"reg({reg_id}).actions"):
+            block = f"reg:{reg_id}.actions"
+            extension_registry["registrations"][reg_id]["actions"] = []
+            continue
+        elif line == "}":
+            block = None
+            continue
+        if block == "llvm.globals":
+            extension_registry["llvm.globals"].append(line)
+        elif block == f"reg:{reg_id}":
+            if "syntax" not in extension_registry["registrations"][reg_id]:
+                extension_registry["registrations"][reg_id]["syntax"] = []
+            if line.startswith("kw:"):
+                kw_val = line.split(":", 1)[1].strip().strip('"')
+                extension_registry["registrations"][reg_id]["kw"] = kw_val
+                KEYWORDS.add(kw_val)
+            elif line.startswith("type:"):
+                extension_registry["registrations"][reg_id]["type"] = line.split(":", 1)[1].strip()
+            elif line.startswith("syntax"):
+                pass
+            else:
+                extension_registry["registrations"][reg_id]["syntax"].append(line)
+        elif block == f"reg:{reg_id}.actions":
+            extension_registry["registrations"][reg_id]["actions"].append(line)
 def main():
-    if len(sys.argv) != 4 or sys.argv[2] != "-o":
-        print("Usage: ORCC.exe {filename}.orcat|.sorcat -o {filename}.ll")
-        return
-    inp = sys.argv[1]
-    outp = sys.argv[3]
-    with open(inp, encoding="utf-8", errors="ignore") as f:
+    parser = argparse.ArgumentParser(description="Orcat Compiler")
+    parser.add_argument("input", help="Input source file (.orcat or .sorcat)")
+    parser.add_argument("-o", "--output", required=True, help="Output LLVM IR file (.ll)")
+    parser.add_argument("--config", default="ORCC.config", help="Path to extension config file (default: ORCC.config)")
+    args = parser.parse_args()
+    if args.config != "ORCC.config" or os.path.exists(args.config):
+        try:
+            load_extensions(args.config)
+        except Exception as e:
+            print(f"[ORCC-WARNING]: Failed to load config '{args.config}': {e}")
+    else:
+        print(f"[ORCC-INFO]: Skipping config load. '{args.config}' not found and not explicitly passed.")
+    with open(args.input, encoding="utf-8", errors="ignore") as f:
         src = f.read()
     tokens = lex(src)
-    parser = Parser(tokens)
-    prog = parser.parse()
+    parser_obj = Parser(tokens)
+    prog = parser_obj.parse()
     prog = expand_macros(prog)
     all_funcs = []
     all_macros = []
@@ -1718,7 +1788,7 @@ def main():
     prog.macros = all_macros + prog.macros
     check_types(prog)
     llvm = compile_program(prog)
-    with open(outp, 'w', encoding="utf-8", errors="ignore") as f:
+    with open(args.output, 'w', encoding="utf-8", errors="ignore") as f:
         f.write(llvm)
 if __name__ == "__main__":
     main()
