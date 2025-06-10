@@ -15,10 +15,10 @@ void Cfree(uintptr_t ptr) {
     free((void*)ptr);
 }
 
-char* itostr(int x) {
-    char* buf = (char*)malloc(32);
+char* itostr(int64_t x) {
+    char* buf = malloc(32);
     if (!buf) return NULL;
-    sprintf(buf, "%d", x);
+    snprintf(buf, 32, "%" PRId64, x);
     return buf;
 }
 
@@ -134,10 +134,10 @@ char* input(const char* prompt) {
     return _strdup(buf);
 }
 
-int iinput(const char* prompt) {
+int64_t iinput(const char* prompt) {
     char* s = input(prompt);
     if (!s) return 0;
-    int val = atoi(s);
+    int64_t val = strtoll(s, NULL, 10);
     free(s);
     return val;
 }
