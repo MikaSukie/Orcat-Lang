@@ -3,9 +3,9 @@ import "C_io.sorcat";
 fn main() <int> {
     bool b = true;
     if (!b) {
-        print("should not print");
+        print("should not print\n");
     } else {
-        print("works!");
+        print("works!\n");
     }
     return 0;
 }
