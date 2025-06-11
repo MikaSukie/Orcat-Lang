@@ -21,7 +21,7 @@ KEYWORDS = {
     'int', 'int8', 'int16', 'int32', 'int64',
     'float', 'bool', 'char', 'string', 'void',
     'true', 'false', 'struct', 'enum', 'match', 'nomd',
-    'pin'
+    'pin', 'crumble'
     }
 SINGLE_CHARS = {
     '(': 'LPAREN',   ')': 'RPAREN',   '{': 'LBRACE',   '}': 'RBRACE',
@@ -1400,11 +1400,6 @@ def check_types(prog: Program):
             typ = env.lookup(expr.name)
             if not typ:
                 raise TypeError(f"Use of undeclared variable '{expr.name}'")
-            return typ
-        if isinstance(expr, Var):
-            typ = env.lookup(expr.name)
-            if not typ:
-                raise TypeError(f"Use of undeclared variable '{expr.name}'")
             if expr.name in crumb_map:
                 rmax, wmax, rc, wc = crumb_map[expr.name]
                 crumb_map[expr.name] = (rmax, wmax, rc + 1, wc)
@@ -1536,8 +1531,11 @@ def check_types(prog: Program):
             expr_type = check_expr(stmt.expr)
             if expr_type != var_type:
                 raise TypeError(f"Assign type mismatch: {var_type} = {expr_type}")
+            if stmt.name in crumb_map:
+                rmax, wmax, rc, wc = crumb_map[stmt.name]
+                crumb_map[stmt.name] = (rmax, wmax, rc, wc + 1)
         elif isinstance(stmt, CrumbleStmt):
-            if stmt.name not in env.lookup(stmt.name):
+            if env.lookup(stmt.name) is None:
                 raise TypeError(f"Cannot crumble undeclared variable '{stmt.name}'")
             if stmt.name in crumb_map:
                 raise TypeError(f"Variable '{stmt.name}' already crumbled")
