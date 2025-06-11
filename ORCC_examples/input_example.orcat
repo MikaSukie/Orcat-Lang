@@ -1,9 +1,8 @@
-import "logic.sorcat";
-import "C_string.sorcat";
+import "C_types.sorcat";
 import "C_io.sorcat";
 
 fn main() <int> {
     int res = iinput("what is your age? \n");
-    print(tostr("your ") + itostr(res) + tostr(" years old."));
+    print(tostr("your ") + itostr(res) + tostr(" years old.\n"));
     return 0;
 }
