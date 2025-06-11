@@ -236,6 +236,8 @@ class GlobalVar:
     typ: str
     name: str
     expr: Optional[Expr]
+    nomd: bool = False
+    pinned: bool = False
 @dataclass
 class BinOp(Expr): op: str; left: Expr; right: Expr
 @dataclass
@@ -249,6 +251,11 @@ class EnumDef(Stmt):
     name: str
     type_param: Optional[str]
     variants: List[EnumVariant]
+@dataclass
+class CrumbleStmt(Stmt):
+    name: str
+    max_reads: Optional[int] = None
+    max_writes: Optional[int] = None
 @dataclass
 class VarDecl(Stmt):
     access: str
@@ -389,11 +396,16 @@ class Parser:
                         continue
                     else:
                         raise SyntaxError(f"Expected ',' or ';' in import list, got {self.peek().kind} at {self.peek().line}:{self.peek().col}")
-            elif self.match('PIN'):
-                globals.append(self.parse_global())
-            elif self.peek().kind == 'NOMD':
+            elif self.peek().kind in {'NOMD', 'PIN'}:
+                nomd = False
+                pinned = False
+                while self.peek().kind in {'NOMD', 'PIN'}:
+                    if self.match('NOMD'):
+                        nomd = True
+                    elif self.match('PIN'):
+                        pinned = True
                 decl = self.parse_var_decl()
-                globals.append(GlobalVar(decl.typ, decl.name, decl.expr))
+                globals.append(GlobalVar(decl.typ, decl.name, decl.expr, nomd=nomd, pinned=pinned))
             elif self.peek().kind == 'FNMACRO':
                 macros.append(self.parse_macro_def())
             elif self.peek().kind == 'STRUCT':
@@ -402,7 +414,8 @@ class Parser:
                 enums.append(self.parse_enum_def())
             else:
                 funcs.append(self.parse_func())
-        return Program(funcs, imports, macros, structs, enums, globals)
+        self.program = Program(funcs, imports, macros, structs, enums, globals)
+        return self.program
     def parse_global(self) -> GlobalVar:
         if self.peek().kind not in TYPE_TOKENS and self.peek().kind != 'IDENT':
             raise SyntaxError(f"Expected type after 'pin', got {self.peek().kind}")
@@ -520,9 +533,28 @@ class Parser:
             return self.parse_if()
         if t.kind == 'WHILE':
             return self.parse_while()
+        if self.match('CRUMBLE'):
+            return self.parse_crumble()
         if t.kind == 'RETURN':
             return self.parse_return()
         return self.parse_expr_stmt()
+    def parse_crumble(self) -> CrumbleStmt:
+        self.expect('LPAREN')
+        var_name = self.expect('IDENT').value
+        self.expect('RPAREN')
+        max_r, max_w = None, None
+        while self.match('BANG'):
+            kw = self.expect('IDENT').value
+            self.expect('EQUAL')
+            val = int(self.expect('INT').value)
+            if kw == 'r':
+                max_r = val
+            elif kw == 'w':
+                max_w = val
+            else:
+                raise SyntaxError(f"Unknown crumb kind '!{kw}'")
+        self.expect('SEMI')
+        return CrumbleStmt(var_name, max_r, max_w)
     def parse_match(self) -> Match:
         self.expect('MATCH')
         self.expect('LPAREN')
@@ -583,7 +615,13 @@ class Parser:
         name = self.expect('IDENT').value
         decl = self.declared_vars.get(name)
         if decl and decl.nomd:
-            raise RuntimeError(f"Cannot assign to 'nomd' variable '{name}'")
+            raise RuntimeError(f"Cannot assign to local 'nomd' variable '{name}'")
+        if not decl and hasattr(self, "program"):
+            for g in self.program.globals:
+                if g.name == name:
+                    if g.nomd:
+                        raise RuntimeError(f"Cannot assign to global 'nomd' variable '{name}'")
+                    break
         self.expect('EQUAL')
         expr = self.parse_expr()
         self.expect('SEMI')
@@ -1332,9 +1370,12 @@ def compile_program(prog: Program) -> str:
     return "\n".join(lines)
 def check_types(prog: Program):
     env = TypeEnv()
+    crumb_map: Dict[str, Tuple[Optional[int], Optional[int], int, int]] = {}
     funcs = {f.name: f for f in prog.funcs}
     for g in prog.globals:
         env.declare(g.name, g.typ)
+        if g.nomd:
+            crumb_map[g.name] = (None, 0, 0, 0)
     struct_defs: Dict[str, StructDef] = {s.name: s for s in prog.structs}
     enum_defs:   Dict[str, EnumDef]   = {e.name: e for e in prog.enums}
     struct_field_map: Dict[str, List[Tuple[str, str]]] = {}
@@ -1359,6 +1400,14 @@ def check_types(prog: Program):
             typ = env.lookup(expr.name)
             if not typ:
                 raise TypeError(f"Use of undeclared variable '{expr.name}'")
+            return typ
+        if isinstance(expr, Var):
+            typ = env.lookup(expr.name)
+            if not typ:
+                raise TypeError(f"Use of undeclared variable '{expr.name}'")
+            if expr.name in crumb_map:
+                rmax, wmax, rc, wc = crumb_map[expr.name]
+                crumb_map[expr.name] = (rmax, wmax, rc + 1, wc)
             return typ
         if isinstance(expr, Ternary):
             cond_type = check_expr(expr.cond)
@@ -1466,6 +1515,9 @@ def check_types(prog: Program):
             env.declare(stmt.name, raw_typ)
             if stmt.expr:
                 expr_type = check_expr(stmt.expr)
+                if stmt.name in crumb_map:
+                    rmax, wmax, rc, wc = crumb_map[stmt.name]
+                    crumb_map[stmt.name] = (rmax, wmax, rc, wc + 1)
                 if isinstance(stmt.expr, IntLit):
                     int_targets = {"int8", "int16", "int32", "int64"}
                     if raw_typ in int_targets:
@@ -1478,9 +1530,18 @@ def check_types(prog: Program):
             var_type = env.lookup(stmt.name)
             if not var_type:
                 raise TypeError(f"Assign to undeclared variable '{stmt.name}'")
+            global_decl = next((g for g in prog.globals if g.name == stmt.name), None)
+            if global_decl and global_decl.nomd:
+                raise TypeError(f"Cannot assign to 'nomd' global variable '{stmt.name}'")
             expr_type = check_expr(stmt.expr)
             if expr_type != var_type:
                 raise TypeError(f"Assign type mismatch: {var_type} = {expr_type}")
+        elif isinstance(stmt, CrumbleStmt):
+            if stmt.name not in env.lookup(stmt.name):
+                raise TypeError(f"Cannot crumble undeclared variable '{stmt.name}'")
+            if stmt.name in crumb_map:
+                raise TypeError(f"Variable '{stmt.name}' already crumbled")
+            crumb_map[stmt.name] = (stmt.max_reads, stmt.max_writes, 0, 0)
         elif isinstance(stmt, IndexAssign):
             arr_name = stmt.array
             var_type = env.lookup(arr_name)
@@ -1565,6 +1626,16 @@ def check_types(prog: Program):
         for s in (func.body or []):
             check_stmt(s, func.ret_type)
         env.pop()
+        for name, (rmax, wmax, rc, wc) in crumb_map.items():
+            if rmax is not None and rc > rmax:
+                raise TypeError(f"[Crawl-Checker]-[ERR]: Too many reads of '{name}': {rc} > {rmax}")
+            if wmax is not None and wc > wmax:
+                raise TypeError(f"[Crawl-Checker]-[ERR]: Too many writes of '{name}': {wc} > {wmax}")
+            if rmax is not None and rc < rmax:
+                print(f"[Crawl-Checker]-[WARN]: unused read crumbs on '{name}': {rmax - rc} left. [This is not an error but a security warning!]")
+            if wmax is not None and wc < wmax:
+                print(f"[Crawl-Checker]-[WARN]: unused write crumbs on '{name}': {wmax - wc} left. [This is not an error but a security warning!]")
+        crumb_map.clear()
 def expand_macros(prog: Program) -> Program:
     macro_dict: Dict[str, MacroDef] = {m.name: m for m in prog.macros}
     def substitute_expr(expr: Expr, mapping: Dict[str, Expr]) -> Expr:
@@ -1732,9 +1803,9 @@ def main():
         try:
             load_extensions(args.config)
         except Exception as e:
-            print(f"[ORCC-WARNING]: Failed to load config '{args.config}': {e}")
+            print(f"[ORCatCompiler-WARN]: Failed to load config '{args.config}': {e}")
     else:
-        print(f"[ORCC-INFO]: Skipping config load. '{args.config}' not found and not explicitly passed.")
+        print(f"[ORCatCompiler-INFO]: Skipping config load. '{args.config}' not found and not explicitly passed.")
     with open(args.input, encoding="utf-8", errors="ignore") as f:
         src = f.read()
     tokens = lex(src)
