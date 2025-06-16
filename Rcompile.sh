@@ -3,7 +3,7 @@ clear
 
 start=$(date +%s%3N)
 
-./ORCC main.orcat -o out.ll
+./ORCC.bin main.orcat -o out.ll
 clang -Wno-override-module out.ll ORCC_MOD.c -o main
 
 ./main
