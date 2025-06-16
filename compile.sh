@@ -3,7 +3,7 @@ clear
 
 start=$(date +%s%3N)
 
-./ORCC main.orcat -o out.ll
+./ORCC.bin main.orcat -o out.ll
 
 end=$(date +%s%3N)
 
