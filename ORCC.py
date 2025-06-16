@@ -1266,8 +1266,8 @@ def gen_func(fn: Func) -> List[str]:
         generated_mono[fn.name] = True
         return [f"declare {ret_ty} @{fn.name}({param_sig})"]
     symbol_table.push()
-    ret_ty = type_map[fn.ret_type]
     generated_mono[fn.name] = True
+    ret_ty = type_map[fn.ret_type]
     param_sig = ", ".join(f"{type_map[t]} %{n}" for t, n in fn.params)
     out: List[str] = [f"define {ret_ty} @{fn.name}({param_sig}) {{", "entry:"]
     for typ, name in fn.params:
@@ -1275,8 +1275,14 @@ def gen_func(fn: Func) -> List[str]:
         out.append(f"  %{name}_addr = alloca {llvm_ty}")
         out.append(f"  store {llvm_ty} %{name}, {llvm_ty}* %{name}_addr")
         symbol_table.declare(name, llvm_ty, name)
-    for stmt in fn.body:
-        gen_stmt(stmt, out)
+    has_return = False
+    for stmt in fn.body or []:
+        if isinstance(stmt, ReturnStmt):
+            gen_stmt(stmt, out)
+            has_return = True
+            break
+        else:
+            gen_stmt(stmt, out)
     for reg in extension_registry["registrations"].values():
         if reg.get("type") == "function" and fn.name.startswith("__launch_"):
             action_lines = reg.get("actions", [])
@@ -1284,17 +1290,17 @@ def gen_func(fn: Func) -> List[str]:
                 if "<selfname>" in line:
                     line = line.replace("<selfname>", fn.name[len("__launch_"):])
                 out.append(f"  {line}")
-    llvm_ret = type_map[fn.ret_type]
-    if llvm_ret == 'void':
-        out.append("  ret void")
-    elif llvm_ret == 'double':
-        out.append(f"  ret {llvm_ret} 0.0")
-    elif llvm_ret == 'i8*':
-        out.append("  ret i8* null")
-    elif llvm_ret.startswith('i'):
-        out.append(f"  ret {llvm_ret} 0")
-    else:
-        out.append(f"  ret {llvm_ret} null")
+    if not has_return:
+        if ret_ty == 'void':
+            out.append("  ret void")
+        elif ret_ty == 'double':
+            out.append(f"  ret {ret_ty} 0.0")
+        elif ret_ty == 'i8*':
+            out.append("  ret i8* null")
+        elif ret_ty.startswith('i'):
+            out.append(f"  ret {ret_ty} 0")
+        else:
+            out.append(f"  ret {ret_ty} null")
     out.append("}")
     symbol_table.pop()
     return out
