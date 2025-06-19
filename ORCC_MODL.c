@@ -1,4 +1,4 @@
-//linux version because the string dumping func is different.
+//linux version because the string dumping func is different. please rename this file to not have the L.
 #define _CRT_SECURE_NO_WARNINGS
 
 #include <stdio.h>
@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <inttypes.h>
+#include <ctype.h>
 
 #define BUF_ALLOC(size) (char*)malloc(size)
 #define FORMAT_INT_FUNC(name, type, fmt, bufsize) \
@@ -104,7 +105,6 @@ char* sb_finish(char* builder) {
     return builder;
 }
 
-// Input
 char* input(const char* prompt) {
     if (prompt) {
         fputs(prompt, stdout);
@@ -257,4 +257,45 @@ char* rmtrz(double val) {
     }
 
     return strdup(buf);
+}
+bool contains(const char* str, const char* substr) {
+    if (!str || !substr) return false;
+    return strstr(str, substr) != NULL;
+}
+int countcontain(const char* str, const char* substr) {
+    if (!str || !substr || !*substr) return 0;
+
+    int count = 0;
+    const char* temp = str;
+
+    while ((temp = strstr(temp, substr)) != NULL) {
+        count++;
+        temp += strlen(substr);
+    }
+
+    return count;
+}
+
+char* tac(const char* s) {
+    if (!s) return NULL;
+    char* result = strdup(s);
+    if (!result) return NULL;
+
+    for (char* p = result; *p; ++p) {
+        *p = (char)toupper((unsigned char)*p);
+    }
+
+    return result;
+}
+
+char* tal(const char* s) {
+    if (!s) return NULL;
+    char* result = strdup(s);
+    if (!result) return NULL;
+
+    for (char* p = result; *p; ++p) {
+        *p = (char)tolower((unsigned char)*p);
+    }
+
+    return result;
 }
