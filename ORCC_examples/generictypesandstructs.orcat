@@ -1,0 +1,31 @@
+fn <T> identity(T x) <T> {
+    return x;
+}
+
+import C_types;
+import C_string;
+import C_fileio;
+import C_io;
+import C_mem;
+import std;
+
+struct Person {
+    string name;
+    int age;
+}
+
+pub fn greet_person(Person* p) <void> {
+    print("Hello, ");
+    print(p.name);
+    print("!\n");
+
+}
+
+pub fn main() <int> {
+    Person* p = Person {
+        name: "Alice";
+        age: 30;
+    };
+    greet_person(p);
+    return 0;
+}
