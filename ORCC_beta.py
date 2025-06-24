@@ -1170,45 +1170,28 @@ def infer_type(expr: Expr) -> str:
     raise RuntimeError(f"Cannot infer type for expression: {expr}")
 def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
     if isinstance(stmt, VarDecl):
-        is_ptr = stmt.typ.endswith("*")
         if "[" in stmt.typ:
             base, count = stmt.typ.split("[")
             count = count[:-1]
-            llvm_base = type_map[base]
-            llvm_ty = f"[{count} x {llvm_base}]"
+            llvm_ty = f"[{count} x {type_map[base]}]"
         elif stmt.typ in type_map:
             llvm_ty = type_map[stmt.typ]
         else:
             llvm_ty = f"%struct.{stmt.typ}"
-        if is_ptr:
-            out.append(f"  %{stmt.name}_addr = alloca {llvm_ty}")
-            symbol_table.declare(stmt.name, llvm_ty, stmt.name)
-            if stmt.expr:
-                val = gen_expr(stmt.expr, out)
-                out.append(f"  store {llvm_ty} {val}, {llvm_ty}* %{stmt.name}_addr")
-        else:
-            out.append(f"  %{stmt.name}_addr = alloca {llvm_ty}")
-            symbol_table.declare(stmt.name, llvm_ty, stmt.name)
-            if stmt.expr:
-                val = gen_expr(stmt.expr, out)
-                out.append(f"  store {llvm_ty} {val}, {llvm_ty}* %{stmt.name}_addr")
+        out.append(f"  %{stmt.name}_addr = alloca {llvm_ty}")
+        symbol_table.declare(stmt.name, llvm_ty, stmt.name)
         if stmt.expr:
             val = gen_expr(stmt.expr, out)
             src_type = type_map.get(infer_type(stmt.expr), f"%struct.{infer_type(stmt.expr)}")
-            dst_type = llvm_ty
-            if src_type != dst_type:
-                src_bits = llvm_int_bitsize(src_type)
-                dst_bits = llvm_int_bitsize(dst_type)
-                if src_bits is not None and dst_bits is not None:
-                    cast_tmp = new_tmp()
-                    if src_bits > dst_bits:
-                        out.append(f"  {cast_tmp} = trunc {src_type} {val} to {dst_type}")
+            if src_type != llvm_ty:
+                cast_tmp = new_tmp()
+                if llvm_int_bitsize(src_type) is not None and llvm_int_bitsize(llvm_ty) is not None:
+                    if llvm_int_bitsize(src_type) > llvm_int_bitsize(llvm_ty):
+                        out.append(f"  {cast_tmp} = trunc {src_type} {val} to {llvm_ty}")
                     else:
-                        out.append(f"  {cast_tmp} = sext {src_type} {val} to {dst_type}")
+                        out.append(f"  {cast_tmp} = sext {src_type} {val} to {llvm_ty}")
                     val = cast_tmp
-                else:
-                    pass
-            out.append(f"  store {dst_type} {val}, {dst_type}* %{stmt.name}_addr")
+            out.append(f"  store {llvm_ty} {val}, {llvm_ty}* %{stmt.name}_addr")
     elif isinstance(stmt, Assign):
         val = gen_expr(stmt.expr, out)
         llvm_ty, ir_name = symbol_table.lookup(stmt.name)
@@ -1253,7 +1236,7 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
                 for s in stmt.else_body:
                     gen_stmt(s, out, ret_ty)
             elif isinstance(stmt.else_body, IfStmt):
-                gen_stmt(stmt.else_body, out)
+                gen_stmt(stmt.else_body, out, ret_ty)
             symbol_table.pop()
             out.append(f"  br label %{end_lbl}")
         out.append(f"{end_lbl}:")
