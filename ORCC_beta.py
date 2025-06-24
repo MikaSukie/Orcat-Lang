@@ -21,7 +21,7 @@ KEYWORDS = {
     'int', 'int8', 'int16', 'int32', 'int64',
     'float', 'bool', 'char', 'string', 'void',
     'true', 'false', 'struct', 'enum', 'match', 'nomd',
-    'pin', 'crumble'
+    'pin', 'crumble', 'null'
     }
 SINGLE_CHARS = {
     '(': 'LPAREN',   ')': 'RPAREN',   '{': 'LBRACE',   '}': 'RBRACE',
@@ -63,6 +63,15 @@ class TypeEnv:
             if name in scope:
                 return scope[name]
         return None
+def llvm_type_of(typ: str) -> str:
+    return type_map.get(typ, f"%struct.{typ}")
+def clean_struct_name(name: str) -> str:
+    return name.rstrip("*").removeprefix("%struct.")
+def llvm_int_bitsize(ty: str) -> Optional[int]:
+    m = re.fullmatch(r'i(\d+)', ty)
+    if m:
+        return int(m.group(1))
+    return None
 def extract_array_base_type(llvm_ty: str) -> str:
     match = re.match(r'\[\d+\s*x\s+(.+)\]', llvm_ty)
     if not match:
@@ -232,6 +241,8 @@ class StrLit(Expr): value: str
 @dataclass
 class Var(Expr): name: str
 @dataclass
+class NullLit(Expr): pass
+@dataclass
 class GlobalVar:
     typ: str
     name: str
@@ -335,10 +346,12 @@ class Program:
     enums: List[EnumDef]
     globals: List[GlobalVar]
 string_constants: List[str] = []
-struct_field_map: Dict[str, List[str]] = {}
+#struct_field_map: Dict[str, List[str]] = {}
+struct_field_map: Dict[str, List[Tuple[str, str]]] = {}
 generated_mono: Dict[str, bool] = {}
 all_funcs: List[Func] = []
 enum_variant_map: Dict[str, List[Tuple[str, Optional[str]]]] = {}
+
 class Parser:
     def __init__(self, tokens: List[Token]):
         self.declared_vars: Dict[str, VarDecl] = {}
@@ -481,6 +494,8 @@ class Parser:
             while True:
                 if self.peek().kind in TYPE_TOKENS or self.peek().kind == 'IDENT':
                     typ = self.bump().value
+                    if self.match('STAR'):
+                        typ += '*'
                     pname = self.expect('IDENT').value
                     params.append((typ, pname))
                 else:
@@ -575,6 +590,8 @@ class Parser:
             nomd = True
         if self.peek().kind in TYPE_TOKENS or self.peek().kind == 'IDENT':
             typ = self.bump().value
+            if self.match('STAR'):
+                typ += '*'
             if self.match('LBRACKET'):
                 size_tok = self.expect('INT')
                 self.expect('RBRACKET')
@@ -705,10 +722,14 @@ class Parser:
                 return BoolLit(True)
             if t.kind == 'FALSE':
                 return BoolLit(False)
+            if t.kind == 'NULL':
+                return NullLit()
             if t.kind == 'LPAREN':
                 expr = self.parse_expr()
                 self.expect('RPAREN')
                 return expr
+            if t.kind == 'IDENT' and t.value == 'ORCC.get_args':
+                return Call('ORCC.get_args', [])
             if t.kind == 'IDENT':
                 base = Var(t.value)
                 if self.peek().kind == 'LBRACE':
@@ -786,6 +807,14 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
         inferred = infer_type(expr)
         llvm_ty = type_map[inferred]
         out.append(f"  {tmp} = add {llvm_ty} 0, {expr.value}")
+        return tmp
+    if isinstance(expr, NullLit):
+        tmp = new_tmp()
+        out.append(f"  {tmp} = bitcast i8* null to i8*")
+        return tmp
+    if isinstance(expr, Call) and expr.name == 'ORCC.get_args':
+        tmp = new_tmp()
+        out.append(f"  {tmp} = load i8**, i8*** @__argv_ptr")
         return tmp
     if isinstance(expr, FloatLit):
         tmp = new_tmp()
@@ -875,6 +904,8 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
         tmp = new_tmp()
         if name.startswith('@'):
             out.append(f"  {tmp} = load {typ}, {typ}* {name}")
+        elif name.startswith('%'):
+            out.append(f"  {tmp} = load {typ}, {typ}* {name}_addr")
         else:
             out.append(f"  {tmp} = load {typ}, {typ}* %{name}_addr")
         return tmp
@@ -1004,6 +1035,40 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
             tmp2 = new_tmp()
             out.append(f"  {tmp2} = call {ret_ty} @{expr.name}({', '.join(args_ir)})")
             return tmp2
+    if isinstance(expr, FieldAccess):
+        base_ptr = gen_expr(expr.base, out)
+        base_type = infer_type(expr.base).rstrip("*").removeprefix("%struct.")
+        if base_type not in struct_field_map:
+            raise RuntimeError(f"Struct type '{base_type}' not found")
+        fields = struct_field_map[base_type]
+        field_dict = dict(fields)
+        if expr.field not in field_dict:
+            raise RuntimeError(f"Struct '{base_type}' has no field '{expr.field}'")
+        index = list(field_dict.keys()).index(expr.field)
+        field_typ = field_dict[expr.field]
+        field_llvm = llvm_type_of(field_typ)
+        ptr = new_tmp()
+        out.append(f"  {ptr} = getelementptr inbounds %struct.{base_type}, %struct.{base_type}* {base_ptr}, i32 0, i32 {index}")
+        tmp = new_tmp()
+        out.append(f"  {tmp} = load {field_llvm}, {field_llvm}* {ptr}")
+        return tmp
+    if isinstance(expr, StructInit):
+        struct_name = expr.name
+        struct_ty = f"%struct.{struct_name}"
+        tmp_ptr = new_tmp()
+        out.append(f"  {tmp_ptr} = alloca {struct_ty}")
+        field_dict = dict(struct_field_map[struct_name])
+        for field_name, field_expr in expr.fields:
+            if field_name not in field_dict:
+                raise RuntimeError(f"Field '{field_name}' not in struct '{struct_name}'")
+            field_type = field_dict[field_name]
+            field_llvm = llvm_type_of(field_type)
+            field_val = gen_expr(field_expr, out)
+            index = list(field_dict.keys()).index(field_name)
+            ptr = new_tmp()
+            out.append(f"  {ptr} = getelementptr inbounds {struct_ty}, {struct_ty}* {tmp_ptr}, i32 0, i32 {index}")
+            out.append(f"  store {field_llvm} {field_val}, {field_llvm}* {ptr}")
+        return tmp_ptr
     raise RuntimeError(f"Unhandled expr: {expr}")
 def infer_type(expr: Expr) -> str:
     if isinstance(expr, IntLit):
@@ -1016,6 +1081,8 @@ def infer_type(expr: Expr) -> str:
         return 'char'
     if isinstance(expr, StrLit):
         return 'string'
+    if isinstance(expr, NullLit):
+        return 'void*'
     if isinstance(expr, Var):
         result = symbol_table.lookup(expr.name)
         if result is None:
@@ -1035,7 +1102,17 @@ def infer_type(expr: Expr) -> str:
             return llvm_ty[len("%struct."):-1] + "*"
         return llvm_ty
     if isinstance(expr, FieldAccess):
-        return infer_type(expr)
+        base_type = clean_struct_name(infer_type(expr.base))
+        if base_type not in struct_field_map:
+            raise RuntimeError(f"Struct type '{base_type}' not found")
+
+        fields = struct_field_map[base_type]
+        field_dict = dict(fields)
+
+        if expr.field not in field_dict:
+            raise RuntimeError(f"Field '{expr.field}' not in struct '{base_type}'")
+
+        return field_dict[expr.field]
     if isinstance(expr, StructInit):
         return expr.name + "*"
     if isinstance(expr, BinOp):
@@ -1090,36 +1167,47 @@ def infer_type(expr: Expr) -> str:
         if isinstance(possible, str) and possible.endswith("*"):
             return possible
     raise RuntimeError(f"Cannot infer type for expression: {expr}")
-def gen_stmt(stmt: Stmt, out: List[str]):
+def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
     if isinstance(stmt, VarDecl):
-        if isinstance(stmt, VarDecl):
-            if "[" in stmt.typ:
-                base, count = stmt.typ.split("[")
-                count = count[:-1]
-                llvm_base = type_map[base]
-                llvm_ty = f"[{count} x {llvm_base}]"
-            elif stmt.typ in type_map:
-                llvm_ty = type_map[stmt.typ]
-            else:
-                llvm_ty = f"%struct.{stmt.typ}"
+        is_ptr = stmt.typ.endswith("*")
+        if "[" in stmt.typ:
+            base, count = stmt.typ.split("[")
+            count = count[:-1]
+            llvm_base = type_map[base]
+            llvm_ty = f"[{count} x {llvm_base}]"
+        elif stmt.typ in type_map:
+            llvm_ty = type_map[stmt.typ]
+        else:
+            llvm_ty = f"%struct.{stmt.typ}"
+        if is_ptr:
             out.append(f"  %{stmt.name}_addr = alloca {llvm_ty}")
             symbol_table.declare(stmt.name, llvm_ty, stmt.name)
             if stmt.expr:
                 val = gen_expr(stmt.expr, out)
-                src_type = type_map[infer_type(stmt.expr)]
-                dst_type = llvm_ty
-                if src_type != dst_type:
-                    def bitsize(ty: str) -> int:
-                        return int(ty[1:])
-                    src_bits = bitsize(src_type)
-                    dst_bits = bitsize(dst_type)
+                out.append(f"  store {llvm_ty} {val}, {llvm_ty}* %{stmt.name}_addr")
+        else:
+            out.append(f"  %{stmt.name}_addr = alloca {llvm_ty}")
+            symbol_table.declare(stmt.name, llvm_ty, stmt.name)
+            if stmt.expr:
+                val = gen_expr(stmt.expr, out)
+                out.append(f"  store {llvm_ty} {val}, {llvm_ty}* %{stmt.name}_addr")
+        if stmt.expr:
+            val = gen_expr(stmt.expr, out)
+            src_type = type_map.get(infer_type(stmt.expr), f"%struct.{infer_type(stmt.expr)}")
+            dst_type = llvm_ty
+            if src_type != dst_type:
+                src_bits = llvm_int_bitsize(src_type)
+                dst_bits = llvm_int_bitsize(dst_type)
+                if src_bits is not None and dst_bits is not None:
                     cast_tmp = new_tmp()
                     if src_bits > dst_bits:
                         out.append(f"  {cast_tmp} = trunc {src_type} {val} to {dst_type}")
                     else:
                         out.append(f"  {cast_tmp} = sext {src_type} {val} to {dst_type}")
                     val = cast_tmp
-                out.append(f"  store {dst_type} {val}, {dst_type}* %{stmt.name}_addr")
+                else:
+                    pass
+            out.append(f"  store {dst_type} {val}, {dst_type}* %{stmt.name}_addr")
     elif isinstance(stmt, Assign):
         val = gen_expr(stmt.expr, out)
         llvm_ty, ir_name = symbol_table.lookup(stmt.name)
@@ -1154,7 +1242,7 @@ def gen_stmt(stmt: Stmt, out: List[str]):
         out.append(f"{then_lbl}:")
         symbol_table.push()
         for s in stmt.then_body:
-            gen_stmt(s, out)
+            gen_stmt(s, out, ret_ty)
         symbol_table.pop()
         out.append(f"  br label %{end_lbl}")
         if stmt.else_body:
@@ -1162,7 +1250,7 @@ def gen_stmt(stmt: Stmt, out: List[str]):
             symbol_table.push()
             if isinstance(stmt.else_body, list):
                 for s in stmt.else_body:
-                    gen_stmt(s, out)
+                    gen_stmt(s, out, ret_ty)
             elif isinstance(stmt.else_body, IfStmt):
                 gen_stmt(stmt.else_body, out)
             symbol_table.pop()
@@ -1179,15 +1267,28 @@ def gen_stmt(stmt: Stmt, out: List[str]):
         out.append(f"{body_lbl}:")
         symbol_table.push()
         for s in stmt.body:
-            gen_stmt(s, out)
+            gen_stmt(s, out, ret_ty)
         symbol_table.pop()
         out.append(f"  br label %{head_lbl}")
         out.append(f"{end_lbl}:")
     elif isinstance(stmt, ReturnStmt):
         val = gen_expr(stmt.expr, out) if stmt.expr else None
         if val:
-            llvm_ty = type_map[infer_type(stmt.expr)]
-            out.append(f"  ret {llvm_ty} {val}")
+            ret_type = infer_type(stmt.expr)
+            llvm_ty = type_map.get(ret_type, f"%struct.{ret_type}")
+            if ret_ty == "i32" and llvm_ty != "i32":
+                tmp = new_tmp()
+                if llvm_ty.startswith("i") and llvm_ty[1:].isdigit():
+                    bits = int(llvm_ty[1:])
+                    if bits > 32:
+                        out.append(f"  {tmp} = trunc {llvm_ty} {val} to i32")
+                    else:
+                        out.append(f"  {tmp} = sext {llvm_ty} {val} to i32")
+                    out.append(f"  ret i32 {tmp}")
+                else:
+                    out.append(f"  ret i32 0")
+            else:
+                out.append(f"  ret {llvm_ty} {val}")
         else:
             out.append(f"  ret void")
     elif isinstance(stmt, ExprStmt):
@@ -1225,7 +1326,7 @@ def gen_stmt(stmt: Stmt, out: List[str]):
                     out.append(f"  store {llvm_payload_ty} {loaded_payload}, {llvm_payload_ty}* %{var_name}_addr")
                     symbol_table.declare(var_name, llvm_payload_ty, var_name)
             for s in case.body:
-                gen_stmt(s, out)
+                gen_stmt(s, out, ret_ty)
             out.append(f"  br label %{end_lbl}")
         out.append(f"{end_lbl}:")
 def gen_func(fn: Func) -> List[str]:
@@ -1239,21 +1340,26 @@ def gen_func(fn: Func) -> List[str]:
     symbol_table.push()
     generated_mono[fn.name] = True
     ret_ty = type_map[fn.ret_type]
-    param_sig = ", ".join(f"{type_map[t]} %{n}" for t, n in fn.params)
-    out: List[str] = [f"define {ret_ty} @{fn.name}({param_sig}) {{", "entry:"]
+    if fn.name == "main":
+        out: List[str] = [f"define i32 @main(i32 %argc, i8** %argv) {{", "entry:"]
+        out.append("  store i8** %argv, i8*** @__argv_ptr")
+        ret_ty = "i32"
+    else:
+        param_sig = ", ".join(f"{type_map.get(t, f'%struct.{t}')} %{n}" for t, n in fn.params)
+        out: List[str] = [f"define {ret_ty} @{fn.name}({param_sig}) {{", "entry:"]
     for typ, name in fn.params:
-        llvm_ty = type_map[typ]
+        llvm_ty = type_map.get(typ, f"%struct.{typ}")
         out.append(f"  %{name}_addr = alloca {llvm_ty}")
         out.append(f"  store {llvm_ty} %{name}, {llvm_ty}* %{name}_addr")
         symbol_table.declare(name, llvm_ty, name)
     has_return = False
     for stmt in fn.body or []:
         if isinstance(stmt, ReturnStmt):
-            gen_stmt(stmt, out)
+            gen_stmt(stmt, out, ret_ty)
             has_return = True
             break
         else:
-            gen_stmt(stmt, out)
+            gen_stmt(stmt, out, ret_ty)
     for reg in extension_registry["registrations"].values():
         if reg.get("type") == "function" and fn.name.startswith("__launch_"):
             action_lines = reg.get("actions", [])
@@ -1283,16 +1389,24 @@ def compile_program(prog: Program) -> str:
     for fn in prog.funcs:
         if fn.type_params:
             continue
-        llvm_ret_ty = type_map[fn.ret_type]
+        llvm_ret_ty = type_map.get(fn.ret_type, f"%struct.{fn.ret_type}")
         func_table[fn.name] = llvm_ret_ty
     lines: List[str] = [
         "; ModuleID = 'orcat'",
         "source_filename = \"main.orcat\"",
-        ""]
+        "@__argv_ptr = global i8** null",
+        ""
+    ]
     for global_line in extension_registry["llvm.globals"]:
         lines.append(global_line)
     for g in prog.globals:
-        llvm_ty = type_map.get(g.typ, f"%struct.{g.typ}")
+        if "[" in g.typ and g.typ.endswith("]"):
+            base, count = g.typ.split("[")
+            count = count[:-1]
+            base_llvm = type_map.get(base, f"%struct.{base}")
+            llvm_ty = f"[{count} x {base_llvm}]"
+        else:
+            llvm_ty = type_map.get(g.typ, f"%struct.{g.typ}")
         initializer = "zeroinitializer"
         if isinstance(g.expr, IntLit):
             initializer = str(g.expr.value)
@@ -1324,7 +1438,7 @@ def compile_program(prog: Program) -> str:
     struct_llvm_defs: List[str] = []
     for sdef in prog.structs:
         field_tys: List[str] = []
-        struct_field_map[sdef.name] = [fld.name for fld in sdef.fields]
+        struct_field_map[sdef.name] = [(f.name, f.typ) for f in sdef.fields]
         for fld in sdef.fields:
             if fld.typ in type_map:
                 field_tys.append(type_map[fld.typ])
@@ -1357,7 +1471,7 @@ def check_types(prog: Program):
             crumb_map[g.name] = (None, 0, 0, 0)
     struct_defs: Dict[str, StructDef] = {s.name: s for s in prog.structs}
     enum_defs:   Dict[str, EnumDef]   = {e.name: e for e in prog.enums}
-    struct_field_map: Dict[str, List[Tuple[str, str]]] = {}
+    #struct_field_map: Dict[str, List[Tuple[str, str]]] = {}
     for sdef in prog.structs:
         struct_field_map[sdef.name] = [(fld.name, fld.typ) for fld in sdef.fields]
     for struct_name in struct_defs:
@@ -1509,17 +1623,15 @@ def check_types(prog: Program):
             if seen_fields != all_field_names:
                 missing = all_field_names - seen_fields
                 raise TypeError(f"Struct '{expr.name}' initializer missing fields {missing}")
-            return expr.name
-        raise TypeError(f"Unsupported expression: {expr}")
+            return expr.name + "*"
     def check_stmt(stmt: Stmt, expected_ret: str):
         if isinstance(stmt, VarDecl):
             if env.lookup(stmt.name):
                 raise TypeError(f"Variable '{stmt.name}' already declared")
             raw_typ = stmt.typ
-            if '[' in raw_typ and raw_typ.endswith(']'):
-                base_type = raw_typ.split('[', 1)[0]
-            else:
-                base_type = raw_typ
+            base_type = raw_typ.rstrip('*')
+            if '[' in base_type and base_type.endswith(']'):
+                base_type = base_type.split('[', 1)[0]
             if base_type not in type_map and base_type not in struct_defs and base_type not in enum_defs:
                 raise TypeError(f"Unknown type '{raw_typ}'")
             env.declare(stmt.name, raw_typ)
