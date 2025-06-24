@@ -43,7 +43,7 @@ pub fn linpreinstall() <void> {
 
 pub fn lininstall() <void> {
     // install the compiler
-    system("wget -O orcc.bin https://github.com/MikaLorielle/Orcat-Lang/releases/download/ORCC-1.6-Beta/ORCC.bin");newline();
+    system("wget -O orcc.bin https://github.com/MikaLorielle/Orcat-Lang/releases/download/ORCC-mainstream/ORCC.bin");newline();
 
     string res = input(f() + "Do you want default libs with the compiler? ");
     if (streq(strtrim(tal(res)), "y") || streq(strtrim(tal(res)), "yes")) {
