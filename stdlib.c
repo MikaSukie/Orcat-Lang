@@ -311,7 +311,21 @@ int64_t orcat_argc(void) {
     return orcat_argc_global;
 }
 
-char *orcat_argv_i(int64_t idx) {
+char *orcat_argv(int64_t idx) {
     if (idx < 0 || idx >= orcat_argc_global) return "null";
     return orcat_argv_global[idx] ? orcat_argv_global[idx] : "null";
+}
+
+const char* get_os() {
+#if defined(_WIN32)
+    return "windows";
+#elif defined(__APPLE__)
+    return "macos";
+#elif defined(__linux__)
+    return "linux";
+#elif defined(__unix__)
+    return "unix";
+#else
+    return "unknown";
+#endif
 }
