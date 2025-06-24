@@ -1,4 +1,4 @@
-// now deprecated
+// now deprecated. will be removed.
 #define _CRT_SECURE_NO_WARNINGS
 
 #include <stdio.h>
