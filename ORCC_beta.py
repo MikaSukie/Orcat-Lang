@@ -1,6 +1,8 @@
 import re, os, tomllib, argparse
 from typing import List, Optional, Tuple, Union, Dict
 from dataclasses import dataclass
+compiled=""
+builtins_emitted = False
 extension_registry = {
     "llvm.globals": [],
     "registrations": {}
@@ -346,7 +348,6 @@ class Program:
     enums: List[EnumDef]
     globals: List[GlobalVar]
 string_constants: List[str] = []
-#struct_field_map: Dict[str, List[str]] = {}
 struct_field_map: Dict[str, List[Tuple[str, str]]] = {}
 generated_mono: Dict[str, bool] = {}
 all_funcs: List[Func] = []
@@ -1382,7 +1383,7 @@ def gen_func(fn: Func) -> List[str]:
     symbol_table.pop()
     return out
 def compile_program(prog: Program) -> str:
-    global all_funcs, func_table
+    global all_funcs, func_table, builtins_emitted
     all_funcs = prog.funcs[:]
     string_constants.clear()
     func_table.clear()
@@ -1391,9 +1392,18 @@ def compile_program(prog: Program) -> str:
             continue
         llvm_ret_ty = type_map.get(fn.ret_type, f"%struct.{fn.ret_type}")
         func_table[fn.name] = llvm_ret_ty
+    has_user_main = False
+    for fn in prog.funcs:
+        if fn.name == "main":
+            has_user_main = True
+            fn.name = "user_main"
+            llvm_ret_ty = type_map.get(fn.ret_type, f"%struct.{fn.ret_type}")
+            func_table.pop("main", None)
+            func_table["user_main"] = llvm_ret_ty
+            break
     lines: List[str] = [
         "; ModuleID = 'orcat'",
-        "source_filename = \"main.orcat\"",
+        f"source_filename = \"{compiled}\"",
         "@__argv_ptr = global i8** null",
         ""
     ]
@@ -1454,12 +1464,39 @@ def compile_program(prog: Program) -> str:
         lines.append(llvm_line)
     if enum_variant_map:
         lines.append("")
+    existing_globals = set()
+    existing_funcs = set()
+    for line in lines:
+        m_g = re.match(r'\s*@(\w+)\s*=', line)
+        if m_g:
+            existing_globals.add(m_g.group(1))
+        m_f = re.match(r'\s*define\s+[^(]+\s+@(\w+)\s*\(', line)
+        if m_f:
+            existing_funcs.add(m_f.group(1))
+    if not builtins_emitted and "orcat_argc_global" not in existing_globals:
+        func_table["orcat_argc"] = "i64"
+        func_table["orcat_argv_i"] = "i8*"
+        lines.append("@orcat_argc_global = global i64 0")
+        lines.append("@orcat_argv_global = global i8** null")
+        lines.append("")
+        lines.append("")
+        builtins_emitted = True
     for fn in prog.funcs:
         lines += gen_func(fn)
     if string_constants:
         lines.extend(string_constants)
         lines.append("")
         string_constants.clear()
+    if has_user_main:
+        lines.append("define i32 @main(i32 %argc, i8** %argv) {")
+        lines.append("entry:")
+        lines.append("  %argc64 = sext i32 %argc to i64")
+        lines.append("  store i64 %argc64, i64* @orcat_argc_global")
+        lines.append("  store i8** %argv, i8*** @orcat_argv_global")
+        lines.append("  %ret64 = call i64 @user_main()")
+        lines.append("  %ret32 = trunc i64 %ret64 to i32")
+        lines.append("  ret i32 %ret32")
+        lines.append("}")
     return "\n".join(lines)
 def check_types(prog: Program):
     env = TypeEnv()
@@ -1471,7 +1508,6 @@ def check_types(prog: Program):
             crumb_map[g.name] = (None, 0, 0, 0)
     struct_defs: Dict[str, StructDef] = {s.name: s for s in prog.structs}
     enum_defs:   Dict[str, EnumDef]   = {e.name: e for e in prog.enums}
-    #struct_field_map: Dict[str, List[Tuple[str, str]]] = {}
     for sdef in prog.structs:
         struct_field_map[sdef.name] = [(fld.name, fld.typ) for fld in sdef.fields]
     for struct_name in struct_defs:
@@ -1813,6 +1849,8 @@ def main():
     parser.add_argument("-o", "--output", required=True, help="Output LLVM IR file (.ll)")
     parser.add_argument("--config", help="Path to extension config file", default=None)
     args = parser.parse_args()
+    global compiled
+    compiled = args.input
     if args.config:
         try:
             load_extensions(args.config)
