@@ -1,4 +1,5 @@
 //linux version because the string dumping func is different. please rename this file to not have the L.
+// now deprecated. will be removed.
 #define _CRT_SECURE_NO_WARNINGS
 
 #include <stdio.h>
