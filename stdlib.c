@@ -89,6 +89,10 @@ char* sb_append_str(char* builder, const char* s) {
     return concat_and_free(builder, strdup(s));
 }
 
+char* itostr(int i) {
+    return i64tostr((int64_t)i);
+}
+
 char* sb_append_int(char* builder, int x) {
     char* num = i64tostr(x);
     return concat_and_free(builder, num);
