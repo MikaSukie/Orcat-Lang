@@ -1,1 +1,1 @@
-python3 -m nuitka --standalone --onefile --lto=yes --clang --jobs=$(nproc) --remove-output ORCC.py
+source .venv/bin/activate && python -m nuitka --standalone --onefile --lto=yes --clang --jobs=$(nproc) --remove-output ORCC.py
