@@ -1,0 +1,13 @@
+import C_types;
+import C_string;
+import C_fileio;
+import C_io;
+import C_mem;
+import std;
+
+pub fn main() <int> {
+    int argc = orcat_argc();
+    print(itostr(argc) + "\n");
+    print(tostr("args: ")+tostr(orcat_argv_i(1))); newline();
+    return 0;
+}
