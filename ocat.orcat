@@ -1,0 +1,63 @@
+// ORCat Compiler installer along with optional libraries.
+import C_types;
+import C_io;
+import std;
+
+pub fn main() <int> {
+    // arg getter
+    string arg1 = orcat_argv(1);
+    // arg cases
+    if (streq(tal(arg1), "help") || streq(tal(arg1), "h") || streq(tal(arg1), "-h")) {
+        print("available commands:"); newline();
+        print("> ossemble, help"); newline();
+    }
+    else if (streq(tal(arg1), "ossemble")) {
+        // user cases
+        arg1 = "";
+        print(f() + "OS override? system detected: " + get_os() + ">>: ");
+        string res = input("");
+        print(res); newline();
+        if (streq(strtrim(tal(res)), "y")) {
+            print("override");newline();
+        }
+        else {
+            print("continue");newline();
+            if (streq(get_os(), "linux")) {
+                linpreinstall();
+            }
+        }
+    }
+    return 0;
+}
+
+pub fn linpreinstall() <void> {
+    // preinstall instructions
+    print("Please make sure wget is installed on your system.");newline();
+    string res = input(f() + "Are you in your desired directory? ");newline();
+    if (streq(strtrim(tal(res)), "y") || streq(strtrim(tal(res)), "yes")) {
+        lininstall();
+    } else {
+        exit(1);
+    }
+}
+
+pub fn lininstall() <void> {
+    // install the compiler
+    system("wget -O orcc.bin https://github.com/MikaLorielle/Orcat-Lang/releases/download/ORCC-1.6-Beta/ORCC.bin");newline();
+
+    string res = input(f() + "Do you want default libs with the compiler? ");
+    if (streq(strtrim(tal(res)), "y") || streq(strtrim(tal(res)), "yes")) {
+        linlibinstall();
+    } else {
+        exit(1);
+    }
+}
+pub fn linlibinstall() <void> {
+    // C libs and C extern references
+    system("wget -O stdlib.c https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/stdlib.c");
+    system("wget -O C_io.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_io.sorcat");
+    system("wget -O C_fileio.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_fileio.sorcat");
+    system("wget -O C_mem.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_mem.sorcat");
+    system("wget -O C_string.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_string.sorcat");
+    system("wget -O C_types.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_types.sorcat");
+}
