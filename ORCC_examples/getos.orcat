@@ -1,0 +1,11 @@
+import C_types;
+import C_string;
+import C_fileio;
+import C_io;
+import C_mem;
+import std;
+
+pub fn main() <int> {
+    print(get_os()); newline();
+    return 0;
+}
