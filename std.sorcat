@@ -5,5 +5,5 @@ pub extern fn flength(float decimal)<int>;
 pub extern fn slength(string str)<int>;
 pub extern fn streq(string str1, string str2) <bool>;
 pub extern fn orcat_argc() <int>;
-pub extern fn orcat_argv_i(int index) <string>;
+pub extern fn orcat_argv(int index) <string>;
 pub extern fn get_os() <string>;
