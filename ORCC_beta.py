@@ -880,22 +880,29 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
         raw = expr.value
         esc = ""
         for ch in raw:
+            code = ord(ch)
             if ch == '\n':
                 esc += r'\0A'
+            elif ch == '\r':
+                esc += r'\0D'
             elif ch == '\t':
                 esc += r'\09'
             elif ch == '\\':
                 esc += r'\\'
             elif ch == '"':
-                esc += r'\"'
-            else:
+                esc += r'\22'
+            elif 32 <= code <= 126:
                 esc += ch
-        length = len(raw) + 1
+            else:
+                esc += f'\\{code:02X}'
+        byte_len = len(raw.encode('utf-8')) + 1
         string_constants.append(
-            f'{label} = private unnamed_addr constant [{length} x i8] c"{esc}\\00"')
+            f'{label} = private unnamed_addr constant [{byte_len} x i8] c"{esc}\\00"'
+        )
         out.append(
-            f"  {tmp} = getelementptr inbounds [{length} x i8], "
-            f"[{length} x i8]* {label}, i32 0, i32 0")
+            f"  {tmp} = getelementptr inbounds [{byte_len} x i8], "
+            f"[{byte_len} x i8]* {label}, i32 0, i32 0"
+        )
         return tmp
     if isinstance(expr, Var):
         result = symbol_table.lookup(expr.name)
