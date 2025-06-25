@@ -1,3 +1,9 @@
+/*
+ * Example file for ORCatLang
+ * 
+ * This file is for demonstration purposes and is not licensed.
+ * Feel free to modify, share, or adapt this file as you like.
+ */
 import "C_types.sorcat";
 import "C_io.sorcat";
 
