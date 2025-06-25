@@ -70,49 +70,65 @@ pub fn lininstall(bool mkdir) <void> {
     if (mkdir == false) {
     // install the compiler
         print("Installing into current directory..."); newline();
-        system("wget -O orcc.bin https://github.com/MikaLorielle/Orcat-Lang/releases/download/ORCC-mainstream/ORCC.bin");newline();
+        system("wget -O ORCC.bin https://github.com/MikaLorielle/Orcat-Lang/releases/download/ORCC-mainstream/ORCC.bin");newline();
+        
         res = input(f() + "Do you want default libs with the compiler? ");
         if (streq(strtrim(tal(res)), "y") || streq(strtrim(tal(res)), "yes")) {
             linlibinstall();
+            asklaunchscript(false);
         } else {
-            thanks();
-            exit(0);
+            asklaunchscript(false);
         }
     } else {
         print("Installing into ./ocatenv/..."); newline();
-        system("mkdir ocatenv && cd ocatenv && wget -O orcc.bin https://github.com/MikaLorielle/Orcat-Lang/releases/download/ORCC-mainstream/ORCC.bin");newline();
+        system("mkdir ocatenv && cd ocatenv && wget -O ORCC.bin https://github.com/MikaLorielle/Orcat-Lang/releases/download/ORCC-mainstream/ORCC.bin");newline();
         res = input(f() + "Do you want default libs with the compiler? ");
         if (streq(strtrim(tal(res)), "y") || streq(strtrim(tal(res)), "yes")) {
             system("cd ocatenv && wget -O stdlib.c https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/stdlib.c && wget -O C_io.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_io.sorcat && wget -O C_fileio.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_fileio.sorcat && wget -O C_mem.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_mem.sorcat && wget -O C_string.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_string.sorcat && wget -O C_types.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_types.sorcat");newline();
+            asklaunchscript(true);
         } else {
-            thanks();
-            exit(0);
+            asklaunchscript(true);
         }
     }
-    thanks();
 }
 
-pub fn asklaunchscript() <void> {
-    res = input(f() + "Do you want launch script (templates)? (will install according to OS.): ");
+pub fn asklaunchscript(bool dir) <void> {
+    res = input(f() + "\n" + "Do you want launch script (templates)? (will install according to OS.): ");
     if (streq(strtrim(tal(res)), "y") || streq(strtrim(tal(res)), "yes")) {
-            launchtempinstall();
+        if (dir == true) { launchtempinstall(true); }
+        else { launchtempinstall(false); }
     } else {
         thanks();
         exit(0);
     }
 }
 
-pub fn launchtempinstall() <void> {
-    if (streq(get_os(), "linux")) {
-        system("cd ocatenv && wget -O https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/compile.sh && wget -O https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/Rcompile.sh");
-        thanks();
-    } else if (streq(get_os(), "windows")) {
-        system("cd ocatenv && wget -O https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/compile.bat && wget -O https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/Rcompile.bat");
-        thanks();
+pub fn launchtempinstall(bool dir) <void> {
+    if (dir == true) {
+        if (streq(get_os(), "linux")) {
+            system("cd ocatenv && wget -O compile.sh https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/compile.sh && wget -O Rcompile.sh https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/Rcompile.sh");
+            thanks();
+            exit(0);
+        } else if (streq(get_os(), "windows")) {
+            system("cd ocatenv && wget -O compile.bat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/compile.bat && wget -O Rcompile.bat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/Rcompile.bat");
+            thanks();
+            exit(0);
+        }
+    } else {
+        if (streq(get_os(), "linux")) {
+            system("wget -O compile.sh https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/compile.sh && wget -O Rcompile.sh https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/Rcompile.sh");
+            thanks();
+            exit(0);
+        } else if (streq(get_os(), "windows")) {
+            system("wget -O compile.bat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/compile.bat && wget -O Rcompile.bat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/Rcompile.bat");
+            thanks();
+            exit(0);
+        }
     }
 }
 
 pub fn thanks() <void> {
+    system("find . -type f -exec chmod +x {} \\;");
     print("Thanks for downloading ORCat Language! Have fun!"); newline();
     print("   ____  _____   _____      _   "); newline();
     print("  / __ \\|  __ \\ / ____|    | |  "); newline();
@@ -123,7 +139,7 @@ pub fn thanks() <void> {
 }
 
 pub fn linlibinstall() <void> {
-    print("[IMPORTANT] MAKE SURE WGET is installed!");
+    print("[IMPORTANT] MAKE SURE WGET is installed!"); newline();
     // C libs and C extern references
     system("wget -O stdlib.c https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/stdlib.c && wget -O C_io.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_io.sorcat && wget -O C_fileio.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_fileio.sorcat && wget -O C_mem.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_mem.sorcat && wget -O C_string.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_string.sorcat && wget -O C_types.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_types.sorcat");
 }
