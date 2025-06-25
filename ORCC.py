@@ -1,12 +1,18 @@
 '''
- * This file is licensed under the GPL-3 License (or AGPL-3 if applicable)
- * 
- * Copyright (c) 2025 MikaSukie, MikaLorielle, EmikaMai
- * 
- * This project is maintained by MikaSukie (old username), MikaLorielle (recent username),
- * EmikaMai (most recent username), and Jayden Freeman (legal name). 
- * All contributions are made under the terms of the GPL-3 License. 
- * See LICENSE file for more details.
+Copyright (C) 2025  MikaSukie (old user), MikaLorielle (alt user), EmikaMai (current user), JaydenFreeman (legal name)
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
 '''
 import re, os, tomllib, argparse
 from typing import List, Optional, Tuple, Union, Dict
