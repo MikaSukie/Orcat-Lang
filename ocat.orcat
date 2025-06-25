@@ -3,29 +3,36 @@ import C_types;
 import C_io;
 import std;
 
+pin string res;
+
 pub fn main() <int> {
     // arg getter
     string arg1 = orcat_argv(1);
     // arg cases
     if (streq(tal(arg1), "help") || streq(tal(arg1), "h") || streq(tal(arg1), "-h")) {
         print("available commands:"); newline();
-        print("> ossemble, help"); newline();
+        print("> ossemble, help, update"); newline();
     }
     else if (streq(tal(arg1), "ossemble")) {
         // user cases
         arg1 = "";
         print(f() + "OS override? system detected: " + get_os() + ">>: ");
-        string res = input("");
-        print(res); newline();
+        res = input("");
         if (streq(strtrim(tal(res)), "y")) {
-            print("override");newline();
+            print("override not yet implemented");newline();
         }
         else {
-            print("continue");newline();
+            print("continuing");newline();
             if (streq(get_os(), "linux")) {
                 linpreinstall();
             }
         }
+    } else if (streq(tal(arg1), "update")) {
+        self_update();
+    } else if (streq(tal(arg1), "null")) {
+        print(f() + "please type an argument. EX: -h, ossemble, update."); newline();
+    } else {
+        print(f() + "Your argument: \"" + tostr(arg1) + "\" either does not exist or is a typo."); newline();
     }
     return 0;
 }
@@ -33,31 +40,68 @@ pub fn main() <int> {
 pub fn linpreinstall() <void> {
     // preinstall instructions
     print("Please make sure wget is installed on your system.");newline();
-    string res = input(f() + "Are you in your desired directory? ");newline();
+    res = input(f() + "Are you in your desired directory? ");newline();
     if (streq(strtrim(tal(res)), "y") || streq(strtrim(tal(res)), "yes")) {
-        lininstall();
+        res = input(f() + "make a sub env directory? (will be named ocatenv): ");newline();
+        if (streq(strtrim(tal(res)), "y") || streq(strtrim(tal(res)), "yes")) {
+            lininstall(true);
+        } else {
+            lininstall(false);
+        }
     } else {
-        exit(1);
+        print("quitting... since not in desired dir.");
+        exit(0);
     }
 }
 
-pub fn lininstall() <void> {
+pub fn lininstall(bool mkdir) <void> {
+    if (mkdir == false) {
     // install the compiler
-    system("wget -O orcc.bin https://github.com/MikaLorielle/Orcat-Lang/releases/download/ORCC-mainstream/ORCC.bin");newline();
-
-    string res = input(f() + "Do you want default libs with the compiler? ");
-    if (streq(strtrim(tal(res)), "y") || streq(strtrim(tal(res)), "yes")) {
-        linlibinstall();
+        print("Installing into current directory..."); newline();
+        system("wget -O orcc.bin https://github.com/MikaLorielle/Orcat-Lang/releases/download/ORCC-mainstream/ORCC.bin");newline();
+        res = input(f() + "Do you want default libs with the compiler? ");
+        if (streq(strtrim(tal(res)), "y") || streq(strtrim(tal(res)), "yes")) {
+            linlibinstall();
+        } else {
+            thanks();
+            exit(0);
+        }
     } else {
-        exit(1);
+        print("Installing into ./ocatenv/..."); newline();
+        system("mkdir ocatenv && cd ocatenv && wget -O orcc.bin https://github.com/MikaLorielle/Orcat-Lang/releases/download/ORCC-mainstream/ORCC.bin");newline();
+        res = input(f() + "Do you want default libs with the compiler? ");
+        if (streq(strtrim(tal(res)), "y") || streq(strtrim(tal(res)), "yes")) {
+            system("cd ocatenv && wget -O stdlib.c https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/stdlib.c && wget -O C_io.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_io.sorcat && wget -O C_fileio.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_fileio.sorcat && wget -O C_mem.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_mem.sorcat && wget -O C_string.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_string.sorcat && wget -O C_types.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_types.sorcat");newline();
+        } else {
+            thanks();
+            exit(0);
+        }
     }
+    thanks();
 }
+
+pub fn thanks() <void> {
+    print("Thanks for downloading ORCat Language! Have fun!"); newline();
+    print("   ____  _____   _____      _   "); newline();
+    print("  / __ \\|  __ \\ / ____|    | |  "); newline();
+    print(" | |  | | |__) | |     __ _| |_ "); newline();
+    print(" | |  | |  _  /| |    / _` | __|"); newline();
+    print(" | |__| | | \\ \\| |___| (_| | |_ "); newline();
+    print("  \\____/|_|  \\_\\\\_____\\__,_|\\__|"); newline();
+}
+
 pub fn linlibinstall() <void> {
     // C libs and C extern references
-    system("wget -O stdlib.c https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/stdlib.c");
-    system("wget -O C_io.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_io.sorcat");
-    system("wget -O C_fileio.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_fileio.sorcat");
-    system("wget -O C_mem.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_mem.sorcat");
-    system("wget -O C_string.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_string.sorcat");
-    system("wget -O C_types.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_types.sorcat");
+    system("wget -O stdlib.c https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/stdlib.c && wget -O C_io.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_io.sorcat && wget -O C_fileio.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_fileio.sorcat && wget -O C_mem.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_mem.sorcat && wget -O C_string.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_string.sorcat && wget -O C_types.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_types.sorcat");
+}
+
+pub fn self_update() <void> {
+    print("Please make sure wget is installed on your system.");newline();
+    res = input(f() + "Are you in your desired directory? ");newline();
+    if (streq(strtrim(tal(res)), "y") || streq(strtrim(tal(res)), "yes")) {
+        system("wget -O ocat https://github.com/MikaLorielle/Orcat-Lang/releases/download/ORCC-BETA-NEWGEN/ocat");
+    } else {
+        thanks();
+        exit(0);
+    }
 }
