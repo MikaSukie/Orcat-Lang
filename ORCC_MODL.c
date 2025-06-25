@@ -1,3 +1,13 @@
+/*
+ * This file is licensed under the GPL-3 License (or AGPL-3 if applicable)
+ * 
+ * Copyright (c) 2025 MikaSukie, MikaLorielle, EmikaMai
+ * 
+ * This project is maintained by MikaSukie (old username), MikaLorielle (recent username),
+ * EmikaMai (most recent username), and Jayden Freeman (legal name). 
+ * All contributions are made under the terms of the GPL-3 License. 
+ * See LICENSE file for more details.
+ */
 //linux version because the string dumping func is different. please rename this file to not have the L.
 // now deprecated. will be removed.
 #define _CRT_SECURE_NO_WARNINGS
