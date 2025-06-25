@@ -4,7 +4,7 @@ clear
 start=$(date +%s%3N)
 
 ./ORCC.bin main.orcat -o out.ll
-clang -Wno-override-module out.ll ORCC_MOD.c -o main
+clang -Wno-override-module out.ll stdlib.c -o main
 
 ./main
 echo "Exit code: $?"
