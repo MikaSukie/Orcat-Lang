@@ -1,6 +1,7 @@
 // ORCat Compiler installer along with optional libraries.
 import C_types;
 import C_io;
+import C_fileio;
 import std;
 
 pin string res;
@@ -91,17 +92,35 @@ pub fn thanks() <void> {
 }
 
 pub fn linlibinstall() <void> {
+    print("[IMPORTANT] MAKE SURE WGET is installed!");
     // C libs and C extern references
     system("wget -O stdlib.c https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/stdlib.c && wget -O C_io.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_io.sorcat && wget -O C_fileio.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_fileio.sorcat && wget -O C_mem.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_mem.sorcat && wget -O C_string.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_string.sorcat && wget -O C_types.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_types.sorcat");
 }
 
 pub fn self_update() <void> {
-    print("Please make sure wget is installed on your system.");newline();
-    res = input(f() + "Are you in your desired directory? ");newline();
-    if (streq(strtrim(tal(res)), "y") || streq(strtrim(tal(res)), "yes")) {
-        system("wget -O ocat https://github.com/MikaLorielle/Orcat-Lang/releases/download/ORCC-BETA-NEWGEN/ocat");
-    } else {
-        thanks();
-        exit(0);
+    print("Preparing background updater..."); newline();
+
+    // Build updater script using string builder
+    string code = sb_create();
+    code = sb_append_str(code, "#!/bin/sh\n");
+    code = sb_append_str(code, "sleep 1\n");
+    code = sb_append_str(code, "echo '[UPDATER] Replacing ocat...'\n");
+    code = sb_append_str(code, "wget -O ocat https://github.com/MikaLorielle/Orcat-Lang/releases/download/ORCC-BETA-NEWGEN/ocat\n");
+    code = sb_append_str(code, "chmod +x ocat\n");
+    code = sb_append_str(code, "echo '[UPDATER] Update complete. Press enter to exit.'\n");
+    string script = sb_finish(code);
+
+    // Write to file using C_fileio
+    if (!write_file("ocat_updater.sh", script)) {
+        print("Failed to write updater script."); newline();
+        free_str(script);
+        return;
     }
+    free_str(script);
+
+    // Make executable and run it in the background
+    system("chmod +x ocat_updater.sh && ./ocat_updater.sh &");
+
+    print("Update started in background. Exiting current ocat..."); newline();
+    exit(0);
 }
