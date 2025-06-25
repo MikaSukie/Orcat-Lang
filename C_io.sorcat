@@ -22,6 +22,11 @@ pub extern fn finput(string input) <float>;
 pub extern fn sinput(string input) <string>;
 
 pub extern fn print(string s) <void>;
+
+pub fn printnl(string s) <void> {
+    print(s); newline();
+}
+
 pub fn newline() <void> {
     print("\n");
 }
