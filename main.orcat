@@ -1,6 +1,5 @@
-import "logic.sorcat";
-import "C_string.sorcat";
-import "C_io.sorcat";
+import C_types;
+import C_io;
 pin int x = 2;
 nomd int y = 2;
 fn main() <int> {
@@ -30,6 +29,6 @@ fn main() <int> {
     print(i32tostr(extreme1)+tostr("\n"));
     print(i16tostr(extreme2)+tostr("\n"));
     print(i8tostr(extreme3)+tostr("\n"));
-    print(itostr(x)+itostr(y));
+    print(itostr(x)+itostr(y)+tostr("\n"));
     return 0;
 }
