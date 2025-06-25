@@ -31,6 +31,7 @@ pub fn main() <int> {
         res = input("");
         if (streq(strtrim(tal(res)), "y")) {
             print("override not yet implemented");newline();
+            exit(0);
         }
         else {
             print("continuing");newline();
@@ -89,6 +90,26 @@ pub fn lininstall(bool mkdir) <void> {
         }
     }
     thanks();
+}
+
+pub fn asklaunchscript() <void> {
+    res = input(f() + "Do you want launch script (templates)? (will install according to OS.): ");
+    if (streq(strtrim(tal(res)), "y") || streq(strtrim(tal(res)), "yes")) {
+            launchtempinstall();
+    } else {
+        thanks();
+        exit(0);
+    }
+}
+
+pub fn launchtempinstall() <void> {
+    if (streq(get_os(), "linux")) {
+        system("cd ocatenv && wget -O https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/compile.sh && wget -O https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/Rcompile.sh");
+        thanks();
+    } else if (streq(get_os(), "windows")) {
+        system("cd ocatenv && wget -O https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/compile.bat && wget -O https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/Rcompile.bat");
+        thanks();
+    }
 }
 
 pub fn thanks() <void> {
