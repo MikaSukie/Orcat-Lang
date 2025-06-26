@@ -1877,46 +1877,64 @@ def main():
         src = f.read()
     tokens = lex(src)
     parser_obj = Parser(tokens)
-    prog = parser_obj.parse()
-    all_funcs = []
+    main_prog = parser_obj.parse()
     seen_imports = set()
     seen_func_signatures = set()
-    for imp in prog.imports:
-        candidates = []
-        if imp.endswith(".or"):
-            candidates.append(imp + "cat")
-        elif imp.endswith(".sor"):
-            candidates.append(imp + "cat")
-        elif imp.endswith(".orcat") or imp.endswith(".sorcat"):
-            candidates.append(imp)
-        else:
-            candidates.append(imp + ".orcat")
-            candidates.append(imp + ".sorcat")
-        resolved_path = None
-        for path in candidates:
-            if os.path.exists(path):
-                resolved_path = os.path.abspath(path)
-                break
-        if not resolved_path:
-            raise RuntimeError(f"Import '{imp}' not found. Tried: {candidates}")
-        if resolved_path in seen_imports:
-            continue
-        seen_imports.add(resolved_path)
-        with open(resolved_path, 'r', encoding="utf-8", errors="ignore") as f:
-            imported_src = f.read()
-        imported_tokens = lex(imported_src)
-        imported_parser = Parser(imported_tokens)
-        sub_prog = imported_parser.parse()
-        check_types(sub_prog)
-        for func in sub_prog.funcs:
-            if func.access == 'pub':
-                sig = (func.name, len(func.params), func.is_extern)
-                if sig not in seen_func_signatures:
-                    all_funcs.append(func)
-                    seen_func_signatures.add(sig)
-    prog.funcs = all_funcs + prog.funcs
-    check_types(prog)
-    llvm = compile_program(prog)
+    all_funcs = []
+    all_structs = []
+    all_enums = []
+    all_globals = []
+    def load_imports_recursively(prog):
+        nonlocal all_funcs, all_structs, all_enums, all_globals
+        for imp in prog.imports:
+            candidates = []
+            if imp.endswith(".or"):
+                candidates.append(imp + "cat")
+            elif imp.endswith(".sor"):
+                candidates.append(imp + "cat")
+            elif imp.endswith(".orcat") or imp.endswith(".sorcat"):
+                candidates.append(imp)
+            else:
+                candidates += [imp + ".orcat", imp + ".sorcat"]
+            resolved_path = None
+            for path in candidates:
+                if os.path.exists(path):
+                    resolved_path = os.path.abspath(path)
+                    break
+            if not resolved_path:
+                raise RuntimeError(f"Import '{imp}' not found. Tried: {candidates}")
+            if resolved_path in seen_imports:
+                continue
+            seen_imports.add(resolved_path)
+            with open(resolved_path, 'r', encoding="utf-8", errors="ignore") as f:
+                imported_src = f.read()
+            imported_tokens = lex(imported_src)
+            imported_parser = Parser(imported_tokens)
+            sub_prog = imported_parser.parse()
+            load_imports_recursively(sub_prog)
+            all_structs.extend(sub_prog.structs)
+            all_enums.extend(sub_prog.enums)
+            all_globals.extend(sub_prog.globals)
+            for func in sub_prog.funcs:
+                if func.access == 'pub':
+                    sig = (func.name, len(func.params), func.is_extern)
+                    if sig not in seen_func_signatures:
+                        all_funcs.append(func)
+                        seen_func_signatures.add(sig)
+    load_imports_recursively(main_prog)
+    all_funcs.extend(main_prog.funcs)
+    all_structs.extend(main_prog.structs)
+    all_enums.extend(main_prog.enums)
+    all_globals.extend(main_prog.globals)
+    final_prog = Program(
+        funcs=all_funcs,
+        structs=all_structs,
+        enums=all_enums,
+        globals=all_globals,
+        imports=main_prog.imports
+    )
+    check_types(final_prog)
+    llvm = compile_program(final_prog)
     with open(args.output, 'w', encoding="utf-8", errors="ignore") as f:
         f.write(llvm)
 if __name__ == "__main__":
