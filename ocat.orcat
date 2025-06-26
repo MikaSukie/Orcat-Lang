@@ -91,7 +91,7 @@ pub fn lininstall(bool mkdir) <void> {
         system("mkdir ocatenv && cd ocatenv && wget -O ORCC.bin https://github.com/MikaLorielle/Orcat-Lang/releases/download/ORCC-mainstream/ORCC.bin");newline();
         res = input(f() + "Do you want default libs with the compiler? ");
         if (streq(tal(res), "y") || streq(tal(res), "yes")) {
-            system("cd ocatenv && wget -O stdlib.c https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/stdlib.c && wget -O C_io.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_io.sorcat && wget -O C_fileio.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_fileio.sorcat && wget -O C_mem.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_mem.sorcat && wget -O C_types.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_types.sorcat");newline();
+            system("cd ocatenv && wget -O stdlib.c https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/stdlib.c && wget -O C_io.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_io.sorcat && wget -O C_fileio.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_fileio.sorcat && wget -O C_mem.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_mem.sorcat && wget -O C_types.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_types.sorcat && wget -O std.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/std.sorcat");newline();
             asklaunchscript(true);
         } else {
             asklaunchscript(true);
@@ -148,7 +148,7 @@ pub fn thanks() <void> {
 pub fn linlibinstall() <void> {
     print("[IMPORTANT] MAKE SURE WGET is installed!"); newline();
     // C libs and C extern references
-    system("wget -O stdlib.c https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/stdlib.c && wget -O C_io.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_io.sorcat && wget -O C_fileio.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_fileio.sorcat && wget -O C_mem.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_mem.sorcat && wget -O C_types.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_types.sorcat");
+    system("wget -O stdlib.c https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/stdlib.c && wget -O C_io.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_io.sorcat && wget -O C_fileio.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_fileio.sorcat && wget -O C_mem.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_mem.sorcat && wget -O C_types.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_types.sorcat && wget -O std.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/std.sorcat");
 }
 
 pub fn self_update() <void> {
