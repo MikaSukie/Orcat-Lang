@@ -346,3 +346,15 @@ const char* get_os() {
     return "unknown";
 #endif
 }
+
+int8_t   fcasti8(double d)  { return (int8_t)d; }
+int16_t  fcasti16(double d) { return (int16_t)d; }
+int32_t  fcasti32(double d) { return (int32_t)d; }
+int64_t  fcasti64(double d) { return (int64_t)d; }
+int64_t  fcasti(double d)   { return (int64_t)d; }
+
+double i8castf(int8_t i)    { return (double)i; }
+double i16castf(int16_t i)  { return (double)i; }
+double i32castf(int32_t i)  { return (double)i; }
+double i64castf(int64_t i)  { return (double)i; }
+double icastf(int64_t i)    { return (double)i; }
