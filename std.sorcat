@@ -25,6 +25,5 @@ pub extern fn orcat_argc() <int>;
 pub extern fn orcat_argv(int index) <string>;
 pub extern fn get_os() <string>;
 pub extern fn strtrim(string in) <string>;
-pub extern fn exit(int32 i) <void>;
 pub extern fn tal(string s) <string>;
 pub extern fn tac(string s) <string>;
