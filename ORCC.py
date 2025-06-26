@@ -1,17 +1,14 @@
 '''
  * This file is licensed under the GPL-3 License (or AGPL-3 if applicable)
  * Copyright (C) 2025  MikaSukie (old user), MikaLorielle (alt user), EmikaMai (current user), JaydenFreeman (legal name)
-
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
-
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
-
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 '''
@@ -909,7 +906,6 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
         len_var = f"%{var_name}_len"
         len_val = new_tmp()
         out.append(f"  {len_val} = load i32, i32* {len_var}")
-        # beta
         ok = new_tmp()
         out.append(f"  {ok} = icmp ult i32 {idx_cast}, {len_val}")
         fail_lbl = new_label("oob_fail")
@@ -919,7 +915,6 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
         out.append(f"  call void @orcc_oob_abort()")
         out.append(f"  unreachable")
         out.append(f"{ok_lbl}:")
-        # beta
         out.append(f"  {tmp_ptr} = getelementptr inbounds {llvm_ty}, {llvm_ty}* %{name}_addr, i32 0, i32 {idx_cast}")
         out.append(f"  {tmp_val} = load {base_ty}, {base_ty}* {tmp_ptr}")
         return tmp_val
@@ -1162,13 +1157,10 @@ def infer_type(expr: Expr) -> str:
         base_type = clean_struct_name(infer_type(expr.base))
         if base_type not in struct_field_map:
             raise RuntimeError(f"Struct type '{base_type}' not found")
-
         fields = struct_field_map[base_type]
         field_dict = dict(fields)
-
         if expr.field not in field_dict:
             raise RuntimeError(f"Field '{expr.field}' not in struct '{base_type}'")
-
         return field_dict[expr.field]
     if isinstance(expr, StructInit):
         return expr.name + "*"
@@ -1471,7 +1463,6 @@ def compile_program(prog: Program) -> str:
     lines: List[str] = ["; ModuleID = 'orcat'", f"source_filename = \"{compiled}\"", "@__argv_ptr = global i8** null",
                         "declare void @free(i8*)", "", "declare void @puts(i8*)", "declare void @exit(i32)", """
     @.oob_msg = private unnamed_addr constant [52 x i8] c"[ORCatCompiler-RT-CHCK]: Index out of bounds error.\\00"
-
     define void @orcc_oob_abort() {
     entry:
       call void @puts(i8* getelementptr inbounds ([19 x i8], [19 x i8]* @.oob_msg, i32 0, i32 0))
