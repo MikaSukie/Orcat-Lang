@@ -269,6 +269,9 @@ class GlobalVar:
     nomd: bool = False
     pinned: bool = False
 @dataclass
+class DerefStmt(Stmt):
+    varname: str
+@dataclass
 class BinOp(Expr): op: str; left: Expr; right: Expr
 @dataclass
 class Call(Expr): name: str; args: List[Expr]
@@ -548,6 +551,8 @@ class Parser:
             return self.parse_index_assign()
         if t.kind == 'IDENT' and self.tokens[self.pos + 1].kind == 'LPAREN':
             return self.parse_expr_stmt()
+        if t.kind == 'IDENT' and t.value == 'deref' and self.tokens[self.pos + 1].kind == 'LPAREN':
+            return self.parse_deref()
         if t.kind in {'PUB', 'PRIV', 'PROT', 'NOMD'} or t.kind in TYPE_TOKENS or t.kind == 'IDENT':
             return self.parse_var_decl()
         if t.kind == 'IF':
@@ -576,6 +581,13 @@ class Parser:
                 raise SyntaxError(f"Unknown crumb kind '!{kw}'")
         self.expect('SEMI')
         return CrumbleStmt(var_name, max_r, max_w)
+    def parse_deref(self) -> DerefStmt:
+        self.expect('IDENT')
+        self.expect('LPAREN')
+        varname = self.expect('IDENT').value
+        self.expect('RPAREN')
+        self.expect('SEMI')
+        return DerefStmt(varname)
     def parse_match(self) -> Match:
         self.expect('MATCH')
         self.expect('LPAREN')
@@ -794,8 +806,10 @@ def new_label(base='L') -> str:
     global label_id
     label_id += 1
     return f"{base}{label_id}"
-def unify_int_types(t1: str, t2: str) -> Optional[str]:
+def unify_int_types(t1: Optional[str], t2: Optional[str]) -> Optional[str]:
     rank = {"int8": 1, "int16": 2, "int32": 3, "int64": 4, "int": 4}
+    if t1 is None or t2 is None:
+        return None
     for t in [t1, t2]:
         if t not in rank and not t.startswith("int"):
             return None
@@ -803,6 +817,10 @@ def unify_int_types(t1: str, t2: str) -> Optional[str]:
 def unify_types(t1: str, t2: str) -> Optional[str]:
     if t1 == t2:
         return t1
+    if t1 == 'null':
+        return t2 if t2.endswith('*') or t2 == 'string' else None
+    if t2 == 'null':
+        return t1 if t1.endswith('*') or t1 == 'string' else None
     int_common = unify_int_types(t1, t2)
     if int_common:
         return int_common
@@ -888,6 +906,20 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
                 out.append(f"  {idx_cast} = sext {idx_llvm} {idx} to i32")
         else:
             idx_cast = idx
+        len_var = f"%{var_name}_len"
+        len_val = new_tmp()
+        out.append(f"  {len_val} = load i32, i32* {len_var}")
+        # beta
+        ok = new_tmp()
+        out.append(f"  {ok} = icmp ult i32 {idx_cast}, {len_val}")
+        fail_lbl = new_label("oob_fail")
+        ok_lbl = new_label("oob_ok")
+        out.append(f"  br i1 {ok}, label %{ok_lbl}, label %{fail_lbl}")
+        out.append(f"{fail_lbl}:")
+        out.append(f"  call void @orcc_oob_abort()")
+        out.append(f"  unreachable")
+        out.append(f"{ok_lbl}:")
+        # beta
         out.append(f"  {tmp_ptr} = getelementptr inbounds {llvm_ty}, {llvm_ty}* %{name}_addr, i32 0, i32 {idx_cast}")
         out.append(f"  {tmp_val} = load {base_ty}, {base_ty}* {tmp_ptr}")
         return tmp_val
@@ -1198,24 +1230,35 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
             base, count = stmt.typ.split("[")
             count = count[:-1]
             llvm_ty = f"[{count} x {type_map[base]}]"
-        elif stmt.typ in type_map:
-            llvm_ty = type_map[stmt.typ]
+            if not symbol_table.lookup(stmt.name):
+                out.append(f"  %{stmt.name}_addr = alloca {llvm_ty}")
+                out.append(f"  %{stmt.name}_len  = alloca i32")
+                out.append(f"  store i32 {count}, i32* %{stmt.name}_len")
+                symbol_table.declare(stmt.name, llvm_ty, stmt.name)
         else:
-            llvm_ty = f"%struct.{stmt.typ}"
-        out.append(f"  %{stmt.name}_addr = alloca {llvm_ty}")
-        symbol_table.declare(stmt.name, llvm_ty, stmt.name)
+            if stmt.typ in type_map:
+                llvm_ty = type_map[stmt.typ]
+            else:
+                llvm_ty = f"%struct.{stmt.typ}"
+
+            if not symbol_table.lookup(stmt.name):
+                out.append(f"  %{stmt.name}_addr = alloca {llvm_ty}")
+                symbol_table.declare(stmt.name, llvm_ty, stmt.name)
         if stmt.expr:
             val = gen_expr(stmt.expr, out)
-            src_type = type_map.get(infer_type(stmt.expr), f"%struct.{infer_type(stmt.expr)}")
-            if src_type != llvm_ty:
+            src_llvm = type_map.get(infer_type(stmt.expr), f"%struct.{infer_type(stmt.expr)}")
+            if src_llvm != llvm_ty:
                 cast_tmp = new_tmp()
-                if llvm_int_bitsize(src_type) is not None and llvm_int_bitsize(llvm_ty) is not None:
-                    if llvm_int_bitsize(src_type) > llvm_int_bitsize(llvm_ty):
-                        out.append(f"  {cast_tmp} = trunc {src_type} {val} to {llvm_ty}")
+                bits_src = llvm_int_bitsize(src_llvm)
+                bits_dst = llvm_int_bitsize(llvm_ty)
+                if bits_src and bits_dst:
+                    if bits_src > bits_dst:
+                        out.append(f"  {cast_tmp} = trunc {src_llvm} {val} to {llvm_ty}")
                     else:
-                        out.append(f"  {cast_tmp} = sext {src_type} {val} to {llvm_ty}")
+                        out.append(f"  {cast_tmp} = sext {src_llvm} {val} to {llvm_ty}")
                     val = cast_tmp
             out.append(f"  store {llvm_ty} {val}, {llvm_ty}* %{stmt.name}_addr")
+        return
     elif isinstance(stmt, Assign):
         val = gen_expr(stmt.expr, out)
         llvm_ty, ir_name = symbol_table.lookup(stmt.name)
@@ -1228,7 +1271,6 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
         val = gen_expr(stmt.value, out)
         llvm_ty, name = symbol_table.lookup(stmt.array)
         base_ty = extract_array_base_type(llvm_ty)
-        tmp_ptr = new_tmp()
         idx_ty = infer_type(stmt.index)
         idx_llvm = type_map[idx_ty]
         if idx_llvm != "i32":
@@ -1239,8 +1281,21 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
                 out.append(f"  {idx_cast} = sext {idx_llvm} {idx} to i32")
         else:
             idx_cast = idx
-        out.append(f"  {tmp_ptr} = getelementptr inbounds {llvm_ty}, {llvm_ty}* %{name}_addr, i32 0, i32 {idx_cast}")
-        out.append(f"  store {base_ty} {val}, {base_ty}* {tmp_ptr}")
+        len_var = f"%{stmt.array}_len"
+        len_val = new_tmp()
+        out.append(f"  {len_val} = load i32, i32* {len_var}")
+        ok = new_tmp()
+        out.append(f"  {ok} = icmp ult i32 {idx_cast}, {len_val}")
+        fail_lbl = new_label("oob_fail")
+        ok_lbl   = new_label("oob_ok")
+        out.append(f"  br i1 {ok}, label %{ok_lbl}, label %{fail_lbl}")
+        out.append(f"{fail_lbl}:")
+        out.append(f"  call void @orcc_oob_abort()")
+        out.append(f"  unreachable")
+        out.append(f"{ok_lbl}:")
+        ptr_tmp = new_tmp()
+        out.append(f"  {ptr_tmp} = getelementptr inbounds {llvm_ty}, {llvm_ty}* %{name}_addr, i32 0, i32 {idx_cast}")
+        out.append(f"  store {base_ty} {val}, {base_ty}* {ptr_tmp}")
     elif isinstance(stmt, IfStmt):
         cond = gen_expr(stmt.cond, out)
         then_lbl = new_label('then')
@@ -1301,6 +1356,11 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
             out.append(f"  ret void")
     elif isinstance(stmt, ExprStmt):
         gen_expr(stmt.expr, out)
+    elif isinstance(stmt, DerefStmt):
+        llvm_ty, llvm_name = symbol_table.lookup(stmt.varname)
+        val_tmp = new_tmp()
+        out.append(f"  {val_tmp} = load {llvm_ty}, {llvm_ty}* %{llvm_name}_addr")
+        out.append(f"  call void @free(i8* bitcast({llvm_ty} {val_tmp} to i8*))")
     elif isinstance(stmt, Match):
         enum_ptr = gen_expr(stmt.expr, out)
         tag_tmp = new_tmp()
@@ -1408,12 +1468,17 @@ def compile_program(prog: Program) -> str:
             func_table.pop("main", None)
             func_table["user_main"] = llvm_ret_ty
             break
-    lines: List[str] = [
-        "; ModuleID = 'orcat'",
-        f"source_filename = \"{compiled}\"",
-        "@__argv_ptr = global i8** null",
-        ""
-    ]
+    lines: List[str] = ["; ModuleID = 'orcat'", f"source_filename = \"{compiled}\"", "@__argv_ptr = global i8** null",
+                        "declare void @free(i8*)", "", "declare void @puts(i8*)", "declare void @exit(i32)", """
+    @.oob_msg = private unnamed_addr constant [52 x i8] c"[ORCatCompiler-RT-CHCK]: Index out of bounds error.\\00"
+
+    define void @orcc_oob_abort() {
+    entry:
+      call void @puts(i8* getelementptr inbounds ([19 x i8], [19 x i8]* @.oob_msg, i32 0, i32 0))
+      call void @exit(i32 1)
+      unreachable
+    }
+    """]
     for global_line in extension_registry["llvm.globals"]:
         lines.append(global_line)
     for g in prog.globals:
@@ -1532,10 +1597,14 @@ def check_types(prog: Program):
             return 'char'
         if isinstance(expr, StrLit):
             return 'string'
+        if isinstance(expr, NullLit):
+            return 'null'
         if isinstance(expr, Var):
             typ = env.lookup(expr.name)
             if not typ:
                 raise TypeError(f"Use of undeclared variable '{expr.name}'")
+            if typ == "undefined":
+                raise TypeError(f"Use of variable '{expr.name}' after deref (use-after-free)")
             if expr.name in crumb_map:
                 rmax, wmax, rc, wc = crumb_map[expr.name]
                 crumb_map[expr.name] = (rmax, wmax, rc + 1, wc)
@@ -1687,7 +1756,7 @@ def check_types(prog: Program):
                     int_targets = {"int8", "int16", "int32", "int64"}
                     if raw_typ in int_targets:
                         return
-                common = unify_int_types(expr_type, raw_typ)
+                common = unify_types(expr_type, raw_typ)
                 if expr_type != raw_typ and (not common or common != raw_typ):
                     raise TypeError(
                         f"Type mismatch in variable init '{stmt.name}': expected {raw_typ}, got {expr_type}")
@@ -1704,6 +1773,17 @@ def check_types(prog: Program):
             if stmt.name in crumb_map:
                 rmax, wmax, rc, wc = crumb_map[stmt.name]
                 crumb_map[stmt.name] = (rmax, wmax, rc, wc + 1)
+        elif isinstance(stmt, DerefStmt):
+            typ = env.lookup(stmt.varname)
+            if not typ:
+                raise TypeError(f"Cannot deref undeclared variable '{stmt.varname}'")
+            if stmt.varname not in crumb_map:
+                raise TypeError(f"Cannot deref non-crumble variable '{stmt.varname}'")
+            rmax, wmax, rc, wc = crumb_map[stmt.varname]
+            if (rmax is not None and rc + 1 > rmax) or (wmax is not None and wc + 1 > wmax):
+                raise TypeError(f"Crumb limit exceeded on deref({stmt.varname})")
+            crumb_map[stmt.varname] = (rmax, wmax, rc + 1, wc + 1)
+            env.declare(stmt.varname, "undefined")
         elif isinstance(stmt, CrumbleStmt):
             if env.lookup(stmt.name) is None:
                 raise TypeError(f"Cannot crumble undeclared variable '{stmt.name}'")
@@ -1869,46 +1949,64 @@ def main():
         src = f.read()
     tokens = lex(src)
     parser_obj = Parser(tokens)
-    prog = parser_obj.parse()
-    all_funcs = []
+    main_prog = parser_obj.parse()
     seen_imports = set()
     seen_func_signatures = set()
-    for imp in prog.imports:
-        candidates = []
-        if imp.endswith(".or"):
-            candidates.append(imp + "cat")
-        elif imp.endswith(".sor"):
-            candidates.append(imp + "cat")
-        elif imp.endswith(".orcat") or imp.endswith(".sorcat"):
-            candidates.append(imp)
-        else:
-            candidates.append(imp + ".orcat")
-            candidates.append(imp + ".sorcat")
-        resolved_path = None
-        for path in candidates:
-            if os.path.exists(path):
-                resolved_path = os.path.abspath(path)
-                break
-        if not resolved_path:
-            raise RuntimeError(f"Import '{imp}' not found. Tried: {candidates}")
-        if resolved_path in seen_imports:
-            continue
-        seen_imports.add(resolved_path)
-        with open(resolved_path, 'r', encoding="utf-8", errors="ignore") as f:
-            imported_src = f.read()
-        imported_tokens = lex(imported_src)
-        imported_parser = Parser(imported_tokens)
-        sub_prog = imported_parser.parse()
-        check_types(sub_prog)
-        for func in sub_prog.funcs:
-            if func.access == 'pub':
-                sig = (func.name, len(func.params), func.is_extern)
-                if sig not in seen_func_signatures:
-                    all_funcs.append(func)
-                    seen_func_signatures.add(sig)
-    prog.funcs = all_funcs + prog.funcs
-    check_types(prog)
-    llvm = compile_program(prog)
+    all_funcs = []
+    all_structs = []
+    all_enums = []
+    all_globals = []
+    def load_imports_recursively(prog):
+        nonlocal all_funcs, all_structs, all_enums, all_globals
+        for imp in prog.imports:
+            candidates = []
+            if imp.endswith(".or"):
+                candidates.append(imp + "cat")
+            elif imp.endswith(".sor"):
+                candidates.append(imp + "cat")
+            elif imp.endswith(".orcat") or imp.endswith(".sorcat"):
+                candidates.append(imp)
+            else:
+                candidates += [imp + ".orcat", imp + ".sorcat"]
+            resolved_path = None
+            for path in candidates:
+                if os.path.exists(path):
+                    resolved_path = os.path.abspath(path)
+                    break
+            if not resolved_path:
+                raise RuntimeError(f"Import '{imp}' not found. Tried: {candidates}")
+            if resolved_path in seen_imports:
+                continue
+            seen_imports.add(resolved_path)
+            with open(resolved_path, 'r', encoding="utf-8", errors="ignore") as f:
+                imported_src = f.read()
+            imported_tokens = lex(imported_src)
+            imported_parser = Parser(imported_tokens)
+            sub_prog = imported_parser.parse()
+            load_imports_recursively(sub_prog)
+            all_structs.extend(sub_prog.structs)
+            all_enums.extend(sub_prog.enums)
+            all_globals.extend(sub_prog.globals)
+            for func in sub_prog.funcs:
+                if func.access == 'pub':
+                    sig = (func.name, len(func.params), func.is_extern)
+                    if sig not in seen_func_signatures:
+                        all_funcs.append(func)
+                        seen_func_signatures.add(sig)
+    load_imports_recursively(main_prog)
+    all_funcs.extend(main_prog.funcs)
+    all_structs.extend(main_prog.structs)
+    all_enums.extend(main_prog.enums)
+    all_globals.extend(main_prog.globals)
+    final_prog = Program(
+        funcs=all_funcs,
+        structs=all_structs,
+        enums=all_enums,
+        globals=all_globals,
+        imports=main_prog.imports
+    )
+    check_types(final_prog)
+    llvm = compile_program(final_prog)
     with open(args.output, 'w', encoding="utf-8", errors="ignore") as f:
         f.write(llvm)
 if __name__ == "__main__":
