@@ -794,8 +794,10 @@ def new_label(base='L') -> str:
     global label_id
     label_id += 1
     return f"{base}{label_id}"
-def unify_int_types(t1: str, t2: str) -> Optional[str]:
+def unify_int_types(t1: Optional[str], t2: Optional[str]) -> Optional[str]:
     rank = {"int8": 1, "int16": 2, "int32": 3, "int64": 4, "int": 4}
+    if t1 is None or t2 is None:
+        return None
     for t in [t1, t2]:
         if t not in rank and not t.startswith("int"):
             return None
@@ -803,6 +805,10 @@ def unify_int_types(t1: str, t2: str) -> Optional[str]:
 def unify_types(t1: str, t2: str) -> Optional[str]:
     if t1 == t2:
         return t1
+    if t1 == 'null':
+        return t2 if t2.endswith('*') or t2 == 'string' else None
+    if t2 == 'null':
+        return t1 if t1.endswith('*') or t1 == 'string' else None
     int_common = unify_int_types(t1, t2)
     if int_common:
         return int_common
@@ -1532,6 +1538,8 @@ def check_types(prog: Program):
             return 'char'
         if isinstance(expr, StrLit):
             return 'string'
+        if isinstance(expr, NullLit):
+            return 'null'
         if isinstance(expr, Var):
             typ = env.lookup(expr.name)
             if not typ:
@@ -1687,7 +1695,7 @@ def check_types(prog: Program):
                     int_targets = {"int8", "int16", "int32", "int64"}
                     if raw_typ in int_targets:
                         return
-                common = unify_int_types(expr_type, raw_typ)
+                common = unify_types(expr_type, raw_typ)
                 if expr_type != raw_typ and (not common or common != raw_typ):
                     raise TypeError(
                         f"Type mismatch in variable init '{stmt.name}': expected {raw_typ}, got {expr_type}")
