@@ -27,3 +27,16 @@ pub extern fn get_os() <string>;
 pub extern fn strtrim(string in) <string>;
 pub extern fn tal(string s) <string>;
 pub extern fn tac(string s) <string>;
+
+pub extern fn fcasti8(float d) <int8>;
+pub extern fn fcasti16(float d) <int16>;
+pub extern fn fcasti32(float d) <int32>;
+pub extern fn fcasti64(float d) <int64>;
+pub extern fn fcasti(float d) <int>;
+
+pub extern fn i8castf(int8 i) <float>;
+pub extern fn i16castf(int16 i) <float>;
+pub extern fn i32castf(int32 i) <float>;
+pub extern fn i64castf(int64 i) <float>;
+pub extern fn icastf(int i) <float>;
+
