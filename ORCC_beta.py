@@ -37,7 +37,7 @@ KEYWORDS = {
     'int', 'int8', 'int16', 'int32', 'int64',
     'float', 'bool', 'char', 'string', 'void',
     'true', 'false', 'struct', 'enum', 'match', 'nomd',
-    'pin', 'crumble', 'null'
+    'pin', 'crumble', 'null', 'continue'
     }
 SINGLE_CHARS = {
     '(': 'LPAREN',   ')': 'RPAREN',   '{': 'LBRACE',   '}': 'RBRACE',
@@ -349,6 +349,9 @@ class Index(Expr):
     array: Expr
     index: Expr
 @dataclass
+class ContinueStmt(Stmt):
+    pass
+@dataclass
 class Ternary(Expr):
     cond: Expr
     then_expr: Expr
@@ -374,6 +377,7 @@ struct_field_map: Dict[str, List[Tuple[str, str]]] = {}
 generated_mono: Dict[str, bool] = {}
 all_funcs: List[Func] = []
 enum_variant_map: Dict[str, List[Tuple[str, Optional[str]]]] = {}
+loop_stack: List[Dict[str, str]] = []
 class Parser:
     def __init__(self, tokens: List[Token]):
         self.declared_vars: Dict[str, VarDecl] = {}
@@ -564,6 +568,10 @@ class Parser:
             return self.parse_while()
         if self.match('CRUMBLE'):
             return self.parse_crumble()
+        if t.kind == 'CONTINUE':
+            self.bump()
+            self.expect('SEMI')
+            return ContinueStmt()
         if t.kind == 'RETURN':
             return self.parse_return()
         return self.parse_expr_stmt()
@@ -1290,6 +1298,12 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
                 out.append(f"  store {llvm_ty} {val}, {llvm_ty}* {ir_name}")
             else:
                 out.append(f"  store {llvm_ty} {val}, {llvm_ty}* %{ir_name}_addr")
+    elif isinstance(stmt, ContinueStmt):
+        if not loop_stack:
+            raise RuntimeError("`continue` used outside of a loop")
+        head_lbl = loop_stack[-1]['continue']
+        out.append(f"  br label %{head_lbl}")
+        out.append("  unreachable")
     elif isinstance(stmt, IndexAssign):
         idx = gen_expr(stmt.index, out)
         val = gen_expr(stmt.value, out)
@@ -1344,9 +1358,10 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
             out.append(f"  br label %{end_lbl}")
         out.append(f"{end_lbl}:")
     elif isinstance(stmt, WhileStmt):
-        head_lbl = new_label('while')
-        body_lbl = new_label('body')
-        end_lbl = new_label('endwhile')
+        head_lbl = new_label('while_head')
+        body_lbl = new_label('while_body')
+        end_lbl = new_label('while_end')
+        loop_stack.append({'continue': head_lbl, 'break': end_lbl})
         out.append(f"  br label %{head_lbl}")
         out.append(f"{head_lbl}:")
         cond = gen_expr(stmt.cond, out)
@@ -1358,6 +1373,7 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
         symbol_table.pop()
         out.append(f"  br label %{head_lbl}")
         out.append(f"{end_lbl}:")
+        loop_stack.pop()
     elif isinstance(stmt, ReturnStmt):
         val = gen_expr(stmt.expr, out) if stmt.expr else None
         if val:
@@ -1825,6 +1841,8 @@ def check_types(prog: Program):
                 if expr_type != raw_typ and (not common or common != raw_typ):
                     raise TypeError(
                         f"Type mismatch in variable init '{stmt.name}': expected {raw_typ}, got {expr_type}")
+        elif isinstance(stmt, ContinueStmt):
+            return
         elif isinstance(stmt, Assign):
             if isinstance(stmt.name, UnaryDeref):
                 ptr_type = check_expr(stmt.name.ptr)
