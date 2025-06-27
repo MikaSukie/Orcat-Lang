@@ -1,17 +1,14 @@
 '''
  * This file is licensed under the GPL-3 License (or AGPL-3 if applicable)
  * Copyright (C) 2025  MikaSukie (old user), MikaLorielle (alt user), EmikaMai (current user), JaydenFreeman (legal name)
-
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
-
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
-
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 '''
@@ -40,7 +37,7 @@ KEYWORDS = {
     'int', 'int8', 'int16', 'int32', 'int64',
     'float', 'bool', 'char', 'string', 'void',
     'true', 'false', 'struct', 'enum', 'match', 'nomd',
-    'pin', 'crumble', 'null', 'deref'
+    'pin', 'crumble', 'null'
     }
 SINGLE_CHARS = {
     '(': 'LPAREN',   ')': 'RPAREN',   '{': 'LBRACE',   '}': 'RBRACE',
@@ -269,6 +266,12 @@ class GlobalVar:
     nomd: bool = False
     pinned: bool = False
 @dataclass
+class DerefStmt(Stmt):
+    varname: str
+@dataclass
+class UnaryDeref(Expr):
+    ptr: Expr
+@dataclass
 class BinOp(Expr): op: str; left: Expr; right: Expr
 @dataclass
 class Call(Expr): name: str; args: List[Expr]
@@ -294,7 +297,9 @@ class VarDecl(Stmt):
     expr: Optional[Expr]
     nomd: bool = False
 @dataclass
-class Assign(Stmt): name: str; expr: Expr
+class Assign(Stmt):
+    name: Union[str, Expr]
+    expr: Expr
 @dataclass
 class StructField:
     name: str
@@ -369,7 +374,6 @@ struct_field_map: Dict[str, List[Tuple[str, str]]] = {}
 generated_mono: Dict[str, bool] = {}
 all_funcs: List[Func] = []
 enum_variant_map: Dict[str, List[Tuple[str, Optional[str]]]] = {}
-
 class Parser:
     def __init__(self, tokens: List[Token]):
         self.declared_vars: Dict[str, VarDecl] = {}
@@ -406,9 +410,7 @@ class Parser:
                         raw = self.bump().value
                     else:
                         raise SyntaxError(f"Expected import path, got {self.peek().kind} at {self.peek().line}:{self.peek().col}")
-
                     imports.append(raw)
-
                     if self.peek().kind == 'SEMI':
                         self.bump()
                         break
@@ -525,6 +527,8 @@ class Parser:
         self.expect('RPAREN')
         self.expect('LT')
         ret_type = self.bump().value
+        if self.match('STAR'):
+            ret_type += '*'
         self.expect('GT')
         if is_extern:
             self.expect('SEMI')
@@ -542,10 +546,14 @@ class Parser:
         t = self.peek()
         if t.kind == 'MATCH':
             return self.parse_match()
+        if t.kind == 'STAR':
+            return self.parse_ptr_assign()
         if t.kind == 'IDENT' and self.tokens[self.pos + 1].kind == 'EQUAL':
             return self.parse_assign()
         if t.kind == 'IDENT' and self.tokens[self.pos + 1].kind == 'LBRACKET':
             return self.parse_index_assign()
+        if t.kind == 'IDENT' and t.value == 'deref' and self.tokens[self.pos + 1].kind == 'LPAREN':
+            return self.parse_deref()
         if t.kind == 'IDENT' and self.tokens[self.pos + 1].kind == 'LPAREN':
             return self.parse_expr_stmt()
         if t.kind in {'PUB', 'PRIV', 'PROT', 'NOMD'} or t.kind in TYPE_TOKENS or t.kind == 'IDENT':
@@ -576,6 +584,20 @@ class Parser:
                 raise SyntaxError(f"Unknown crumb kind '!{kw}'")
         self.expect('SEMI')
         return CrumbleStmt(var_name, max_r, max_w)
+    def parse_ptr_assign(self) -> Stmt:
+        self.expect('STAR')
+        ptr_expr = self.parse_primary()
+        self.expect('EQUAL')
+        val_expr = self.parse_expr()
+        self.expect('SEMI')
+        return Assign(UnaryDeref(ptr_expr), val_expr)
+    def parse_deref(self) -> DerefStmt:
+        self.expect('IDENT')
+        self.expect('LPAREN')
+        varname = self.expect('IDENT').value
+        self.expect('RPAREN')
+        self.expect('SEMI')
+        return DerefStmt(varname)
     def parse_match(self) -> Match:
         self.expect('MATCH')
         self.expect('LPAREN')
@@ -721,6 +743,10 @@ class Parser:
             'AND': 1, 'OR': 0
         }.get(op, 0)
     def parse_primary(self) -> Expr:
+        if self.peek().kind == 'STAR':
+            self.bump()
+            inner = self.parse_primary()
+            return UnaryDeref(inner)
         if self.peek().kind == 'BANG':
             self.bump()
             inner = self.parse_primary()
@@ -894,6 +920,18 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
                 out.append(f"  {idx_cast} = sext {idx_llvm} {idx} to i32")
         else:
             idx_cast = idx
+        len_var = f"%{var_name}_len"
+        len_val = new_tmp()
+        out.append(f"  {len_val} = load i32, i32* {len_var}")
+        ok = new_tmp()
+        out.append(f"  {ok} = icmp ult i32 {idx_cast}, {len_val}")
+        fail_lbl = new_label("oob_fail")
+        ok_lbl = new_label("oob_ok")
+        out.append(f"  br i1 {ok}, label %{ok_lbl}, label %{fail_lbl}")
+        out.append(f"{fail_lbl}:")
+        out.append(f"  call void @orcc_oob_abort()")
+        out.append(f"  unreachable")
+        out.append(f"{ok_lbl}:")
         out.append(f"  {tmp_ptr} = getelementptr inbounds {llvm_ty}, {llvm_ty}* %{name}_addr, i32 0, i32 {idx_cast}")
         out.append(f"  {tmp_val} = load {base_ty}, {base_ty}* {tmp_ptr}")
         return tmp_val
@@ -1102,6 +1140,11 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
         return tmp_ptr
     raise RuntimeError(f"Unhandled expr: {expr}")
 def infer_type(expr: Expr) -> str:
+    if isinstance(expr, UnaryDeref):
+        ptr_type = infer_type(expr.ptr)
+        if not ptr_type.endswith("*"):
+            raise RuntimeError(f"Dereferencing non-pointer type '{ptr_type}'")
+        return ptr_type[:-1]
     if isinstance(expr, IntLit):
         return 'int'
     if isinstance(expr, FloatLit):
@@ -1136,13 +1179,10 @@ def infer_type(expr: Expr) -> str:
         base_type = clean_struct_name(infer_type(expr.base))
         if base_type not in struct_field_map:
             raise RuntimeError(f"Struct type '{base_type}' not found")
-
         fields = struct_field_map[base_type]
         field_dict = dict(fields)
-
         if expr.field not in field_dict:
             raise RuntimeError(f"Field '{expr.field}' not in struct '{base_type}'")
-
         return field_dict[expr.field]
     if isinstance(expr, StructInit):
         return expr.name + "*"
@@ -1162,6 +1202,8 @@ def infer_type(expr: Expr) -> str:
             if infer_type(expr.args[0]) != "bool":
                 raise RuntimeError("Unary ! requires bool operand")
             return "bool"
+        if expr.name == "exit":
+            return "void"
         if expr.name not in func_table:
             raise RuntimeError(f"Call to undefined function '{expr.name}'")
         ret_llvm_ty = func_table[expr.name]
@@ -1204,37 +1246,55 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
             base, count = stmt.typ.split("[")
             count = count[:-1]
             llvm_ty = f"[{count} x {type_map[base]}]"
-        elif stmt.typ in type_map:
-            llvm_ty = type_map[stmt.typ]
+            if not symbol_table.lookup(stmt.name):
+                out.append(f"  %{stmt.name}_addr = alloca {llvm_ty}")
+                out.append(f"  %{stmt.name}_len  = alloca i32")
+                out.append(f"  store i32 {count}, i32* %{stmt.name}_len")
+                symbol_table.declare(stmt.name, llvm_ty, stmt.name)
         else:
-            llvm_ty = f"%struct.{stmt.typ}"
-        out.append(f"  %{stmt.name}_addr = alloca {llvm_ty}")
-        symbol_table.declare(stmt.name, llvm_ty, stmt.name)
+            if stmt.typ.endswith("*"):
+                base = stmt.typ.rstrip("*")
+                base_llvm = type_map.get(base, f"%struct.{base}")
+                llvm_ty = f"{base_llvm}*"
+            else:
+                llvm_ty = type_map.get(stmt.typ, f"%struct.{stmt.typ}")
+            if not symbol_table.lookup(stmt.name):
+                out.append(f"  %{stmt.name}_addr = alloca {llvm_ty}")
+                symbol_table.declare(stmt.name, llvm_ty, stmt.name)
         if stmt.expr:
             val = gen_expr(stmt.expr, out)
-            src_type = type_map.get(infer_type(stmt.expr), f"%struct.{infer_type(stmt.expr)}")
-            if src_type != llvm_ty:
+            src_llvm = type_map.get(infer_type(stmt.expr), f"%struct.{infer_type(stmt.expr)}")
+            if src_llvm != llvm_ty:
                 cast_tmp = new_tmp()
-                if llvm_int_bitsize(src_type) is not None and llvm_int_bitsize(llvm_ty) is not None:
-                    if llvm_int_bitsize(src_type) > llvm_int_bitsize(llvm_ty):
-                        out.append(f"  {cast_tmp} = trunc {src_type} {val} to {llvm_ty}")
+                bits_src = llvm_int_bitsize(src_llvm)
+                bits_dst = llvm_int_bitsize(llvm_ty)
+                if bits_src and bits_dst:
+                    if bits_src > bits_dst:
+                        out.append(f"  {cast_tmp} = trunc {src_llvm} {val} to {llvm_ty}")
                     else:
-                        out.append(f"  {cast_tmp} = sext {src_type} {val} to {llvm_ty}")
+                        out.append(f"  {cast_tmp} = sext {src_llvm} {val} to {llvm_ty}")
                     val = cast_tmp
             out.append(f"  store {llvm_ty} {val}, {llvm_ty}* %{stmt.name}_addr")
+        return
     elif isinstance(stmt, Assign):
-        val = gen_expr(stmt.expr, out)
-        llvm_ty, ir_name = symbol_table.lookup(stmt.name)
-        if ir_name.startswith('@'):
-            out.append(f"  store {llvm_ty} {val}, {llvm_ty}* {ir_name}")
+        if isinstance(stmt.name, UnaryDeref):
+            ptr_val = gen_expr(stmt.name.ptr, out)
+            val = gen_expr(stmt.expr, out)
+            val_ty = infer_type(stmt.expr)
+            llvm_ty = type_map.get(val_ty, f"%struct.{val_ty}")
+            out.append(f"  store {llvm_ty} {val}, {llvm_ty}* {ptr_val}")
         else:
-            out.append(f"  store {llvm_ty} {val}, {llvm_ty}* %{ir_name}_addr")
+            val = gen_expr(stmt.expr, out)
+            llvm_ty, ir_name = symbol_table.lookup(stmt.name)
+            if ir_name.startswith('@'):
+                out.append(f"  store {llvm_ty} {val}, {llvm_ty}* {ir_name}")
+            else:
+                out.append(f"  store {llvm_ty} {val}, {llvm_ty}* %{ir_name}_addr")
     elif isinstance(stmt, IndexAssign):
         idx = gen_expr(stmt.index, out)
         val = gen_expr(stmt.value, out)
         llvm_ty, name = symbol_table.lookup(stmt.array)
         base_ty = extract_array_base_type(llvm_ty)
-        tmp_ptr = new_tmp()
         idx_ty = infer_type(stmt.index)
         idx_llvm = type_map[idx_ty]
         if idx_llvm != "i32":
@@ -1245,8 +1305,21 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
                 out.append(f"  {idx_cast} = sext {idx_llvm} {idx} to i32")
         else:
             idx_cast = idx
-        out.append(f"  {tmp_ptr} = getelementptr inbounds {llvm_ty}, {llvm_ty}* %{name}_addr, i32 0, i32 {idx_cast}")
-        out.append(f"  store {base_ty} {val}, {base_ty}* {tmp_ptr}")
+        len_var = f"%{stmt.array}_len"
+        len_val = new_tmp()
+        out.append(f"  {len_val} = load i32, i32* {len_var}")
+        ok = new_tmp()
+        out.append(f"  {ok} = icmp ult i32 {idx_cast}, {len_val}")
+        fail_lbl = new_label("oob_fail")
+        ok_lbl   = new_label("oob_ok")
+        out.append(f"  br i1 {ok}, label %{ok_lbl}, label %{fail_lbl}")
+        out.append(f"{fail_lbl}:")
+        out.append(f"  call void @orcc_oob_abort()")
+        out.append(f"  unreachable")
+        out.append(f"{ok_lbl}:")
+        ptr_tmp = new_tmp()
+        out.append(f"  {ptr_tmp} = getelementptr inbounds {llvm_ty}, {llvm_ty}* %{name}_addr, i32 0, i32 {idx_cast}")
+        out.append(f"  store {base_ty} {val}, {base_ty}* {ptr_tmp}")
     elif isinstance(stmt, IfStmt):
         cond = gen_expr(stmt.cond, out)
         then_lbl = new_label('then')
@@ -1307,6 +1380,15 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
             out.append(f"  ret void")
     elif isinstance(stmt, ExprStmt):
         gen_expr(stmt.expr, out)
+    elif isinstance(stmt, DerefStmt):
+        llvm_ty, llvm_name = symbol_table.lookup(stmt.varname)
+        ptr_tmp = new_tmp()
+        out.append(f"  {ptr_tmp} = load {llvm_ty}, {llvm_ty}* %{llvm_name}_addr")
+        if not llvm_ty.endswith("*"):
+            raise RuntimeError(f"Cannot deref non-pointer type '{llvm_ty}'")
+        cast_tmp = new_tmp()
+        out.append(f"  {cast_tmp} = bitcast {llvm_ty} {ptr_tmp} to i8*")
+        out.append(f"  call void @free(i8* {cast_tmp})")
     elif isinstance(stmt, Match):
         enum_ptr = gen_expr(stmt.expr, out)
         tag_tmp = new_tmp()
@@ -1346,23 +1428,29 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 def gen_func(fn: Func) -> List[str]:
     if fn.type_params:
         return []
+    def llvm_ty_of(typ: str) -> str:
+        base = typ.rstrip('*')
+        if base in type_map:
+            return f"{type_map[base]}*" if typ.endswith("*") else type_map[base]
+        struct_ir = f"%struct.{base}"
+        return f"{struct_ir}*" if typ.endswith("*") else struct_ir
     if fn.is_extern:
-        param_sig = ", ".join(f"{type_map[t]}" for t, _ in fn.params)
-        ret_ty = type_map[fn.ret_type]
+        param_sig = ", ".join(f"{llvm_ty_of(t)} %{n}" for t, n in fn.params)
+        ret_ty    = llvm_ty_of(fn.ret_type)
         generated_mono[fn.name] = True
         return [f"declare {ret_ty} @{fn.name}({param_sig})"]
     symbol_table.push()
     generated_mono[fn.name] = True
-    ret_ty = type_map[fn.ret_type]
     if fn.name == "main":
-        out: List[str] = [f"define i32 @main(i32 %argc, i8** %argv) {{", "entry:"]
-        out.append("  store i8** %argv, i8*** @__argv_ptr")
         ret_ty = "i32"
+        out    = [f"define i32 @main(i32 %argc, i8** %argv) {{", "entry:"]
+        out.append("  store i8** %argv, i8*** @__argv_ptr")
     else:
-        param_sig = ", ".join(f"{type_map.get(t, f'%struct.{t}')} %{n}" for t, n in fn.params)
-        out: List[str] = [f"define {ret_ty} @{fn.name}({param_sig}) {{", "entry:"]
+        ret_ty    = llvm_ty_of(fn.ret_type)
+        param_sig = ", ".join(f"{llvm_ty_of(t)} %{n}" for t, n in fn.params)
+        out       = [f"define {ret_ty} @{fn.name}({param_sig}) {{", "entry:"]
     for typ, name in fn.params:
-        llvm_ty = type_map.get(typ, f"%struct.{typ}")
+        llvm_ty = llvm_ty_of(typ)
         out.append(f"  %{name}_addr = alloca {llvm_ty}")
         out.append(f"  store {llvm_ty} %{name}, {llvm_ty}* %{name}_addr")
         symbol_table.declare(name, llvm_ty, name)
@@ -1376,8 +1464,7 @@ def gen_func(fn: Func) -> List[str]:
             gen_stmt(stmt, out, ret_ty)
     for reg in extension_registry["registrations"].values():
         if reg.get("type") == "function" and fn.name.startswith("__launch_"):
-            action_lines = reg.get("actions", [])
-            for line in action_lines:
+            for line in reg.get("actions", []):
                 if "<selfname>" in line:
                     line = line.replace("<selfname>", fn.name[len("__launch_"):])
                 out.append(f"  {line}")
@@ -1405,6 +1492,9 @@ def compile_program(prog: Program) -> str:
             continue
         llvm_ret_ty = type_map.get(fn.ret_type, f"%struct.{fn.ret_type}")
         func_table[fn.name] = llvm_ret_ty
+    func_table["exit"] = "void"
+    func_table["malloc"] = "i8*"
+    func_table["free"] = "void"
     has_user_main = False
     for fn in prog.funcs:
         if fn.name == "main":
@@ -1418,7 +1508,20 @@ def compile_program(prog: Program) -> str:
         "; ModuleID = 'orcat'",
         f"source_filename = \"{compiled}\"",
         "@__argv_ptr = global i8** null",
-        ""
+        "declare i8* @malloc(i64)",
+        "declare void @free(i8*)",
+        "",
+        "declare void @puts(i8*)",
+        "declare void @exit(i32)",
+        """
+    @.oob_msg = private unnamed_addr constant [52 x i8] c"[ORCatCompiler-RT-CHCK]: Index out of bounds error.\\00"
+    define void @orcc_oob_abort() {
+    entry:
+      call void @puts(i8* getelementptr inbounds ([19 x i8], [19 x i8]* @.oob_msg, i32 0, i32 0))
+      call void @exit(i32 1)
+      unreachable
+    }
+    """
     ]
     for global_line in extension_registry["llvm.globals"]:
         lines.append(global_line)
@@ -1544,6 +1647,8 @@ def check_types(prog: Program):
             typ = env.lookup(expr.name)
             if not typ:
                 raise TypeError(f"Use of undeclared variable '{expr.name}'")
+            if typ == "undefined":
+                raise TypeError(f"Use of variable '{expr.name}' after deref (use-after-free)")
             if expr.name in crumb_map:
                 rmax, wmax, rc, wc = crumb_map[expr.name]
                 crumb_map[expr.name] = (rmax, wmax, rc + 1, wc)
@@ -1588,6 +1693,27 @@ def check_types(prog: Program):
                 return "bool"
             fn = funcs.get(expr.name)
             if fn is None:
+                if expr.name == "exit":
+                    if len(expr.args) != 1:
+                        raise TypeError("exit() takes exactly one int argument")
+                    arg_ty = check_expr(expr.args[0])
+                    if not arg_ty.startswith("int"):
+                        raise TypeError("exit() expects an integer argument")
+                    return "void"
+                if expr.name == "malloc":
+                    if len(expr.args) != 1:
+                        raise TypeError("malloc() takes exactly one int argument")
+                    arg_ty = check_expr(expr.args[0])
+                    if not arg_ty.startswith("int"):
+                        raise TypeError("malloc() expects an integer argument")
+                    return "int*"
+                if expr.name == "free":
+                    if len(expr.args) != 1:
+                        raise TypeError("free() takes exactly one pointer argument")
+                    arg_ty = check_expr(expr.args[0])
+                    if not arg_ty.endswith("*"):
+                        raise TypeError("free() expects a pointer argument")
+                    return "void"
                 raise TypeError(f"Call to undeclared function '{expr.name}'")
             if fn.type_params:
                 if len(fn.type_params) != 1:
@@ -1700,6 +1826,17 @@ def check_types(prog: Program):
                     raise TypeError(
                         f"Type mismatch in variable init '{stmt.name}': expected {raw_typ}, got {expr_type}")
         elif isinstance(stmt, Assign):
+            if isinstance(stmt.name, UnaryDeref):
+                ptr_type = check_expr(stmt.name.ptr)
+                if not ptr_type.endswith('*'):
+                    raise TypeError(f"Dereferencing non-pointer type '{ptr_type}'")
+                pointee = ptr_type[:-1]
+                expr_type = check_expr(stmt.expr)
+                if expr_type != pointee:
+                    raise TypeError(
+                        f"Pointer-assign type mismatch: attempted to store '{expr_type}' into '{ptr_type}'"
+                    )
+                return
             var_type = env.lookup(stmt.name)
             if not var_type:
                 raise TypeError(f"Assign to undeclared variable '{stmt.name}'")
@@ -1712,6 +1849,13 @@ def check_types(prog: Program):
             if stmt.name in crumb_map:
                 rmax, wmax, rc, wc = crumb_map[stmt.name]
                 crumb_map[stmt.name] = (rmax, wmax, rc, wc + 1)
+        elif isinstance(stmt, DerefStmt):
+            ptr_typ = env.lookup(stmt.varname)
+            if ptr_typ is None:
+                raise TypeError(f"Cannot deref undeclared variable '{stmt.varname}'")
+            if not ptr_typ.endswith('*'):
+                raise TypeError(f"Dereferencing non-pointer variable '{stmt.varname}' of type '{ptr_typ}'")
+            env.declare(stmt.varname, "undefined")
         elif isinstance(stmt, CrumbleStmt):
             if env.lookup(stmt.name) is None:
                 raise TypeError(f"Cannot crumble undeclared variable '{stmt.name}'")
