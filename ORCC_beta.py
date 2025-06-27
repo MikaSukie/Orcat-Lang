@@ -401,7 +401,6 @@ class Parser:
     def parse(self) -> Program:
         funcs = []
         imports = []
-        macros = []
         structs = []
         enums = []
         globals = []
