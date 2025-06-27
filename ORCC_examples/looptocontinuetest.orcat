@@ -1,0 +1,18 @@
+import C_io;
+import C_types;
+
+pub fn main() <int> {
+    int i = 0;
+    while (i < 5) {
+        i = i + 1;
+        if (i == 3) {
+            print("SKIPPING\n");
+            continue;
+        }
+        print("i is ");
+        print(itostr(i));
+        print("\n");
+    }
+
+    return 0;
+}
