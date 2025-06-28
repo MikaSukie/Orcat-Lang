@@ -23,7 +23,7 @@ While the compiler core is functional, work is ongoing on:
 - ⚙️ Runtime and performance enhancements
 
 The syntax has been fully built and is being iterated on.  
-Want to be part of the development journey?
+Want to be part of this?
 
 👉 **[Join the Discord!](https://discord.gg/zmnuz4h88x)**
 
