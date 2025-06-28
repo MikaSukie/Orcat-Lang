@@ -31,19 +31,13 @@ Want to be part of the development journey?
 
 ## 📌 Quick Notes
 
-- This is a “small” but ambitious compiler project.
-- Designed with extensibility, safety, and simplicity in mind.
-- Aims to provide a fresh take on how compiled languages can evolve.
+- This is a “small” but VERY ambitious compiler project.
+- Designed with extensibility as a top priority
+- *(because I do not like compiled languages that slap the dev for doing something harmless),
+- safety, and simplicity in mind.
 
 ---
-
-<!-- You can re-add screenshots here later -->
-<!--
-<img src="https://github.com/user-attachments/assets/6d6430fc-0add-4efb-9693-37466af5d7cf" width="300"/>
-<img src="https://github.com/user-attachments/assets/ea6a395c-a442-4f70-b163-2bb42841634c" width="300"/>
--->
-
 ---
 
 Stay tuned for more updates! 🌟  
-And thank you for checking out ORCat. 🐱
+And thank you for checking out ORCat. 🐋🐱
