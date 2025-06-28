@@ -2,6 +2,7 @@
 [![Issues](https://img.shields.io/github/issues/MikaLorielle/Orcat-Lang.svg)](https://github.com/MikaLorielle/Orcat-Lang/issues)
 [![Version](https://img.shields.io/badge/ORCatCompiler‑VER-1.8‑Beta-blue)](https://github.com/MikaLorielle/Orcat-Lang)
 ![GitHub last commit](https://img.shields.io/github/last-commit/MikaLorielle/Orcat-lang)
+[![Stars](https://img.shields.io/github/stars/MikaLorielle/Orcat-Lang.svg?style=social)](https://github.com/MikaLorielle/Orcat-Lang/stargazers)
 
 Currently In Active Development.</br>
 "Small" compiler but still working on standard libraries. </br>
