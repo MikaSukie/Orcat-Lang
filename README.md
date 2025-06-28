@@ -2,7 +2,7 @@
 
 <img src="https://github.com/user-attachments/assets/02dfcb6a-84e6-4954-b9a8-e911f462359f" width="200"/>
 
-# 🐾 ORCat Compiler
+# 🐋 ORCat Compiler 🐱
 
 [![Version](https://img.shields.io/badge/ORCatCompiler‑VER-1.8‑Beta-blue)](https://github.com/MikaLorielle/Orcat-Lang)
 ![GitHub last commit](https://img.shields.io/github/last-commit/MikaLorielle/Orcat-lang)
