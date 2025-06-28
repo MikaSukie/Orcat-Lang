@@ -14,7 +14,7 @@
 ---
 
 ## 🚧 Project Status
-
+🐋
 **ORCat** is currently in **active development**.  
 While the compiler core is functional, work is ongoing on:
 
@@ -36,7 +36,6 @@ Want to be part of the development journey?
 - *(because I do not like compiled languages that slap the dev for doing something harmless),
 - safety, and simplicity in mind.
 
----
 ---
 
 Stay tuned for more updates! 🌟  
