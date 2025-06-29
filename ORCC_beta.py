@@ -349,6 +349,10 @@ class Index(Expr):
     array: Expr
     index: Expr
 @dataclass
+class TypeofExpr(Expr):
+    kind: str
+    expr: Expr
+@dataclass
 class ContinueStmt(Stmt):
     pass
 @dataclass
@@ -781,6 +785,13 @@ class Parser:
                 return expr
             if t.kind == 'IDENT' and t.value == 'ORCC.get_args':
                 return Call('ORCC.get_args', [])
+            if t.kind == 'IDENT' and t.value in {'typeof', 'etypeof', 'kwtypeof',
+                                                 'kwetypeof'} and self.peek().kind == 'LPAREN':
+                fn = t.value
+                self.bump()
+                arg_expr = self.parse_expr()
+                self.expect('RPAREN')
+                return TypeofExpr(fn, arg_expr)
             if t.kind == 'IDENT':
                 base = Var(t.value)
                 if self.peek().kind == 'LBRACE':
@@ -872,6 +883,29 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
     if isinstance(expr, Call) and expr.name == 'ORCC.get_args':
         tmp = new_tmp()
         out.append(f"  {tmp} = load i8**, i8*** @__argv_ptr")
+        return tmp
+    if isinstance(expr, TypeofExpr):
+        inferred = infer_type(expr.expr)
+        if expr.kind == "kwtypeof" or expr.kind == "kwetypeof":
+            caps_type = inferred.upper()
+            return gen_expr(Var(caps_type), out)
+        if expr.kind == "typeof":
+            if inferred.startswith("int") and inferred != "int":
+                inferred = "int"
+        elif expr.kind == "etypeof":
+            pass
+        label = f"@.str{len(string_constants)}"
+        string_val = inferred
+        esc = string_val.replace('"', r'\"')
+        byte_len = len(string_val.encode("utf-8")) + 1
+        string_constants.append(
+            f'{label} = private unnamed_addr constant [{byte_len} x i8] c"{esc}\\00"'
+        )
+        tmp = new_tmp()
+        out.append(
+            f"  {tmp} = getelementptr inbounds [{byte_len} x i8], "
+            f"[{byte_len} x i8]* {label}, i32 0, i32 0"
+        )
         return tmp
     if isinstance(expr, FloatLit):
         tmp = new_tmp()
@@ -1182,6 +1216,14 @@ def infer_type(expr: Expr) -> str:
         if llvm_ty.startswith("%struct.") and llvm_ty.endswith("*"):
             return llvm_ty[len("%struct."):-1] + "*"
         return llvm_ty
+    if isinstance(expr, TypeofExpr):
+        inner_type = infer_type(expr.expr)
+        if expr.kind in {'typeof', 'kwtypeof'}:
+            return 'string' if 'typeof' in expr.kind else inner_type
+        elif expr.kind in {'etypeof', 'kwetypeof'}:
+            if inner_type == 'int':
+                return 'int64' if expr.kind.startswith('kw') else 'string'
+            return 'string' if expr.kind.startswith('type') else inner_type
     if isinstance(expr, FieldAccess):
         base_type = clean_struct_name(infer_type(expr.base))
         if base_type not in struct_field_map:
@@ -1668,6 +1710,12 @@ def check_types(prog: Program):
                 rmax, wmax, rc, wc = crumb_map[expr.name]
                 crumb_map[expr.name] = (rmax, wmax, rc + 1, wc)
             return typ
+        if isinstance(expr, TypeofExpr):
+            inner_type = check_expr(expr.expr)
+            if expr.kind in {"typeof", "etypeof"}:
+                return "string"
+            elif expr.kind in {"kwtypeof", "kwetypeof"}:
+                return inner_type
         if isinstance(expr, Ternary):
             cond_type = check_expr(expr.cond)
             if cond_type != 'bool':
