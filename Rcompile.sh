@@ -1,17 +1,9 @@
 #!/bin/bash
 clear
 
-start=$(date +%s%3N)
-
-./ORCC.bin main.orcat -o out.ll
-clang -Wno-override-module out.ll stdlib.c -o main
-
-./main
-echo "Exit code: $?"
-
-end=$(date +%s%3N)
-
-elapsed=$((end - start))
-elapsed_s=$((elapsed / 1000))
-elapsed_ms=$((elapsed % 1000))
-echo "Elapsed time: ${elapsed_s}.${elapsed_ms} seconds"
+time bash -c '
+  ./ORCC.bin main.orcat -o out.ll --config=ORCC.config &&
+  clang -Wno-override-module out.ll stdlib.c -o ocat &&
+  ./ocat
+  echo "Exit code: $?"
+'
