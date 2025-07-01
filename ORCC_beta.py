@@ -1574,7 +1574,7 @@ def compile_program(prog: Program) -> str:
     @.oob_msg = private unnamed_addr constant [52 x i8] c"[ORCatCompiler-RT-CHCK]: Index out of bounds error.\\00"
     define void @orcc_oob_abort() {
     entry:
-      call void @puts(i8* getelementptr inbounds ([19 x i8], [19 x i8]* @.oob_msg, i32 0, i32 0))
+      call void @puts(i8* getelementptr inbounds ([52 x i8], [52 x i8]* @.oob_msg, i32 0, i32 0))
       call void @exit(i32 1)
       unreachable
     }
