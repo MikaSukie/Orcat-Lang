@@ -1569,7 +1569,7 @@ def compile_program(prog: Program) -> str:
         "declare void @free(i8*)",
         "",
         "declare void @puts(i8*)",
-        "declare void @exit(i32)",
+        "declare void @exit(i64)",
         """
     @.oob_msg = private unnamed_addr constant [52 x i8] c"[ORCatCompiler-RT-CHCK]: Index out of bounds error.\\00"
     define void @orcc_oob_abort() {
