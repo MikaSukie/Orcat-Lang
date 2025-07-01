@@ -358,3 +358,91 @@ double i16castf(int16_t i)  { return (double)i; }
 double i32castf(int32_t i)  { return (double)i; }
 double i64castf(int64_t i)  { return (double)i; }
 double icastf(int64_t i)    { return (double)i; }
+
+typedef enum {
+    TAG_INT    = 1,
+    TAG_FLOAT  = 2,
+    TAG_BOOL   = 3,
+    TAG_STRING = 4
+} UnionTag;
+
+typedef struct {
+    int64_t tag;
+    union {
+        int64_t    i;
+        double     f;
+        bool       b;
+        const char *s;
+    } value;
+} ValueUnion;
+
+int64_t Umake_int(int64_t x) {
+    ValueUnion *v = malloc(sizeof *v);
+    if (!v) return 0;
+    v->tag       = TAG_INT;
+    v->value.i   = x;
+    return (int64_t)(uintptr_t)v;
+}
+
+int64_t Umake_float(double f) {
+    ValueUnion *v = malloc(sizeof *v);
+    if (!v) return 0;
+    v->tag       = TAG_FLOAT;
+    v->value.f   = f;
+    return (int64_t)(uintptr_t)v;
+}
+
+int64_t Umake_bool(bool b) {
+    ValueUnion *v = malloc(sizeof *v);
+    if (!v) return 0;
+    v->tag       = TAG_BOOL;
+    v->value.b   = b;
+    return (int64_t)(uintptr_t)v;
+}
+
+int64_t Umake_string(const char *s) {
+    if (!s) return 0;
+    ValueUnion *v = malloc(sizeof *v);
+    if (!v) return 0;
+    v->tag       = TAG_STRING;
+    v->value.s   = strdup(s);
+    if (!v->value.s) {
+        free(v);
+        return 0;
+    }
+    return (int64_t)(uintptr_t)v;
+}
+
+int64_t Uget_tag(int64_t h) {
+    ValueUnion *v = (ValueUnion*)(uintptr_t)h;
+    return v ? v->tag : 0;
+}
+
+int64_t Uget_int(int64_t h) {
+    ValueUnion *v = (ValueUnion*)(uintptr_t)h;
+    return (v && v->tag == TAG_INT) ? v->value.i : 0;
+}
+
+double Uget_float(int64_t h) {
+    ValueUnion *v = (ValueUnion*)(uintptr_t)h;
+    return (v && v->tag == TAG_FLOAT) ? v->value.f : 0.0;
+}
+
+bool Uget_bool(int64_t h) {
+    ValueUnion *v = (ValueUnion*)(uintptr_t)h;
+    return (v && v->tag == TAG_BOOL) ? v->value.b : false;
+}
+
+const char* Uget_string(int64_t h) {
+    ValueUnion *v = (ValueUnion*)(uintptr_t)h;
+    return (v && v->tag == TAG_STRING) ? v->value.s : "(invalid)";
+}
+
+void Ufree_union(int64_t h) {
+    ValueUnion *v = (ValueUnion*)(uintptr_t)h;
+    if (!v) return;
+    if (v->tag == TAG_STRING && v->value.s) {
+        free((void*)v->value.s);
+    }
+    free(v);
+}
