@@ -1,0 +1,52 @@
+// main.sorcat
+
+import C_types;
+import C_fileio;
+import C_io;
+import std;
+import C_union;
+
+pub fn main() <int> {
+    int a = Umake_int(123);
+    int b = Umake_float(3.14);
+    int c = Umake_bool(true);
+    int d = Umake_string("hello ORCatLang");
+
+    if (Uget_tag(a) == 1) {
+        string sa = itostr(Uget_int(a));
+        print("a is Int: ");
+        print(sa);
+        newline();
+        free_str(sa);
+    }
+
+    if (Uget_tag(b) == 2) {
+        string sb = ftostr(Uget_float(b));
+        print("b is Float: ");
+        print(sb);
+        newline();
+        free_str(sb);
+    }
+
+    if (Uget_tag(c) == 3) {
+        string sc = btostr(Uget_bool(c));
+        print("c is Bool: ");
+        print(sc);
+        newline();
+        free_str(sc);
+    }
+
+    if (Uget_tag(d) == 4) {
+        // Uget_string already returns a string
+        print("d is String: ");
+        print(Uget_string(d));
+        newline();
+    }
+
+    Ufree_union(a);
+    Ufree_union(b);
+    Ufree_union(c);
+    Ufree_union(d);
+
+    return 0;
+}
