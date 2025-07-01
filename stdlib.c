@@ -257,7 +257,7 @@ bool streq(const char* a, const char* b) {
     return strcmp(a, b) == 0;
 }
 
-double todouble(int x) {
+double tofloat(int x) {
     return (double)x;
 }
 
