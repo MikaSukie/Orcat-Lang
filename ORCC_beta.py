@@ -785,8 +785,7 @@ class Parser:
                 return expr
             if t.kind == 'IDENT' and t.value == 'ORCC.get_args':
                 return Call('ORCC.get_args', [])
-            if t.kind == 'IDENT' and t.value in {'typeof', 'etypeof', 'kwtypeof',
-                                                 'kwetypeof'} and self.peek().kind == 'LPAREN':
+            if t.kind == 'IDENT' and t.value in {'typeof', 'etypeof'} and self.peek().kind == 'LPAREN':
                 fn = t.value
                 self.bump()
                 arg_expr = self.parse_expr()
@@ -886,18 +885,19 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
         return tmp
     if isinstance(expr, TypeofExpr):
         inferred = infer_type(expr.expr)
-        if expr.kind == "kwtypeof" or expr.kind == "kwetypeof":
-            caps_type = inferred.upper()
-            return gen_expr(Var(caps_type), out)
-        if expr.kind == "typeof":
+        if expr.kind == "etypeof":
+            for orcat_name, llvm_name in type_map.items():
+                if inferred == llvm_name:
+                    inferred = orcat_name
+                    break
+        elif expr.kind == "typeof":
             if inferred.startswith("int") and inferred != "int":
                 inferred = "int"
-        elif expr.kind == "etypeof":
-            pass
+        else:
+            raise RuntimeError(f"{expr.kind} is not a supported typeof variant")
         label = f"@.str{len(string_constants)}"
-        string_val = inferred
-        esc = string_val.replace('"', r'\"')
-        byte_len = len(string_val.encode("utf-8")) + 1
+        esc = inferred.replace('"', r'\"')
+        byte_len = len(inferred.encode("utf-8")) + 1
         string_constants.append(
             f'{label} = private unnamed_addr constant [{byte_len} x i8] c"{esc}\\00"'
         )
@@ -1215,15 +1215,13 @@ def infer_type(expr: Expr) -> str:
                 return high
         if llvm_ty.startswith("%struct.") and llvm_ty.endswith("*"):
             return llvm_ty[len("%struct."):-1] + "*"
+        for high, low in type_map.items():
+            if low == llvm_ty:
+                return high
         return llvm_ty
     if isinstance(expr, TypeofExpr):
-        inner_type = infer_type(expr.expr)
-        if expr.kind in {'typeof', 'kwtypeof'}:
-            return 'string' if 'typeof' in expr.kind else inner_type
-        elif expr.kind in {'etypeof', 'kwetypeof'}:
-            if inner_type == 'int':
-                return 'int64' if expr.kind.startswith('kw') else 'string'
-            return 'string' if expr.kind.startswith('type') else inner_type
+        if expr.kind in {'typeof', 'etypeof'}:
+            return 'string'
     if isinstance(expr, FieldAccess):
         base_type = clean_struct_name(infer_type(expr.base))
         if base_type not in struct_field_map:
