@@ -36,7 +36,7 @@ pub extern fn btostr(bool b)  <string>;
 pub extern fn tostr(string s)<string>;
 // ─── to_string functions ───────────────────────────────────────────────
 
-pub extern fn todouble(int x) <float>;
+pub extern fn tofloat(int x) <float>;
 pub extern fn toint(float x) <int>;
 pub extern fn toint_round(float x) <int>;
 pub extern fn rmtrz(float x) <string>;
