@@ -1,0 +1,64 @@
+/*
+ * Example file for ORCatLang
+ * 
+ * This file is for demonstration purposes and is not licensed.
+ * Feel free to modify, share, or adapt this file as you like.
+ */
+import C_io;
+import C_types;
+
+pub fn main() <int> {
+    int x = 6;
+
+    x += 4;
+    print("x += 4: ");
+    print(itostr(x));
+    print("\n");
+
+    x -= 2;
+    print("x -= 2: ");
+    print(itostr(x));
+    print("\n");
+
+    x *= 3;
+    print("x *= 3: ");
+    print(itostr(x));
+    print("\n");
+
+    x /= 2;
+    print("x /= 2: ");
+    print(itostr(x));
+    print("\n");
+
+    x %= 5;
+    print("x %= 5: ");
+    print(itostr(x));
+    print("\n");
+
+    x &= 3;
+    print("x &= 3: ");
+    print(itostr(x));
+    print("\n");
+
+    x |= 8;
+    print("x |= 8: ");
+    print(itostr(x));
+    print("\n");
+
+    x ^= 1;
+    print("x ^= 1: ");
+    print(itostr(x));
+    print("\n");
+
+    x <<= 2;
+    print("x <<= 2: ");
+    print(itostr(x));
+    print("\n");
+
+    x >>= 1;
+    print("x >>= 1: ");
+    print(itostr(x));
+    print("\n");
+
+    return x;
+}
