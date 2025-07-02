@@ -1,3 +1,9 @@
+/*
+ * Example file for ORCatLang
+ * 
+ * This file is for demonstration purposes and is not licensed.
+ * Feel free to modify, share, or adapt this file as you like.
+ */
 import C_io;
 import C_types;
 
@@ -5,10 +11,17 @@ pub fn main() <int> {
     int i = 0;
     while (i < 5) {
         i = i + 1;
+
         if (i == 3) {
             print("SKIPPING\n");
             continue;
         }
+
+        if (i == 4) {
+            print("BREAKING\n");
+            break;
+        }
+
         print("i is ");
         print(itostr(i));
         print("\n");
