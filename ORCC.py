@@ -37,7 +37,7 @@ KEYWORDS = {
     'int', 'int8', 'int16', 'int32', 'int64',
     'float', 'bool', 'char', 'string', 'void',
     'true', 'false', 'struct', 'enum', 'match', 'nomd',
-    'pin', 'crumble', 'null', 'continue'
+    'pin', 'crumble', 'null', 'continue', 'break'
     }
 SINGLE_CHARS = {
     '(': 'LPAREN',   ')': 'RPAREN',   '{': 'LBRACE',   '}': 'RBRACE',
@@ -47,7 +47,9 @@ SINGLE_CHARS = {
     ']': 'RBRACKET', '?': 'QUESTION', '.': 'DOT', ':': 'COLON', '%': 'PERCENT', '!': 'BANG'
     }
 MULTI_CHARS = {
-    '==': 'EQEQ', '!=': 'NEQ', '<=': 'LE', '>=': 'GE', '->': 'ARROW', '&&': 'AND',  '||': 'OR'
+    '==': 'EQEQ', '!=': 'NEQ', '<=': 'LE', '>=': 'GE', '->': 'ARROW', '&&': 'AND',  '||': 'OR',
+    '+=': 'PLUSEQ', '-=': 'MINUSEQ', '*=': 'STAREQ', '/=': 'SLASHEQ', '%=': 'PERCENTEQ',
+    '&=': 'ANDEQ', '|=': 'OREQ', '^=': 'XOREQ', '<<=': 'LSHIFTEQ', '>>=': 'RSHIFTEQ',
     }
 class SymbolTable:
     def __init__(self):
@@ -356,6 +358,9 @@ class TypeofExpr(Expr):
 class ContinueStmt(Stmt):
     pass
 @dataclass
+class BreakStmt(Stmt):
+    pass
+@dataclass
 class Ternary(Expr):
     cond: Expr
     then_expr: Expr
@@ -555,8 +560,13 @@ class Parser:
             return self.parse_match()
         if t.kind == 'STAR':
             return self.parse_ptr_assign()
-        if t.kind == 'IDENT' and self.tokens[self.pos + 1].kind == 'EQUAL':
-            return self.parse_assign()
+        if t.kind == 'IDENT':
+            next_kind = self.tokens[self.pos + 1].kind
+            if next_kind in {
+                'EQUAL', 'PLUSEQ', 'MINUSEQ', 'STAREQ', 'SLASHEQ',
+                'PERCENTEQ', 'ANDEQ', 'OREQ', 'XOREQ', 'LSHIFTEQ', 'RSHIFTEQ'
+            }:
+                return self.parse_compound_assign()
         if t.kind == 'IDENT' and self.tokens[self.pos + 1].kind == 'LBRACKET':
             return self.parse_index_assign()
         if t.kind == 'IDENT' and t.value == 'deref' and self.tokens[self.pos + 1].kind == 'LPAREN':
@@ -575,9 +585,38 @@ class Parser:
             self.bump()
             self.expect('SEMI')
             return ContinueStmt()
+        if t.kind == 'BREAK':
+            self.bump()
+            self.expect('SEMI')
+            return BreakStmt()
         if t.kind == 'RETURN':
             return self.parse_return()
         return self.parse_expr_stmt()
+    def parse_compound_assign(self) -> Assign:
+        name = self.expect('IDENT').value
+        op_token = self.bump()
+        expr = self.parse_expr()
+        self.expect('SEMI')
+        if op_token.kind == 'EQUAL':
+            return Assign(name, expr)
+        compound_map = {
+            'PLUSEQ': '+',
+            'MINUSEQ': '-',
+            'STAREQ': '*',
+            'SLASHEQ': '/',
+            'PERCENTEQ': '%',
+            'ANDEQ': '&',
+            'OREQ': '|',
+            'XOREQ': '^',
+            'LSHIFTEQ': '<<',
+            'RSHIFTEQ': '>>'
+        }
+        if op_token.kind not in compound_map:
+            raise SyntaxError(f"Unknown compound assignment: {op_token.kind}")
+        op = compound_map[op_token.kind]
+        lhs_var = Var(name)
+        binop = BinOp(op, lhs_var, expr)
+        return Assign(name, binop)
     def parse_crumble(self) -> CrumbleStmt:
         self.expect('LPAREN')
         var_name = self.expect('IDENT').value
@@ -1046,9 +1085,25 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
             }.get(expr.op)
         else:
             op = {
-                '+': 'add', '-': 'sub', '*': 'mul', '/': 'sdiv', '==': 'icmp eq', '!=': 'icmp ne',
-                '<': 'icmp slt', '<=': 'icmp sle', '>': 'icmp sgt', '>=': 'icmp sge'
+                '+': 'add',
+                '-': 'sub',
+                '*': 'mul',
+                '/': 'sdiv',
+                '%': 'srem',
+                '==': 'icmp eq',
+                '!=': 'icmp ne',
+                '<': 'icmp slt',
+                '<=': 'icmp sle',
+                '>': 'icmp sgt',
+                '>=': 'icmp sge',
+                '&': 'and',
+                '|': 'or',
+                '^': 'xor',
+                '<<': 'shl',
+                '>>': 'ashr'
             }.get(expr.op)
+        if not op:
+            raise RuntimeError(f"Unsupported binary operator: {expr.op}")
         out.append(f"  {tmp} = {op} {llvm_ty} {lhs}, {rhs}")
         return tmp
     if isinstance(expr, Call):
@@ -1342,6 +1397,12 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
             raise RuntimeError("`continue` used outside of a loop")
         head_lbl = loop_stack[-1]['continue']
         out.append(f"  br label %{head_lbl}")
+        out.append("  unreachable")
+    elif isinstance(stmt, BreakStmt):
+        if not loop_stack:
+            raise RuntimeError("`break` used outside of a loop")
+        break_lbl = loop_stack[-1]['break']
+        out.append(f"  br label %{break_lbl}")
         out.append("  unreachable")
     elif isinstance(stmt, IndexAssign):
         idx = gen_expr(stmt.index, out)
@@ -1887,6 +1948,8 @@ def check_types(prog: Program):
                     raise TypeError(
                         f"Type mismatch in variable init '{stmt.name}': expected {raw_typ}, got {expr_type}")
         elif isinstance(stmt, ContinueStmt):
+            return
+        elif isinstance(stmt, BreakStmt):
             return
         elif isinstance(stmt, Assign):
             if isinstance(stmt.name, UnaryDeref):
