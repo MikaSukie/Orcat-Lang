@@ -27,6 +27,16 @@
 #include <ctype.h>
 
 #define BUF_ALLOC(size) (char*)malloc(size)
+
+static char* safe_strdup(const char* s) {
+    if (!s) return NULL;
+    size_t len = strlen(s) + 1;
+    char* copy = malloc(len);
+    if (!copy) return NULL;
+    memcpy(copy, s, len);
+    return copy;
+}
+
 #define FORMAT_INT_FUNC(name, type, fmt, bufsize) \
     char* name(type val) { \
         char* buf = BUF_ALLOC(bufsize); \
@@ -59,11 +69,11 @@ char* ftostr(double f) {
 }
 
 char* btostr(bool b) {
-    return strdup(b ? "true" : "false");
+    return safe_strdup(b ? "true" : "false");
 }
 
 char* tostr(const char* s) {
-    return strdup(s);
+    return safe_strdup(s);
 }
 
 void free_str(char* s) {
@@ -71,18 +81,24 @@ void free_str(char* s) {
 }
 
 void print(const char* s) {
-    fputs(s, stdout);
+    if (s) fputs(s, stdout);
 }
 
 void println(const char* s) {
-    puts(s);
+    if (s) puts(s);
 }
 
 void eprint(const char* s) {
-    fputs(s, stderr);
+    if (s) fputs(s, stderr);
 }
 
 static char* concat_and_free(char* a, char* b) {
+    if (!a || !b) {
+        free(a);
+        free(b);
+        return NULL;
+    }
+
     size_t la = strlen(a);
     size_t lb = strlen(b);
     char* out = BUF_ALLOC(la + lb + 1);
@@ -91,6 +107,7 @@ static char* concat_and_free(char* a, char* b) {
         free(b);
         return NULL;
     }
+
     memcpy(out, a, la);
     memcpy(out + la, b, lb + 1);
     free(a);
@@ -99,11 +116,11 @@ static char* concat_and_free(char* a, char* b) {
 }
 
 char* sb_create() {
-    return strdup("");
+    return safe_strdup("");
 }
 
 char* sb_append_str(char* builder, const char* s) {
-    return concat_and_free(builder, strdup(s));
+    return concat_and_free(builder, safe_strdup(s));
 }
 
 char* itostr(int i) {
@@ -136,17 +153,25 @@ char* input(const char* prompt) {
     }
 
     size_t cap = 128;
-    char* buf = BUF_ALLOC(cap);
+    size_t len = 0;
+    char* buf = malloc(cap);
     if (!buf) return NULL;
 
-    if (!fgets(buf, (int)cap, stdin)) {
-        free(buf);
-        return NULL;
+    int ch;
+    while ((ch = fgetc(stdin)) != EOF && ch != '\n') {
+        if (len + 1 >= cap) {
+            cap *= 2;
+            char* tmp = realloc(buf, cap);
+            if (!tmp) {
+                free(buf);
+                return NULL;
+            }
+            buf = tmp;
+        }
+        buf[len++] = (char)ch;
     }
 
-    size_t len = strlen(buf);
-    if (len && buf[len - 1] == '\n') buf[len - 1] = '\0';
-
+    buf[len] = '\0';
     return buf;
 }
 
@@ -203,17 +228,27 @@ int slength(const char* s) {
 }
 
 char* read_file(const char* path) {
+    if (!path) return safe_strdup("");
+
     FILE* f = fopen(path, "rb");
-    if (!f) return strdup("");
+    if (!f) return safe_strdup("");
 
-    fseek(f, 0, SEEK_END);
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return safe_strdup("");
+    }
+
     long len = ftell(f);
-    rewind(f);
+    if (len < 0) {
+        fclose(f);
+        return safe_strdup("");
+    }
 
+    rewind(f);
     char* buf = BUF_ALLOC(len + 1);
     if (!buf) {
         fclose(f);
-        return strdup("");
+        return safe_strdup("");
     }
 
     size_t r = fread(buf, 1, len, f);
@@ -223,6 +258,7 @@ char* read_file(const char* path) {
 }
 
 bool write_file(const char* path, const char* content) {
+    if (!path || !content) return false;
     FILE* f = fopen(path, "wb");
     if (!f) return false;
     size_t len = strlen(content);
@@ -232,6 +268,7 @@ bool write_file(const char* path, const char* content) {
 }
 
 bool append_file(const char* path, const char* content) {
+    if (!path || !content) return false;
     FILE* f = fopen(path, "ab");
     if (!f) return false;
     size_t len = strlen(content);
@@ -254,6 +291,7 @@ char* read_lines(const char* path) {
 }
 
 bool streq(const char* a, const char* b) {
+    if (!a || !b) return false;
     return strcmp(a, b) == 0;
 }
 
@@ -280,12 +318,14 @@ char* rmtrz(double val) {
         if (end == dot) *end = '\0';
     }
 
-    return strdup(buf);
+    return safe_strdup(buf);
 }
+
 bool contains(const char* str, const char* substr) {
     if (!str || !substr) return false;
     return strstr(str, substr) != NULL;
 }
+
 int countcontain(const char* str, const char* substr) {
     if (!str || !substr || !*substr) return 0;
 
@@ -302,7 +342,7 @@ int countcontain(const char* str, const char* substr) {
 
 char* tac(const char* s) {
     if (!s) return NULL;
-    char* result = strdup(s);
+    char* result = safe_strdup(s);
     if (!result) return NULL;
 
     for (char* p = result; *p; ++p) {
@@ -314,7 +354,7 @@ char* tac(const char* s) {
 
 char* tal(const char* s) {
     if (!s) return NULL;
-    char* result = strdup(s);
+    char* result = safe_strdup(s);
     if (!result) return NULL;
 
     for (char* p = result; *p; ++p) {
@@ -328,9 +368,10 @@ int64_t orcat_argc(void) {
     return orcat_argc_global;
 }
 
-char *orcat_argv(int64_t idx) {
-    if (idx < 0 || idx >= orcat_argc_global) return "null";
-    return orcat_argv_global[idx] ? orcat_argv_global[idx] : "null";
+char* orcat_argv(int64_t idx) {
+    if (idx < 0 || idx >= orcat_argc_global || !orcat_argv_global) return "null";
+    char* arg = orcat_argv_global[idx];
+    return arg ? arg : "null";
 }
 
 const char* get_os() {
@@ -404,8 +445,8 @@ int64_t Umake_string(const char *s) {
     if (!s) return 0;
     ValueUnion *v = malloc(sizeof *v);
     if (!v) return 0;
-    v->tag       = TAG_STRING;
-    v->value.s   = strdup(s);
+    v->tag = TAG_STRING;
+    v->value.s = safe_strdup(s);
     if (!v->value.s) {
         free(v);
         return 0;
@@ -435,7 +476,7 @@ bool Uget_bool(int64_t h) {
 
 const char* Uget_string(int64_t h) {
     ValueUnion *v = (ValueUnion*)(uintptr_t)h;
-    return (v && v->tag == TAG_STRING) ? v->value.s : "(invalid)";
+    return (v && v->tag == TAG_STRING && v->value.s) ? v->value.s : "(invalid)";
 }
 
 void Ufree_union(int64_t h) {
