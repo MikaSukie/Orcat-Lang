@@ -47,7 +47,13 @@ pub fn f() <string> { return tostr(""); }
 
 pub fn <T> tostring(T candidate) <string> {
     if (streq(typeof(candidate), "int")) {
-        return i64tostr(candidate);
+        if(streq(get_os_max_bits(), "64")) {
+            return i64tostr(candidate);
+        } else if (streq(get_os_max_bits(), "32")) {
+            return i32tostr(candidate);
+        } else {
+            return itostr(candidate);
+        }
     }
     if (streq(typeof(candidate), "float")) {
         return ftostr(candidate);
