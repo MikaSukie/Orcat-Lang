@@ -83,8 +83,19 @@ class TypeEnv:
             if name in scope:
                 return scope[name]
         return None
-def llvm_type_of(typ: str) -> str:
-    return type_map.get(typ, f"%struct.{typ}")
+
+def llvm_ty_of(typ: str) -> str:
+    if typ in type_map:
+        return type_map[typ]
+    base = typ.rstrip('*')
+    is_ptr = typ.endswith('*')
+    if base in type_map:
+        return f"{type_map[base]}*" if is_ptr else type_map[base]
+    if base.startswith("int") and base[3:].isdigit():
+        return f"i{base[3:]}*" if is_ptr else f"i{base[3:]}"
+    if base == "void" and is_ptr:
+        return "i8*"
+    return f"%struct.{base}*" if is_ptr else f"%struct.{base}"
 def clean_struct_name(name: str) -> str:
     return name.rstrip("*").removeprefix("%struct.")
 def llvm_int_bitsize(ty: str) -> Optional[int]:
@@ -901,7 +912,7 @@ def unify_types(t1: str, t2: str) -> Optional[str]:
     return None
 type_map = {
     'int': 'i64', 'int8': 'i8', 'int16': 'i16', 'int32': 'i32', 'void': 'void',
-    'int64': 'i64', 'float': 'double', 'bool': 'i1', 'char': 'i8', 'string': 'i8*'
+    'int64': 'i64', 'float': 'double', 'bool': 'i1', 'char': 'i8', 'string': 'i8*', 'void*': 'i8*',
 }
 struct_llvm_defs: List[str] = []
 symbol_table = SymbolTable()
@@ -1115,7 +1126,7 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
             a = gen_expr(arg, out)
             ty2 = infer_type(arg)
             arg_types.append(ty2)
-            llvm_ty = type_map.get(ty2, f"%struct.{ty2}")
+            llvm_ty = llvm_ty_of(ty2)
             args_ir.append(f"{llvm_ty} {a}")
         if expr.name == "!" and len(expr.args) == 1:
             arg = gen_expr(expr.args[0], out)
@@ -1186,7 +1197,7 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
                 new_body = [replace_in_stmt(stmt) for stmt in base_fn.body] if base_fn.body else None
                 new_fn = Func(base_fn.access, mononame, [], new_params, new_ret, new_body, base_fn.is_extern)
                 all_funcs.append(new_fn)
-                func_table[mononame] = type_map.get(new_ret, f"%struct.{new_ret}")
+                func_table[mononame] = llvm_ty_of(new_ret)
                 llvm_lines = gen_func(new_fn)
                 out.insert(0, "\n".join(llvm_lines))
                 generated_mono[mononame] = True
@@ -1215,7 +1226,7 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
             raise RuntimeError(f"Struct '{base_type}' has no field '{expr.field}'")
         index = list(field_dict.keys()).index(expr.field)
         field_typ = field_dict[expr.field]
-        field_llvm = llvm_type_of(field_typ)
+        field_llvm = llvm_ty_of(field_typ)
         ptr = new_tmp()
         out.append(f"  {ptr} = getelementptr inbounds %struct.{base_type}, %struct.{base_type}* {base_ptr}, i32 0, i32 {index}")
         tmp = new_tmp()
@@ -1231,7 +1242,7 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
             if field_name not in field_dict:
                 raise RuntimeError(f"Field '{field_name}' not in struct '{struct_name}'")
             field_type = field_dict[field_name]
-            field_llvm = llvm_type_of(field_type)
+            field_llvm = llvm_ty_of(field_type)
             field_val = gen_expr(field_expr, out)
             index = list(field_dict.keys()).index(field_name)
             ptr = new_tmp()
@@ -1310,8 +1321,8 @@ def infer_type(expr: Expr) -> str:
                 if v == ret_llvm_ty:
                     return k
             if ret_llvm_ty.startswith("%struct."):
-                return ret_llvm_ty[8:]  # strip `%struct.` → returns Orcat type name
-            return ret_llvm_ty  # i8*, i64, etc.
+                return ret_llvm_ty[8:]
+            return ret_llvm_ty
         for fn in all_funcs:
             if fn.name == expr.name and fn.type_params:
                 if not expr.args:
@@ -1367,18 +1378,13 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
                 out.append(f"  store i32 {count}, i32* %{stmt.name}_len")
                 symbol_table.declare(stmt.name, llvm_ty, stmt.name)
         else:
-            if stmt.typ.endswith("*"):
-                base = stmt.typ.rstrip("*")
-                base_llvm = type_map.get(base, f"%struct.{base}")
-                llvm_ty = f"{base_llvm}*"
-            else:
-                llvm_ty = type_map.get(stmt.typ, f"%struct.{stmt.typ}")
+            llvm_ty = llvm_ty_of(stmt.typ)
             if not symbol_table.lookup(stmt.name):
                 out.append(f"  %{stmt.name}_addr = alloca {llvm_ty}")
                 symbol_table.declare(stmt.name, llvm_ty, stmt.name)
         if stmt.expr:
             val = gen_expr(stmt.expr, out)
-            src_llvm = type_map.get(infer_type(stmt.expr), f"%struct.{infer_type(stmt.expr)}")
+            src_llvm = llvm_ty_of(infer_type(stmt.expr))
             if src_llvm != llvm_ty:
                 cast_tmp = new_tmp()
                 bits_src = llvm_int_bitsize(src_llvm)
@@ -1491,7 +1497,7 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
         val = gen_expr(stmt.expr, out) if stmt.expr else None
         if val:
             ret_type = infer_type(stmt.expr)
-            llvm_ty = type_map.get(ret_type, f"%struct.{ret_type}")
+            llvm_ty = llvm_ty_of(ret_type)
             if ret_ty == "i32" and llvm_ty != "i32":
                 tmp = new_tmp()
                 if llvm_ty.startswith("i") and llvm_ty[1:].isdigit():
@@ -1543,7 +1549,7 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
                 payload_ptr = new_tmp()
                 out.append(f"  {payload_ptr} = getelementptr inbounds %enum.{infer_type(stmt.expr)}, %enum.{infer_type(stmt.expr)}* {enum_ptr}, i32 0, i32 1")
                 loaded_payload = new_tmp()
-                llvm_payload_ty = type_map.get(payload_type, f"%struct.{payload_type}")
+                llvm_payload_ty = llvm_ty_of(payload_type)
                 out.append(f"  {loaded_payload} = load {llvm_payload_ty}, {llvm_payload_ty}* {payload_ptr}")
                 var_name = case.binding
                 if var_name is not None:
@@ -1557,12 +1563,6 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 def gen_func(fn: Func) -> List[str]:
     if fn.type_params:
         return []
-    def llvm_ty_of(typ: str) -> str:
-        base = typ.rstrip('*')
-        if base in type_map:
-            return f"{type_map[base]}*" if typ.endswith("*") else type_map[base]
-        struct_ir = f"%struct.{base}"
-        return f"{struct_ir}*" if typ.endswith("*") else struct_ir
     if fn.is_extern:
         param_sig = ", ".join(f"{llvm_ty_of(t)} %{n}" for t, n in fn.params)
         ret_ty    = llvm_ty_of(fn.ret_type)
@@ -1619,7 +1619,7 @@ def compile_program(prog: Program) -> str:
     for fn in prog.funcs:
         if fn.type_params:
             continue
-        llvm_ret_ty = type_map.get(fn.ret_type, f"%struct.{fn.ret_type}")
+        llvm_ret_ty = llvm_ty_of(fn.ret_type)
         func_table[fn.name] = llvm_ret_ty
     func_table["exit"] = "void"
     func_table["malloc"] = "i8*"
@@ -1629,7 +1629,7 @@ def compile_program(prog: Program) -> str:
         if fn.name == "main":
             has_user_main = True
             fn.name = "user_main"
-            llvm_ret_ty = type_map.get(fn.ret_type, f"%struct.{fn.ret_type}")
+            llvm_ret_ty = llvm_ty_of(fn.ret_type)
             func_table.pop("main", None)
             func_table["user_main"] = llvm_ret_ty
             break
@@ -1659,7 +1659,7 @@ def compile_program(prog: Program) -> str:
         if "[" in g.typ and g.typ.endswith("]"):
             base, count = g.typ.split("[")
             count = count[:-1]
-            base_llvm = type_map.get(base, f"%struct.{base}")
+            base_llvm = llvm_ty_of(base)
             llvm_ty = f"[{count} x {base_llvm}]"
         else:
             llvm_ty = type_map.get(g.typ, f"%struct.{g.typ}")
