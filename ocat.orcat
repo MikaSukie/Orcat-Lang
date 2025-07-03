@@ -159,7 +159,7 @@ pub fn self_update() <void> {
     code = sb_append_str(code, "#!/bin/sh\n");
     code = sb_append_str(code, "sleep 1\n");
     code = sb_append_str(code, "echo '[UPDATER] Replacing ocat...'\n");
-    code = sb_append_str(code, "wget -O ocat https://github.com/MikaLorielle/Orcat-Lang/releases/download/ORCC-BETA-NEWGEN/ocat\n");
+    code = sb_append_str(code, "wget -O ocat https://github.com/MikaLorielle/Orcat-Lang/releases/download/ORCC-BETA-NEWGEN/ocatl\n");
     code = sb_append_str(code, "chmod +x ocat\n");
     code = sb_append_str(code, "echo '[UPDATER] Update complete. Press enter to exit.'\n");
     string script = sb_finish(code);
