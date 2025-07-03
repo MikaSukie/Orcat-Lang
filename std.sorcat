@@ -24,6 +24,7 @@ pub extern fn streq(string str1, string str2) <bool>;
 pub extern fn orcat_argc() <int>;
 pub extern fn orcat_argv(int index) <string>;
 pub extern fn get_os() <string>;
+pub extern fn get_os_max_bits() <string>;
 pub extern fn strtrim(string in) <string>;
 pub extern fn tal(string s) <string>;
 pub extern fn tac(string s) <string>;
@@ -39,4 +40,3 @@ pub extern fn i16castf(int16 i) <float>;
 pub extern fn i32castf(int32 i) <float>;
 pub extern fn i64castf(int64 i) <float>;
 pub extern fn icastf(int i) <float>;
-
