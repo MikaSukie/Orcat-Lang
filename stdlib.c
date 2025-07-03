@@ -446,3 +446,14 @@ void Ufree_union(int64_t h) {
     }
     free(v);
 }
+
+const char* get_os_max_bits() {
+#if defined(_WIN64) || defined(__x86_64__) || defined(__ppc64__) || defined(__aarch64__)
+    return "64";
+#elif defined(_WIN32) || defined(__i386__) || defined(__arm__)
+    return "32";
+#else
+    return sizeof(void*) == 8 ? "64" :
+           sizeof(void*) == 4 ? "32" : "unknown";
+#endif
+}
