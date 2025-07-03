@@ -67,6 +67,8 @@ class SymbolTable:
         return None
     def current(self) -> Dict[str, Tuple[str, str]]:
         return self.scopes[-1]
+    def clear(self):
+        self.scopes = [{}]
 class TypeEnv:
     def __init__(self):
         self.scopes: List[Dict[str, str]] = [{}]
@@ -1123,83 +1125,85 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
             tmp = new_tmp()
             out.append(f"  {tmp} = xor i1 {arg}, true")
             return tmp
-        if expr.name in func_table:
-            base_fn = next((f for f in all_funcs if f.name == expr.name), None)
-            if base_fn and base_fn.type_params:
-                actual = arg_types[0]
-                mononame = f"{expr.name}_{actual}"
-                if mononame not in generated_mono:
-                    subst_map = {base_fn.type_params[0]: actual}
-                    new_params = [(subst_map.get(p[0], p[0]), p[1]) for p in base_fn.params]
-                    new_ret = subst_map.get(base_fn.ret_type, base_fn.ret_type)
-                    def replace_in_expr(e: Expr) -> Expr:
-                        if isinstance(e, Var):
-                            if e.name in subst_map:
-                                return Var(subst_map[e.name])
-                            return e
-                        if isinstance(e, BinOp):
-                            return BinOp(e.op, replace_in_expr(e.left), replace_in_expr(e.right))
-                        if isinstance(e, Call):
-                            return Call(e.name, [replace_in_expr(a0) for a0 in e.args])
-                        if isinstance(e, FieldAccess):
-                            return FieldAccess(replace_in_expr(e.base), e.field)
+        base_fn = next((f for f in all_funcs if f.name == expr.name), None)
+        if base_fn and base_fn.type_params:
+            actual = arg_types[0]
+            mononame = f"{expr.name}_{actual}"
+            if mononame not in generated_mono:
+                subst_map = {base_fn.type_params[0]: actual}
+                new_params = [(subst_map.get(p[0], p[0]), p[1]) for p in base_fn.params]
+                new_ret = subst_map.get(base_fn.ret_type, base_fn.ret_type)
+                def replace_in_expr(e: Expr) -> Expr:
+                    if isinstance(e, Var):
+                        if e.name in subst_map:
+                            return Var(subst_map[e.name])
                         return e
-                    def replace_in_stmt(s: Stmt) -> Stmt:
-                        if isinstance(s, VarDecl):
-                            typ = subst_map.get(s.typ, s.typ)
-                            expr0 = replace_in_expr(s.expr) if s.expr else None
-                            return VarDecl(s.access, typ, s.name, expr0)
-                        if isinstance(s, Assign):
-                            return Assign(s.name, replace_in_expr(s.expr))
-                        if isinstance(s, IndexAssign):
-                            return IndexAssign(s.array, replace_in_expr(s.index), replace_in_expr(s.value))
-                        if isinstance(s, IfStmt):
-                            cond0 = replace_in_expr(s.cond)
-                            then_body0 = [replace_in_stmt(ss) for ss in s.then_body]
-                            else_body0 = None
-                            if s.else_body:
-                                if isinstance(s.else_body, IfStmt):
-                                    else_body0 = replace_in_stmt(s.else_body)
-                                else:
-                                    else_body_list: List[Stmt] = []
-                                    for ss in s.else_body:
-                                        else_body_list.extend([replace_in_stmt(ss)])
-                                    else_body0 = else_body_list
-                            return IfStmt(cond0, then_body0, else_body0)
-                        if isinstance(s, WhileStmt):
-                            cond0 = replace_in_expr(s.cond)
-                            body0 = [replace_in_stmt(ss) for ss in s.body]
-                            return WhileStmt(cond0, body0)
-                        if isinstance(s, ReturnStmt):
-                            return ReturnStmt(replace_in_expr(s.expr) if s.expr else None)
-                        if isinstance(s, ExprStmt):
-                            return ExprStmt(replace_in_expr(s.expr))
-                        if isinstance(s, Match):
-                            new_expr0 = replace_in_expr(s.expr)
-                            new_cases: List[MatchCase] = []
-                            for case in s.cases:
-                                new_body0 = [replace_in_stmt(ss) for ss in case.body]
-                                new_cases.append(MatchCase(case.variant, case.binding, new_body0))
-                            return Match(new_expr0, new_cases)
-                        raise RuntimeError(f"Unsupported Stmt in generic substitution: {s}")
-                    new_body = [replace_in_stmt(stmt) for stmt in base_fn.body] if base_fn.body else None
-                    new_fn = Func(base_fn.access, mononame, [], new_params, new_ret, new_body, base_fn.is_extern)
-                    all_funcs.append(new_fn)
-                    func_table[mononame] = type_map.get(new_ret, f"%struct.{new_ret}")
-                    llvm_lines = gen_func(new_fn)
-                    out.insert(0, "\n".join(llvm_lines))
-                ret_ty = type_map.get(actual, f"%struct.{actual}")
-                tmp2 = new_tmp()
-                out.append(f"  {tmp2} = call {ret_ty} @{mononame}({', '.join(args_ir)})")
-                return tmp2
-        ret_ty = func_table.get(expr.name, 'i32')
-        if ret_ty == 'void':
-            out.append(f"  call void @{expr.name}({', '.join(args_ir)})")
-            return ''
-        else:
+                    if isinstance(e, BinOp):
+                        return BinOp(e.op, replace_in_expr(e.left), replace_in_expr(e.right))
+                    if isinstance(e, Call):
+                        return Call(e.name, [replace_in_expr(a0) for a0 in e.args])
+                    if isinstance(e, FieldAccess):
+                        return FieldAccess(replace_in_expr(e.base), e.field)
+                    return e
+                def replace_in_stmt(s: Stmt) -> Stmt:
+                    if isinstance(s, VarDecl):
+                        typ = subst_map.get(s.typ, s.typ)
+                        expr0 = replace_in_expr(s.expr) if s.expr else None
+                        return VarDecl(s.access, typ, s.name, expr0)
+                    if isinstance(s, Assign):
+                        return Assign(s.name, replace_in_expr(s.expr))
+                    if isinstance(s, IndexAssign):
+                        return IndexAssign(s.array, replace_in_expr(s.index), replace_in_expr(s.value))
+                    if isinstance(s, IfStmt):
+                        cond0 = replace_in_expr(s.cond)
+                        then_body0 = [replace_in_stmt(ss) for ss in s.then_body]
+                        else_body0 = None
+                        if s.else_body:
+                            if isinstance(s.else_body, IfStmt):
+                                else_body0 = replace_in_stmt(s.else_body)
+                            else:
+                                else_body_list: List[Stmt] = []
+                                for ss in s.else_body:
+                                    else_body_list.extend([replace_in_stmt(ss)])
+                                else_body0 = else_body_list
+                        return IfStmt(cond0, then_body0, else_body0)
+                    if isinstance(s, WhileStmt):
+                        cond0 = replace_in_expr(s.cond)
+                        body0 = [replace_in_stmt(ss) for ss in s.body]
+                        return WhileStmt(cond0, body0)
+                    if isinstance(s, ReturnStmt):
+                        return ReturnStmt(replace_in_expr(s.expr) if s.expr else None)
+                    if isinstance(s, ExprStmt):
+                        return ExprStmt(replace_in_expr(s.expr))
+                    if isinstance(s, Match):
+                        new_expr0 = replace_in_expr(s.expr)
+                        new_cases: List[MatchCase] = []
+                        for case in s.cases:
+                            new_body0 = [replace_in_stmt(ss) for ss in case.body]
+                            new_cases.append(MatchCase(case.variant, case.binding, new_body0))
+                        return Match(new_expr0, new_cases)
+                    raise RuntimeError(f"Unsupported Stmt in generic substitution: {s}")
+                new_body = [replace_in_stmt(stmt) for stmt in base_fn.body] if base_fn.body else None
+                new_fn = Func(base_fn.access, mononame, [], new_params, new_ret, new_body, base_fn.is_extern)
+                all_funcs.append(new_fn)
+                func_table[mononame] = type_map.get(new_ret, f"%struct.{new_ret}")
+                llvm_lines = gen_func(new_fn)
+                out.insert(0, "\n".join(llvm_lines))
+                generated_mono[mononame] = True
+            ret_ty = func_table[mononame]
             tmp2 = new_tmp()
-            out.append(f"  {tmp2} = call {ret_ty} @{expr.name}({', '.join(args_ir)})")
+            out.append(f"  {tmp2} = call {ret_ty} @{mononame}({', '.join(args_ir)})")
             return tmp2
+        if expr.name in func_table:
+            ret_ty = func_table[expr.name]
+            if ret_ty == 'void':
+                out.append(f"  call void @{expr.name}({', '.join(args_ir)})")
+                return ''
+            else:
+                tmp2 = new_tmp()
+                out.append(f"  {tmp2} = call {ret_ty} @{expr.name}({', '.join(args_ir)})")
+                return tmp2
+        raise RuntimeError(f"Call to undefined function '{expr.name}'")
     if isinstance(expr, FieldAccess):
         base_ptr = gen_expr(expr.base, out)
         base_type = infer_type(expr.base).rstrip("*").removeprefix("%struct.")
@@ -1300,21 +1304,30 @@ def infer_type(expr: Expr) -> str:
             return 'bool'
         return common
     if isinstance(expr, Call):
-        if expr.name == "!" and len(expr.args) == 1:
-            if infer_type(expr.args[0]) != "bool":
-                raise RuntimeError("Unary ! requires bool operand")
-            return "bool"
-        if expr.name == "exit":
-            return "void"
-        if expr.name not in func_table:
-            raise RuntimeError(f"Call to undefined function '{expr.name}'")
-        ret_llvm_ty = func_table[expr.name]
-        for high, low in type_map.items():
-            if low == ret_llvm_ty:
-                return high
-        if ret_llvm_ty.startswith("%struct.") and ret_llvm_ty.endswith("*"):
-            return ret_llvm_ty[len("%struct."):-1] + "*"
-        return ret_llvm_ty
+        if expr.name in func_table:
+            ret_llvm_ty = func_table[expr.name]
+            for k, v in type_map.items():
+                if v == ret_llvm_ty:
+                    return k
+            if ret_llvm_ty.startswith("%struct."):
+                return ret_llvm_ty[8:]  # strip `%struct.` → returns Orcat type name
+            return ret_llvm_ty  # i8*, i64, etc.
+        for fn in all_funcs:
+            if fn.name == expr.name and fn.type_params:
+                if not expr.args:
+                    raise RuntimeError(f"Generic function '{expr.name}' called with no arguments")
+                inferred_T = infer_type(expr.args[0])
+                mononame = f"{expr.name}_{inferred_T}"
+                if mononame not in func_table:
+                    new_ret = fn.ret_type
+                    if new_ret == fn.type_params[0]:
+                        new_ret = inferred_T
+                    func_table[mononame] = type_map.get(new_ret, f"%struct.{new_ret}")
+                new_ret = fn.ret_type
+                if new_ret == fn.type_params[0]:
+                    return inferred_T
+                return new_ret
+        raise RuntimeError(f"Call to undefined function '{expr.name}'")
     if isinstance(expr, Index):
         if not isinstance(expr.array, Var):
             raise RuntimeError(f"Only direct variable array indexing is supported, got: {expr.array}")
@@ -1620,7 +1633,8 @@ def compile_program(prog: Program) -> str:
             func_table.pop("main", None)
             func_table["user_main"] = llvm_ret_ty
             break
-    lines: List[str] = [
+    lines: List[str] = \
+        [
         "; ModuleID = 'orcat'",
         f"source_filename = \"{compiled}\"",
         "@__argv_ptr = global i8** null",
@@ -2129,6 +2143,15 @@ def parse_modcat_file(fname):
         elif block == f"reg:{reg_id}.actions":
             extension_registry["registrations"][reg_id]["actions"].append(line)
 def main():
+    global all_funcs, func_table, builtins_emitted
+    all_funcs = []
+    func_table = {}
+    builtins_emitted = False
+    enum_variant_map.clear()
+    symbol_table.clear()
+    struct_field_map.clear()
+    string_constants.clear()
+    generated_mono.clear()
     parser = argparse.ArgumentParser(description="Orcat Compiler")
     parser.add_argument("input", help="Input source file (.orcat or .sorcat)")
     parser.add_argument("-o", "--output", required=True, help="Output LLVM IR file (.ll)")
@@ -2154,8 +2177,7 @@ def main():
     all_structs = []
     all_enums = []
     all_globals = []
-    def load_imports_recursively(prog):
-        nonlocal all_funcs, all_structs, all_enums, all_globals
+    def load_imports_recursively(prog, all_funcs, all_structs, all_enums, all_globals):
         for imp in prog.imports:
             candidates = []
             if imp.endswith(".or"):
@@ -2181,7 +2203,7 @@ def main():
             imported_tokens = lex(imported_src)
             imported_parser = Parser(imported_tokens)
             sub_prog = imported_parser.parse()
-            load_imports_recursively(sub_prog)
+            load_imports_recursively(sub_prog, all_funcs, all_structs, all_enums, all_globals)
             all_structs.extend(sub_prog.structs)
             all_enums.extend(sub_prog.enums)
             all_globals.extend(sub_prog.globals)
@@ -2191,17 +2213,17 @@ def main():
                     if sig not in seen_func_signatures:
                         all_funcs.append(func)
                         seen_func_signatures.add(sig)
-    load_imports_recursively(main_prog)
+    load_imports_recursively(main_prog, all_funcs, all_structs, all_enums, all_globals)
     all_funcs.extend(main_prog.funcs)
     all_structs.extend(main_prog.structs)
     all_enums.extend(main_prog.enums)
     all_globals.extend(main_prog.globals)
     final_prog = Program(
         funcs=all_funcs,
+        imports=main_prog.imports,
         structs=all_structs,
         enums=all_enums,
-        globals=all_globals,
-        imports=main_prog.imports
+        globals=all_globals
     )
     check_types(final_prog)
     llvm = compile_program(final_prog)
