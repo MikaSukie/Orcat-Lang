@@ -45,9 +45,9 @@ pub extern fn contains(string var, string detection_char) <bool>;
 pub extern fn countcontain(string x, string detection_char) <int>;
 pub fn f() <string> { return tostr(""); }
 
-pub fn <T> tostring (T candidate) <string> {
+pub fn <T> tostring(T candidate) <string> {
     if (streq(typeof(candidate), "int")) {
-        return itostr(candidate);
+        return i64tostr(candidate);
     }
     if (streq(typeof(candidate), "float")) {
         return ftostr(candidate);
@@ -70,6 +70,7 @@ pub fn <T> tostring (T candidate) <string> {
     if (streq(etypeof(candidate), "int64")) {
         return i64tostr(candidate);
     }
+    return "ERROR";
 }
 
 // ─── String Builder example ────────────────────────────────────────────────
