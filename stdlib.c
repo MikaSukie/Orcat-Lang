@@ -1,6 +1,6 @@
 /*
  * This file is licensed under the GPL-3 License (or AGPL-3 if applicable)
- * Copyright (C) 2025  MikaSukie (old user), MikaLorielle (alt user), EmikaMai (current user), JaydenFreeman (legal name)
+ * Copyright (C) 2025  MikaSukie (old user), MikaLorielle (alt user), EmikaMai (old user), NanekoHana (Current user), JaydenFreeman (legal name)
 
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
