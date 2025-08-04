@@ -25,6 +25,7 @@
 #include <stddef.h>
 #include <inttypes.h>
 #include <ctype.h>
+#include <time.h>
 
 #define BUF_ALLOC(size) (char*)malloc(size)
 
@@ -48,8 +49,8 @@ static char* safe_strdup(const char* s) {
 extern int64_t orcat_argc_global;
 extern char **orcat_argv_global;
 
-uintptr_t Cmalloc(int size) {
-    return (uintptr_t)malloc((size_t)size);
+uintptr_t Cmalloc(size_t size) {
+    return (uintptr_t)malloc(size);
 }
 
 void Cfree(uintptr_t ptr) {
@@ -59,7 +60,7 @@ void Cfree(uintptr_t ptr) {
 FORMAT_INT_FUNC(i64tostr, int64_t, "%" PRId64, 32)
 FORMAT_INT_FUNC(i32tostr, int32_t, "%" PRId32, 16)
 FORMAT_INT_FUNC(i16tostr, int16_t, "%" PRId16, 8)
-FORMAT_INT_FUNC(i8tostr,  int8_t,  "%" PRId8,  8)
+FORMAT_INT_FUNC(i8tostr,  int8_t,  "%" PRId8,  8) // PRId8 might not be supported with snprintf, but often DOES work.
 
 char* ftostr(double f) {
     char* buf = BUF_ALLOC(64);
@@ -101,6 +102,12 @@ static char* concat_and_free(char* a, char* b) {
 
     size_t la = strlen(a);
     size_t lb = strlen(b);
+    if (la > SIZE_MAX - lb - 1) {
+        free(a);
+        free(b);
+        return NULL;
+    }
+
     char* out = BUF_ALLOC(la + lb + 1);
     if (!out) {
         free(a);
@@ -123,11 +130,11 @@ char* sb_append_str(char* builder, const char* s) {
     return concat_and_free(builder, safe_strdup(s));
 }
 
-char* itostr(int i) {
-    return i64tostr((int64_t)i);
+char* itostr(int64_t i) {
+    return i64tostr(i);
 }
 
-char* sb_append_int(char* builder, int x) {
+char* sb_append_int(char* builder, int64_t x) {
     char* num = i64tostr(x);
     return concat_and_free(builder, num);
 }
@@ -160,6 +167,10 @@ char* input(const char* prompt) {
     int ch;
     while ((ch = fgetc(stdin)) != EOF && ch != '\n') {
         if (len + 1 >= cap) {
+            if (cap > SIZE_MAX / 2) {
+                free(buf);
+                return NULL;
+            }
             cap *= 2;
             char* tmp = realloc(buf, cap);
             if (!tmp) {
@@ -203,12 +214,17 @@ char* sinput(const char* prompt) {
     return input(prompt);
 }
 
-int ilength(int x) {
+int ilength(int64_t x) {
     if (x == 0) return 1;
     int len = (x < 0) ? 1 : 0;
-    while (x) {
+    int64_t temp_x = x;
+    if (temp_x < 0) {
+        if (temp_x == INT64_MIN) return 20;
+        temp_x = -temp_x;
+    }
+    while (temp_x > 0) {
         len++;
-        x /= 10;
+        temp_x /= 10;
     }
     return len;
 }
@@ -223,8 +239,8 @@ int flength(double f) {
     return len;
 }
 
-int slength(const char* s) {
-    return s ? (int)strlen(s) : 0;
+int64_t slength(const char* s) {
+    return s ? (int64_t)strlen(s) : 0;
 }
 
 char* read_file(const char* path) {
@@ -238,11 +254,12 @@ char* read_file(const char* path) {
         return safe_strdup("");
     }
 
-    long len = ftell(f);
-    if (len < 0) {
+    long len_l = ftell(f);
+    if (len_l < 0) {
         fclose(f);
         return safe_strdup("");
     }
+    size_t len = (size_t)len_l;
 
     rewind(f);
     char* buf = BUF_ALLOC(len + 1);
@@ -295,16 +312,16 @@ bool streq(const char* a, const char* b) {
     return strcmp(a, b) == 0;
 }
 
-double tofloat(int x) {
+double tofloat(int64_t x) {
     return (double)x;
 }
 
-int toint(double x) {
-    return (int)x;
+int64_t toint(double x) {
+    return (int64_t)x;
 }
 
-int rtoint(double x) {
-    return (int)(x + (x >= 0 ? 0.5 : -0.5));
+int64_t rtoint(double x) {
+    return (int64_t)(x + (x >= 0 ? 0.5 : -0.5));
 }
 
 char* rmtrz(double val) {
