@@ -15,7 +15,7 @@
 
 ## 🚧 Project Status
 🐋
-**ORCat** is currently in ~~**active development**~~ **Hold (Paused Development)**.  
+**ORCat** is currently in ~~**active development**~~ **Hold**.  
 While the compiler core is functional, work is ongoing on:
 
 - 🧱 Standard library development  
