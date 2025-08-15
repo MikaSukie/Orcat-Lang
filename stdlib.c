@@ -60,7 +60,7 @@ void Cfree(uintptr_t ptr) {
 FORMAT_INT_FUNC(i64tostr, int64_t, "%" PRId64, 32)
 FORMAT_INT_FUNC(i32tostr, int32_t, "%" PRId32, 16)
 FORMAT_INT_FUNC(i16tostr, int16_t, "%" PRId16, 8)
-FORMAT_INT_FUNC(i8tostr,  int8_t,  "%" PRId8,  8) // PRId8 might not be supported with snprintf, but often DOES work.
+FORMAT_INT_FUNC(i8tostr,  int8_t,  "%" PRId8,  8)
 
 char* ftostr(double f) {
     char* buf = BUF_ALLOC(64);
