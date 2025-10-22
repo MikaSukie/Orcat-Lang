@@ -9,7 +9,7 @@
 [![Issues](https://img.shields.io/github/issues/MikaLorielle/Orcat-Lang.svg)](https://github.com/MikaLorielle/Orcat-Lang/issues)
 [![Stars](https://img.shields.io/github/stars/MikaLorielle/Orcat-Lang.svg?style=social)](https://github.com/MikaLorielle/Orcat-Lang/stargazers)
 
-On Windows IMPORTANT you need the CLANG compiler.
+On Windows IMPORTANT you need the CLANG compiler. <br>
 windows https://github.com/llvm/llvm-project/releases <br>
 MacOS xcode-select --install <br>
 Or use homebrew <br>
