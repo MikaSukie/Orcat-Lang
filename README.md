@@ -9,6 +9,10 @@
 [![Issues](https://img.shields.io/github/issues/MikaLorielle/Orcat-Lang.svg)](https://github.com/MikaLorielle/Orcat-Lang/issues)
 [![Stars](https://img.shields.io/github/stars/MikaLorielle/Orcat-Lang.svg?style=social)](https://github.com/MikaLorielle/Orcat-Lang/stargazers)
 
+On Windows IMPORTANT you need the CLANG compiler.
+windows https://github.com/llvm/llvm-project/releases <br>
+MacOS xcode-select --install <br>
+Or use homebrew <br>
 </div>
 
 ---
@@ -34,7 +38,7 @@ Want to be part of this?
 - This is a “small” but VERY ambitious compiler project.
 - Designed with extensibility as a top priority
 - *(because I do not like compiled languages that slap the dev for doing something harmless),
-- safety, and simplicity in mind.
+- safety, and simplicity in a language.
 
 ---
 
