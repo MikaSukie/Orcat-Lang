@@ -4,7 +4,7 @@ cls
 set start=%TIME%
 
 .\ORCC.exe main.orcat -o out.ll
-clang -Wno-override-module out.ll ORCC_MOD.c -o main.exe
+clang -Wno-override-module out.ll -o main.exe
 .\main.exe
 
 echo exit code: %ERRORLEVEL%
