@@ -130,6 +130,24 @@ char* sb_append_str(char* builder, const char* s) {
     return concat_and_free(builder, safe_strdup(s));
 }
 
+uint32_t hex_to_rgba(const char* hex) {
+    if (hex == NULL) return 0;
+
+    size_t len = strlen(hex);
+
+    if (len != 6 && len != 8) {
+        return 0x00000000;
+    }
+
+    uint32_t value = (uint32_t)strtoul(hex, NULL, 16);
+
+    if (len == 6) {
+        value = (value << 8) | 0xFF;
+    }
+
+    return value;
+}
+
 char* itostr(int64_t i) {
     return i64tostr(i);
 }
