@@ -64,18 +64,6 @@ pub fn <T> tostring(T candidate) <string> {
     if (streq(typeof(candidate), "string")) {
         return tostr(candidate);
     }
-    if (streq(etypeof(candidate), "int8")) {
-        return i8tostr(candidate);
-    }
-    if (streq(etypeof(candidate), "int16")) {
-        return i16tostr(candidate);
-    }
-    if (streq(etypeof(candidate), "int32")) {
-        return i32tostr(candidate);
-    }
-    if (streq(etypeof(candidate), "int64")) {
-        return i64tostr(candidate);
-    }
     return "ERROR";
 }
 
