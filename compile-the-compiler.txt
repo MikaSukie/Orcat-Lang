@@ -5,4 +5,4 @@ source .venv/bin/activate && python -m nuitka --standalone --onefile --lto=yes -
 source .venv/bin/activate && python3 -m nuitka --standalone --onefile --lto=yes --clang --jobs=$(sysctl -n hw.ncpu) --remove-output ORCC.py
 
 #win
-call .venv\Scripts\activate && python -m nuitka --standalone --onefile --lto=yes --clang --windows-disable-console --jobs=$env:NUMBER_OF_PROCESSORS --remove-output ORCC.py
+.venv\Scripts\activate && python -m nuitka --standalone --onefile --lto=yes --clang --windows-disable-console --jobs=$env:NUMBER_OF_PROCESSORS --remove-output ORCC.py
