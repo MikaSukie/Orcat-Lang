@@ -11,6 +11,7 @@
 
 On Windows IMPORTANT you need the CLANG compiler. <br>
 windows https://github.com/llvm/llvm-project/releases <br>
+- and https://visualstudio.microsoft.com/visual-cpp-build-tools/ <br>
 MacOS xcode-select --install <br>
 Or use homebrew <br>
 </div>
