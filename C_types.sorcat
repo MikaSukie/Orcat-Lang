@@ -43,7 +43,7 @@ pub extern fn toint_round(float x) <int>;
 pub extern fn rmtrz(float x) <string>;
 pub extern fn contains(string var, string detection_char) <bool>;
 pub extern fn countcontain(string x, string detection_char) <int>;
-pub fn f() <string> { return tostr(""); }
+pub fn empty() <string> { return tostr(""); }
 
 pub fn <T> tostring(T candidate) <string> {
     if (streq(typeof(candidate), "int")) {
