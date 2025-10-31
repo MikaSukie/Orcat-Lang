@@ -36,7 +36,9 @@ pub extern fn ftostr(float f)<string>;
 pub extern fn btostr(bool b)  <string>;
 pub extern fn tostr(string s)<string>;
 // ─── to_string functions ───────────────────────────────────────────────
-
+pub fn safestring(string s) <string> {
+    return sb_create() + s;
+}
 pub extern fn tofloat(int x) <float>;
 pub extern fn toint(float x) <int>;
 pub extern fn toint_round(float x) <int>;
