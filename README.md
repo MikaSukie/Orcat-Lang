@@ -22,6 +22,10 @@ Or use homebrew <br>
 🐋
 **ORCat** is currently in ~~**active development**~~ **Slowed**.  
 While the compiler core is functional, work is ongoing on:
+## Memory ownership (important)
+
+- Many stdlib functions return heap-allocated C strings (e.g. `read_file`, `input`, `tostring`, `sb_*`, `i64tostr`, `ftostr`). These are owned by the caller and **must** be freed via `free_str()` in Orcat.
+- Some helpers (like `get_os()` / `get_os_max_bits()` in older versions) returned static pointers. After the 2025-10-31 patch, all string-returning functions used by Orcat return allocated strings to avoid undefined behavior — callers can `free_str()` safely. If you maintain exceptions, document them here.
 
 - 🧱 Standard library development  
 - 🧬 Language feature polish  
