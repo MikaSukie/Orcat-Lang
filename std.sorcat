@@ -16,7 +16,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 //stdlib
-pub extern fn system(string s)<void>;
+pub extern fn system(string s)<int>;
 pub extern fn ilength(int integer)<int>;
 pub extern fn flength(float decimal)<int>;
 pub extern fn slength(string str)<int>;
@@ -40,3 +40,4 @@ pub extern fn i16castf(int16 i) <float>;
 pub extern fn i32castf(int32 i) <float>;
 pub extern fn i64castf(int64 i) <float>;
 pub extern fn icastf(int i) <float>;
+
