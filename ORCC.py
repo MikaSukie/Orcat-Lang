@@ -1906,7 +1906,7 @@ def check_types(prog: Program):
                 raise TypeError(f"Array index must be 'int', got '{idx_type}'")
             return base_type
         if isinstance(expr, FieldAccess):
-            base_type = check_expr(expr.base)
+            base_type = check_expr(expr.base).rstrip('*')
             if base_type not in struct_defs:
                 raise TypeError(f"Attempting field access on non‐struct type '{base_type}'")
             fields = struct_field_map[base_type]
