@@ -936,20 +936,25 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
         out.append(f"  {tmp} = load i8**, i8*** @__argv_ptr")
         return tmp
     if isinstance(expr, TypeofExpr):
-        inferred = infer_type(expr.expr)
+        raw = infer_type(expr.expr)
         if expr.kind == "etypeof":
-            for orcat_name, llvm_name in type_map.items():
-                if inferred == llvm_name:
-                    inferred = orcat_name
-                    break
+            out_str = raw
         elif expr.kind == "typeof":
-            if inferred.startswith("int") and inferred != "int":
-                inferred = "int"
+            if raw.startswith("int") and raw != "int":
+                out_str = "int"
+            elif raw == "float":
+                out_str = "float"
+            elif raw.startswith("%struct."):
+                out_str = raw[len("%struct."):]
+                if out_str.endswith("*"):
+                    out_str = out_str[:-1]
+            else:
+                out_str = raw
         else:
             raise RuntimeError(f"{expr.kind} is not a supported typeof variant")
         label = f"@.str{len(string_constants)}"
-        esc = inferred.replace('"', r'\"')
-        byte_len = len(inferred.encode("utf-8")) + 1
+        esc = out_str.replace('"', r'\"')
+        byte_len = len(out_str.encode("utf-8")) + 1
         string_constants.append(
             f'{label} = private unnamed_addr constant [{byte_len} x i8] c"{esc}\\00"'
         )
@@ -1822,6 +1827,8 @@ def check_types(prog: Program):
                 return "bool"
             return common
         if isinstance(expr, Call):
+            for a in expr.args:
+                check_expr(a)
             if expr.name == "!" and len(expr.args) == 1:
                 arg_type = check_expr(expr.args[0])
                 if arg_type != "bool":
@@ -1854,33 +1861,22 @@ def check_types(prog: Program):
             if fn.type_params:
                 if len(fn.type_params) != 1:
                     raise TypeError(f"Only single-type-param generics supported, but got {fn.type_params}")
-                type_arg = check_expr(expr.args[0])
+                concrete_type = check_expr(expr.args[0])
                 type_param = fn.type_params[0]
-                mononame = f"{expr.name}_{type_arg}"
+                mononame = f"{expr.name}_{concrete_type}"
                 if mononame not in funcs:
-                    new_params = [(type_arg if t == type_param else t, name) for (t, name) in fn.params]
-                    new_ret = type_arg if fn.ret_type == type_param else fn.ret_type
-                    def substitute(e: Expr) -> Expr:
-                        if isinstance(e, Var) and e.name == type_param:
-                            return Var(type_arg)
-                        if isinstance(e, BinOp):
-                            return BinOp(e.op, substitute(e.left), substitute(e.right))
-                        if isinstance(e, Call):
-                            return Call(e.name, [substitute(arg) for arg in e.args])
-                        return e
-                    def substitute_stmt(s: Stmt) -> Stmt:
+                    new_params = [
+                        (concrete_type if param_type == type_param else param_type, name)
+                        for (param_type, name) in fn.params
+                    ]
+                    new_ret = concrete_type if fn.ret_type == type_param else fn.ret_type
+                    def substitute_stmt_types(s: Stmt) -> Stmt:
                         if isinstance(s, VarDecl):
-                            typ = type_arg if s.typ == type_param else s.typ
-                            expr2 = substitute(s.expr) if s.expr else None
+                            typ = concrete_type if s.typ == type_param else s.typ
+                            expr2 = s.expr
                             return VarDecl(s.access, typ, s.name, expr2)
-                        if isinstance(s, Assign):
-                            return Assign(s.name, substitute(s.expr))
-                        if isinstance(s, ReturnStmt):
-                            return ReturnStmt(substitute(s.expr) if s.expr else None)
-                        if isinstance(s, ExprStmt):
-                            return ExprStmt(substitute(s.expr))
                         return s
-                    new_body = [substitute_stmt(s) for s in fn.body] if fn.body else None
+                    new_body = [substitute_stmt_types(s) for s in fn.body] if fn.body else None
                     new_fn = Func(fn.access, mononame, [], new_params, new_ret, new_body, fn.is_extern)
                     funcs[mononame] = new_fn
                     prog.funcs.append(new_fn)
@@ -1895,7 +1891,8 @@ def check_types(prog: Program):
                     if expected_type != "void" and actual_type != expected_type and (not common or common != expected_type):
                         raise TypeError(
                             f"Argument type mismatch in call to '{expr.name}': "
-                            f"expected {expected_type}, got {actual_type}")
+                            f"expected {expected_type}, got {actual_type}"
+                        )
             return fn.ret_type
         if isinstance(expr, Index):
             var_typ = env.lookup(expr.array.name)
