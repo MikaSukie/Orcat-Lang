@@ -1,0 +1,30 @@
+/*
+ * Example file for ORCatLang
+ *
+ * This file is for demonstration purposes and is not licensed.
+ * Feel free to modify, share, or adapt this file as you like.
+ */
+
+import C_types;
+import C_io;
+import std;
+
+pin string[3] gloarr1;
+
+pub fn main() <int> {
+
+    string[7] arr1;
+    arr1[2] = "test";
+    print(arr1[2]);
+
+    newline();
+
+    gloarr1[1] = "testar";
+    print(gloarr1[1]);
+    /*
+    OOB test
+    print(arr1[8]);
+    print(gloarr1[8]);
+    */
+    return 0;
+}
