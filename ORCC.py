@@ -1013,9 +1013,14 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
                 out.append(f"  {idx_cast} = sext {idx_llvm} {idx} to i32")
         else:
             idx_cast = idx
-        len_var = f"%{var_name}_len"
+        if name.startswith('@'):
+            len_addr = f"@{var_name}_len"
+            arr_addr_token = name
+        else:
+            len_addr = f"%{var_name}_len"
+            arr_addr_token = f"%{name}_addr"
         len_val = new_tmp()
-        out.append(f"  {len_val} = load i32, i32* {len_var}")
+        out.append(f"  {len_val} = load i32, i32* {len_addr}")
         ok = new_tmp()
         out.append(f"  {ok} = icmp ult i32 {idx_cast}, {len_val}")
         fail_lbl = new_label("oob_fail")
@@ -1025,7 +1030,7 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
         out.append(f"  call void @orcc_oob_abort()")
         out.append(f"  unreachable")
         out.append(f"{ok_lbl}:")
-        out.append(f"  {tmp_ptr} = getelementptr inbounds {llvm_ty}, {llvm_ty}* %{name}_addr, i32 0, i32 {idx_cast}")
+        out.append(f"  {tmp_ptr} = getelementptr inbounds {llvm_ty}, {llvm_ty}* {arr_addr_token}, i32 0, i32 {idx_cast}")
         out.append(f"  {tmp_val} = load {base_ty}, {base_ty}* {tmp_ptr}")
         return tmp_val
     if isinstance(expr, StrLit):
@@ -1438,9 +1443,14 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
                 out.append(f"  {idx_cast} = sext {idx_llvm} {idx} to i32")
         else:
             idx_cast = idx
-        len_var = f"%{stmt.array}_len"
+        if name.startswith('@'):
+            len_addr = f"@{stmt.array}_len"
+            arr_addr_token = name
+        else:
+            len_addr = f"%{stmt.array}_len"
+            arr_addr_token = f"%{name}_addr"
         len_val = new_tmp()
-        out.append(f"  {len_val} = load i32, i32* {len_var}")
+        out.append(f"  {len_val} = load i32, i32* {len_addr}")
         ok = new_tmp()
         out.append(f"  {ok} = icmp ult i32 {idx_cast}, {len_val}")
         fail_lbl = new_label("oob_fail")
@@ -1451,7 +1461,7 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
         out.append(f"  unreachable")
         out.append(f"{ok_lbl}:")
         ptr_tmp = new_tmp()
-        out.append(f"  {ptr_tmp} = getelementptr inbounds {llvm_ty}, {llvm_ty}* %{name}_addr, i32 0, i32 {idx_cast}")
+        out.append(f"  {ptr_tmp} = getelementptr inbounds {llvm_ty}, {llvm_ty}* {arr_addr_token}, i32 0, i32 {idx_cast}")
         out.append(f"  store {base_ty} {val}, {base_ty}* {ptr_tmp}")
     elif isinstance(stmt, IfStmt):
         cond = gen_expr(stmt.cond, out)
