@@ -12,15 +12,11 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 '''
-import re, os, tomllib, argparse
+import re, os, argparse
 from typing import List, Optional, Tuple, Union, Dict
 from dataclasses import dataclass
 compiled=""
 builtins_emitted = False
-extension_registry = {
-    "llvm.globals": [],
-    "registrations": {}
-}
 TYPE_TOKENS = {
     'IDENT', 'INT', 'INT8', 'INT16', 'INT32', 'INT64',
     'FLOAT', 'STRING', 'BOOL', 'CHAR', 'VOID'
@@ -83,7 +79,6 @@ class TypeEnv:
             if name in scope:
                 return scope[name]
         return None
-
 def llvm_ty_of(typ: str) -> str:
     if typ in type_map:
         return type_map[typ]
@@ -1596,12 +1591,6 @@ def gen_func(fn: Func) -> List[str]:
             break
         else:
             gen_stmt(stmt, out, ret_ty)
-    for reg in extension_registry["registrations"].values():
-        if reg.get("type") == "function" and fn.name.startswith("__launch_"):
-            for line in reg.get("actions", []):
-                if "<selfname>" in line:
-                    line = line.replace("<selfname>", fn.name[len("__launch_"):])
-                out.append(f"  {line}")
     if not has_return:
         if ret_ty == 'void':
             out.append("  ret void")
@@ -1658,14 +1647,15 @@ def compile_program(prog: Program) -> str:
     }
     """
     ]
-    for global_line in extension_registry["llvm.globals"]:
-        lines.append(global_line)
     for g in prog.globals:
+        is_array = False
+        arr_count = None
         if "[" in g.typ and g.typ.endswith("]"):
-            base, count = g.typ.split("[")
-            count = count[:-1]
+            is_array = True
+            base, arr_count = g.typ.split("[")
+            arr_count = arr_count[:-1]
             base_llvm = llvm_ty_of(base)
-            llvm_ty = f"[{count} x {base_llvm}]"
+            llvm_ty = f"[{arr_count} x {base_llvm}]"
         else:
             llvm_ty = type_map.get(g.typ, f"%struct.{g.typ}")
         initializer = "zeroinitializer"
@@ -1688,13 +1678,14 @@ def compile_program(prog: Program) -> str:
                 else: esc += ch
             length = len(g.expr.value) + 1
             string_constants.append(
-                f'{label} = private unnamed_addr constant [{length} x i8] c"{esc}\\00"')
+                f'{label} = private unnamed_addr constant [{length} x i8] c"{esc}\\00"'
+            )
             initializer = f"getelementptr inbounds ([{length} x i8], [{length} x i8]* {label}, i32 0, i32 0)"
             llvm_ty = "i8*"
-        if initializer.startswith("getelementptr"):
-            lines.append(f"@{g.name} = global {llvm_ty} {initializer}")
-        else:
-            lines.append(f"@{g.name} = global {llvm_ty} {initializer}")
+        lines.append(f"@{g.name} = global {llvm_ty} {initializer}")
+        if is_array:
+            lines.append(f"@{g.name}_len = global i32 {arr_count}")
+            symbol_table.declare(f"{g.name}_len", "i32", f"@{g.name}_len")
         symbol_table.declare(g.name, llvm_ty, f"@{g.name}")
     struct_llvm_defs: List[str] = []
     for sdef in prog.structs:
@@ -2093,52 +2084,6 @@ def check_types(prog: Program):
             if wmax is not None and wc < wmax:
                 print(f"[Crawl-Checker]-[WARN]: unused write crumbs on '{name}': {wmax - wc} left. [This is not an error but a security warning!]")
         crumb_map.clear()
-def load_extensions(config_path="ORCC.config"):
-    with open(config_path, "rb") as f:
-        config = tomllib.load(f)
-    for fname in config.get("extensions", {}).get("load", []):
-        parse_modcat_file(fname)
-def parse_modcat_file(fname):
-    with open(fname, "r", encoding="utf-8", errors="ignore") as f:
-        lines = f.readlines()
-    block = None
-    reg_id = None
-    for line in lines:
-        line = line.strip()
-        if not line or line.startswith("//"):
-            continue
-        if line.startswith("llvm.globals"):
-            block = "llvm.globals"
-            continue
-        elif line.startswith("reg("):
-            reg_id = int(line[4:line.index(")")])
-            extension_registry["registrations"][reg_id] = {}
-            block = f"reg:{reg_id}"
-            continue
-        elif line.startswith(f"reg({reg_id}).actions"):
-            block = f"reg:{reg_id}.actions"
-            extension_registry["registrations"][reg_id]["actions"] = []
-            continue
-        elif line == "}":
-            block = None
-            continue
-        if block == "llvm.globals":
-            extension_registry["llvm.globals"].append(line)
-        elif block == f"reg:{reg_id}":
-            if "syntax" not in extension_registry["registrations"][reg_id]:
-                extension_registry["registrations"][reg_id]["syntax"] = []
-            if line.startswith("kw:"):
-                kw_val = line.split(":", 1)[1].strip().strip('"')
-                extension_registry["registrations"][reg_id]["kw"] = kw_val
-                KEYWORDS.add(kw_val)
-            elif line.startswith("type:"):
-                extension_registry["registrations"][reg_id]["type"] = line.split(":", 1)[1].strip()
-            elif line.startswith("syntax"):
-                pass
-            else:
-                extension_registry["registrations"][reg_id]["syntax"].append(line)
-        elif block == f"reg:{reg_id}.actions":
-            extension_registry["registrations"][reg_id]["actions"].append(line)
 def main():
     global all_funcs, func_table, builtins_emitted
     all_funcs = []
@@ -2152,17 +2097,9 @@ def main():
     parser = argparse.ArgumentParser(description="Orcat Compiler")
     parser.add_argument("input", help="Input source file (.orcat or .sorcat)")
     parser.add_argument("-o", "--output", required=True, help="Output LLVM IR file (.ll)")
-    parser.add_argument("--config", help="Path to extension config file", default=None)
     args = parser.parse_args()
     global compiled
     compiled = args.input
-    if args.config:
-        try:
-            load_extensions(args.config)
-        except Exception as e:
-            print(f"[ORCatCompiler-WARN]: Failed to load config '{args.config}': {e}")
-    else:
-        print(f"[ORCatCompiler-INFO]: Skipping config load. '{args.config}' not found and not explicitly passed.")
     with open(args.input, encoding="utf-8", errors="ignore") as f:
         src = f.read()
     tokens = lex(src)
