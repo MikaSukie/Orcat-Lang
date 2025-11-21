@@ -36,7 +36,7 @@ Want to be part of this?
 ## Memory ownership (important)
 
 - Many stdlib functions return heap-allocated C strings (e.g. `read_file`, `input`, `tostring`, `sb_*`, `i64tostr`, `ftostr`). These are owned by the caller and **must** be freed via `free_str()` in Orcat.
-- Some helpers (like `get_os()` / `get_os_max_bits()` in older versions) returned static pointers. After the 2025-10-31 patch, all string-returning functions used by Orcat return allocated strings to avoid undefined behavior — callers can `free_str()` safely.
+- Some helpers (like `get_os()` / `get_os_max_bits()` in older versions) returned static pointers. After the 2025-10-31 patch, all string-returning functions used by Orcat return allocated strings to avoid undefined behavior,  callers can `free_str()` safely.
 - Also IMPORTANT. If you are going to append string literals into a print or any C externed functions, note that string literals are stored in static memory.
 - Basically either use in this format print(empty() + whatever_else); or assign the string like string s = safestring("test"); which will auto allocate and copy into the heap (modifiable).
 ---
