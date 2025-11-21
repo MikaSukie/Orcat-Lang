@@ -41,11 +41,10 @@ Want to be part of this?
 - Basically either use in this format print(empty() + whatever_else); or assign the string like string s = safestring("test"); which will auto allocate and copy into the heap (modifiable).
 ---
 
-## 📌 Quick Notes
+## 📌 Notes
 
 - This is a “small” but VERY ambitious compiler project.
-- Designed with extensibility as a top priority
-- *(because I do not like compiled languages that slap the dev for doing something harmless),
+- *(because I do not like compiled languages that slap the dev for doing something risky),
 - safety, and simplicity in a language.
 
 ---
