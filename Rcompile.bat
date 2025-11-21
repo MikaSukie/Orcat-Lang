@@ -8,7 +8,7 @@ echo ================================
 echo.
 
 REM Run ORCC.exe and show its output live
-python ORCC.py main.orcat -o out.ll
+ORCC.exe main.orcat -o out.ll
 if errorlevel 1 (
     echo ORCC failed with exit code %ERRORLEVEL%.
     goto end
