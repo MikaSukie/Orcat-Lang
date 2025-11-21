@@ -6,7 +6,7 @@
  */
 import std;
 import C_io;
-//import C_mem;
+//import C_mem; DEPRECATED LIBRARY
 
 pub fn allocate_and_free() <void> {
     int* ptr;
