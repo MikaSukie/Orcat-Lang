@@ -1,0 +1,287 @@
+import C_types;
+import C_io;
+import C_fileio;
+import std;
+import C_union;
+
+// ----------------- nottest -----------------
+fn test_nottest() <int> {
+    bool b = true;
+    if (!b) {
+        print("should not print\n");
+    } else {
+        print("works!\n");
+    }
+    return 0;
+}
+
+// ----------------- args -----------------
+pub fn test_args() <int> {
+    int argc = orcat_argc();
+    print(itostr(argc) + "\n");
+    print(tostr("args: ")+tostr(orcat_argv(1))); newline();
+    return 0;
+}
+
+// ----------------- arrayExample -----------------
+pin string[3] arrExample_gloarr1;
+
+pub fn test_arrayExample() <int> {
+    string[7] arr1;
+    arr1[2] = "test";
+    print(arr1[2]);
+
+    newline();
+
+    arrExample_gloarr1[1] = "testar";
+    print(arrExample_gloarr1[1]);
+    /*
+    OOB test
+    print(arr1[8]);
+    print(gloarr1[8]);
+    */
+    return 0;
+}
+
+// ----------------- cashregisterexample -----------------
+pin string cash_item = "";
+pin float cash_price = 0.0;
+pin int cash_quantity = 0;
+pin string cash_currency = "$";
+pin float cash_total = 0.0;
+
+pub fn cash_process() <void> {
+    cash_item     = sinput("What item would you like to buy?: ");
+    cash_price    = finput("What is the price for each?: ");
+    cash_quantity = iinput("How many would you like?: ");
+    cash_total    = cash_price * tofloat(cash_quantity);
+    string possesive = "";
+    if (cash_quantity > 1) {
+        possesive = "s";
+    }
+    print(tostr("You have bought ")+itostr(cash_quantity)+" "+cash_item+possesive+" which costed "+cash_currency+rmtrz(cash_total)+"\n");
+}
+
+pub fn test_cashregisterexample() <int> {
+    cash_process();
+    return 0;
+}
+
+// ----------------- continueandbreaktest -----------------
+pub fn test_continueandbreaktest() <int> {
+    int i = 0;
+    while (i < 5) {
+        i = i + 1;
+
+        if (i == 3) {
+            print("SKIPPING\n");
+            continue;
+        }
+
+        if (i == 4) {
+            print("BREAKING\n");
+            break;
+        }
+
+        print("i is ");
+        print(itostr(i));
+        print("\n");
+    }
+
+    return 0;
+}
+
+// ----------------- filemain -----------------
+fn test_filemain_inner() <int> {
+    string path = "example.txt";
+    string msg = "Hello Orcat!\n";
+    bool ok = save_text(path, msg);
+    if (ok) {
+        print("File written.\n");
+    }
+
+    string data = read_lines(path);
+    print(data);
+    free_str(data);
+    return 0;
+}
+pub fn test_filemain() <int> {
+    return test_filemain_inner();
+}
+
+// ----------------- generictypesandstructs -----------------
+fn <T> identity(T x) <T> {
+    return x;
+}
+
+struct Person {
+    string name;
+    int age;
+}
+
+pub fn greet_person(Person* p) <void> {
+    print("Hello, ");
+    print(p.name);
+    print("!\n");
+}
+
+pub fn test_generictypesandstructs() <int> {
+    Person* p = Person {
+        name: "Alice";
+        age: 30;
+    };
+    greet_person(p);
+    return 0;
+}
+
+// ----------------- getosandbits -----------------
+pub fn test_getosandbits() <int> {
+    print(get_os()); newline();
+    print(get_os_max_bits()); newline();
+    return 0;
+}
+
+// ----------------- inputexample -----------------
+fn test_inputexample_inner() <int> {
+    int res = iinput("what is your age? \n");
+    print(tostr("you're ") + itostr(res) + tostr(" years old.\n"));
+    return 0;
+}
+pub fn test_inputexample() <int> {
+    return test_inputexample_inner();
+}
+
+// ----------------- mathoptest -----------------
+pub fn test_mathoptest() <int> {
+    int x = 6;
+
+    x += 4;
+    print("x += 4: ");
+    print(itostr(x));
+    print("\n");
+
+    x -= 2;
+    print("x -= 2: ");
+    print(itostr(x));
+    print("\n");
+
+    x *= 3;
+    print("x *= 3: ");
+    print(itostr(x));
+    print("\n");
+
+    x /= 2;
+    print("x /= 2: ");
+    print(itostr(x));
+    print("\n");
+
+    x %= 5;
+    print("x %= 5: ");
+    print(itostr(x));
+    print("\n");
+
+    x &= 3;
+    print("x &= 3: ");
+    print(itostr(x));
+    print("\n");
+
+    x |= 8;
+    print("x |= 8: ");
+    print(itostr(x));
+    print("\n");
+
+    x ^= 1;
+    print("x ^= 1: ");
+    print(itostr(x));
+    print("\n");
+
+    x <<= 2;
+    print("x <<= 2: ");
+    print(itostr(x));
+    print("\n");
+
+    x >>= 1;
+    print("x >>= 1: ");
+    print(itostr(x));
+    print("\n");
+
+    return x;
+}
+
+// ----------------- memtest -----------------
+pub fn allocate_and_free_test() <void> {
+    int* ptr;
+    ptr = malloc(8);
+    *ptr = 42;
+    print("Value assigned.");newline();
+    deref(ptr);
+}
+
+pub fn test_memtest() <int> {
+    allocate_and_free_test();
+    return 0;
+}
+
+// ----------------- C_RuntimeUnionTest -----------------
+pub fn test_C_RuntimeUnionTest() <int> {
+    int a = Umake_int(123);
+    int b = Umake_float(3.14);
+    int c = Umake_bool(true);
+    int d = Umake_string("hello ORCatLang");
+
+    if (Uget_tag(a) == 1) {
+        string sa = itostr(Uget_int(a));
+        print("a is Int: ");
+        print(sa);
+        newline();
+        free_str(sa);
+    }
+
+    if (Uget_tag(b) == 2) {
+        string sb = ftostr(Uget_float(b));
+        print("b is Float: ");
+        print(sb);
+        newline();
+        free_str(sb);
+    }
+
+    if (Uget_tag(c) == 3) {
+        string sc = btostr(Uget_bool(c));
+        print("c is Bool: ");
+        print(sc);
+        newline();
+        free_str(sc);
+    }
+
+    if (Uget_tag(d) == 4) {
+        // Uget_string already returns a string
+        print("d is String: ");
+        print(Uget_string(d));
+        newline();
+    }
+
+    Ufree_union(a);
+    Ufree_union(b);
+    Ufree_union(c);
+    Ufree_union(d);
+
+    return 0;
+}
+
+pub fn main() <int> {
+    print("=== TEST: nottest ===\n"); test_nottest(); newline();
+    print("=== TEST: args ===\n"); test_args(); newline();
+    print("=== TEST: arrayExample ===\n"); test_arrayExample(); newline();
+    print("=== TEST: cashregisterexample ===\n"); test_cashregisterexample(); newline();
+    print("=== TEST: continueandbreaktest ===\n"); test_continueandbreaktest(); newline();
+    print("=== TEST: filemain ===\n"); test_filemain(); newline();
+    print("=== TEST: generictypesandstructs ===\n"); test_generictypesandstructs(); newline();
+    print("=== TEST: getosandbits ===\n"); test_getosandbits(); newline();
+    print("=== TEST: inputexample ===\n"); test_inputexample(); newline();
+    print("=== TEST: mathoptest ===\n"); test_mathoptest(); newline();
+    print("=== TEST: memtest ===\n"); test_memtest(); newline();
+    print("=== TEST: C_RuntimeUnionTest ===\n"); test_C_RuntimeUnionTest(); newline();
+
+    print("=== ALL TESTS FINISHED ===\n");
+    return 0;
+}
