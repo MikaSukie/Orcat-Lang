@@ -8,6 +8,7 @@ echo ================================
 echo.
 
 REM Run ORCC.exe and show its output live
+REM python ORCC.py main.orcat -o out.ll
 ORCC.exe main.orcat -o out.ll
 if errorlevel 1 (
     echo ORCC failed with exit code %ERRORLEVEL%.
@@ -21,7 +22,8 @@ echo ================================
 echo.
 
 REM Run Clang and show its output
-clang -v -Wno-override-module out.ll stdlib.c -o main.exe
+clang -Wno-override-module out.ll stdlib.c -o main.exe
+REM clang -v -Wno-override-module out.ll stdlib.c -o main.exe
 if errorlevel 1 (
     echo Clang failed with exit code %ERRORLEVEL%.
     goto end
