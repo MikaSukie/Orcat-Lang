@@ -10,7 +10,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 '''
 import re, os, argparse
 from typing import List, Optional, Tuple, Union, Dict
@@ -595,7 +595,7 @@ class Parser:
 			return self.parse_index_assign()
 		if t.kind == 'IDENT' and t.value == 'deref' and self.tokens[self.pos + 1].kind == 'LPAREN':
 			return self.parse_deref()
-		if t.kind == 'IDENT' and self.tokens[self.pos + 1].kind == 'LPAREN':
+		if (t.kind in CAST_TYPE_TOKENS or t.kind == 'IDENT') and self.tokens[self.pos + 1].kind == 'LPAREN':
 			return self.parse_expr_stmt()
 		if t.kind in {'PUB', 'PRIV', 'PROT', 'NOMD'} or t.kind in TYPE_TOKENS or t.kind == 'IDENT':
 			return self.parse_var_decl()
