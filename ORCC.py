@@ -327,6 +327,10 @@ class StructField:
 	name: str
 	typ: str
 @dataclass
+class UnaryOp(Expr):
+	op: str
+	expr: Expr
+@dataclass
 class IndexAssign(Stmt):
 	array: str
 	index: Expr
@@ -387,8 +391,8 @@ class Ternary(Expr):
 	else_expr: Expr
 @dataclass
 class Cast(Expr):
-    typ: str
-    expr: Expr
+	typ: str
+	expr: Expr
 @dataclass
 class Func:
 	access: str
@@ -828,6 +832,10 @@ class Parser:
 			self.bump()
 			inner = self.parse_primary()
 			return Call("!", [inner])
+		if self.peek().kind == 'MINUS':
+			self.bump()
+			inner = self.parse_primary()
+			return UnaryOp('-', inner)
 		def parse_atom() -> Expr:
 			t = self.bump()
 			if t.kind == 'IDENT' and t.value in {'typeof', 'etypeof'} and self.peek().kind == 'LPAREN':
@@ -918,18 +926,18 @@ def unify_int_types(t1: Optional[str], t2: Optional[str]) -> Optional[str]:
 			return None
 	return max(t1, t2, key=lambda t: rank.get(t, 0))
 def unify_types(t1: str, t2: str) -> Optional[str]:
-    if t1 == t2:
-        return t1
-    if t1 in {'null', 'void*'}:
-        return t2 if t2.endswith('*') or t2 == 'string' else None
-    if t2 in {'null', 'void*'}:
-        return t1 if t1.endswith('*') or t1 == 'string' else None
-    int_common = unify_int_types(t1, t2)
-    if int_common:
-        return int_common
-    if (t1, t2) in {("float", "int"), ("int", "float")}:
-        return "float"
-    return None
+	if t1 == t2:
+		return t1
+	if t1 in {'null', 'void*'}:
+		return t2 if t2.endswith('*') or t2 == 'string' else None
+	if t2 in {'null', 'void*'}:
+		return t1 if t1.endswith('*') or t1 == 'string' else None
+	int_common = unify_int_types(t1, t2)
+	if int_common:
+		return int_common
+	if (t1, t2) in {("float", "int"), ("int", "float")}:
+		return "float"
+	return None
 type_map = {
 	'int': 'i64', 'int8': 'i8', 'int16': 'i16', 'int32': 'i32', 'void': 'void',
 	'int64': 'i64', 'float': 'double', 'bool': 'i1', 'char': 'i8', 'string': 'i8*', 'void*': 'i8*',
@@ -1054,6 +1062,21 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 			out.append(f"  {cast_tmp} = ptrtoint {src_llvm} {val} to {dst_llvm}")
 			return cast_tmp
 		raise RuntimeError(f"Unsupported cast from {src_t} -> {dst_t}")
+	if isinstance(expr, UnaryOp):
+		val = gen_expr(expr.expr, out)
+		ty = infer_type(expr.expr)
+		llvm_ty = llvm_ty_of(ty)
+		tmp = new_tmp()
+		if expr.op == '-':
+			if llvm_ty == 'double' or ty == 'float':
+				out.append(f"  {tmp} = fsub double 0.0, {val}")
+			else:
+				out.append(f"  {tmp} = sub {llvm_ty} 0, {val}")
+			return tmp
+		elif expr.op == '+':
+			return val
+		else:
+			raise RuntimeError(f"Unsupported unary operator: {expr.op}")
 	if isinstance(expr, IntLit):
 		tmp = new_tmp()
 		inferred = infer_type(expr)
@@ -1401,6 +1424,8 @@ def infer_type(expr: Expr) -> str:
 		if not ptr_type.endswith("*"):
 			raise RuntimeError(f"Dereferencing non-pointer type '{ptr_type}'")
 		return ptr_type[:-1]
+	if isinstance(expr, UnaryOp):
+		return infer_type(expr.expr)
 	if isinstance(expr, IntLit):
 		return 'int'
 	if isinstance(expr, FloatLit):
@@ -1906,6 +1931,13 @@ def check_types(prog: Program):
 	for enum_name in enum_defs:
 		env.declare(enum_name, enum_name)
 	def check_expr(expr: Expr) -> str:
+		if isinstance(expr, UnaryOp):
+			inner_t = check_expr(expr.expr)
+			if expr.op in {'-', '+'}:
+				if inner_t == 'float' or inner_t.startswith('int') or inner_t == 'int':
+					return inner_t
+				raise TypeError(f"Unary '{expr.op}' requires integer or float operand, got '{inner_t}'")
+			raise TypeError(f"Unsupported unary operator: {expr.op}")
 		if isinstance(expr, IntLit):
 			return 'int'
 		if isinstance(expr, FloatLit):
