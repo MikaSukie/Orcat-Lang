@@ -1638,7 +1638,9 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 		for s in stmt.then_body:
 			gen_stmt(s, out, ret_ty)
 		symbol_table.pop()
-		out.append(f"  br label %{end_lbl}")
+		last = out[-1].strip() if out else ""
+		if not (last.startswith("ret") or last == "unreachable" or last.startswith("br ")):
+			out.append(f"  br label %{end_lbl}")
 		if stmt.else_body:
 			out.append(f"{else_lbl}:")
 			symbol_table.push()
@@ -1648,7 +1650,9 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 			elif isinstance(stmt.else_body, IfStmt):
 				gen_stmt(stmt.else_body, out, ret_ty)
 			symbol_table.pop()
-			out.append(f"  br label %{end_lbl}")
+			last = out[-1].strip() if out else ""
+			if not (last.startswith("ret") or last == "unreachable" or last.startswith("br ")):
+				out.append(f"  br label %{end_lbl}")
 		out.append(f"{end_lbl}:")
 	elif isinstance(stmt, WhileStmt):
 		head_lbl = new_label('while_head')
@@ -1664,7 +1668,9 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 		for s in stmt.body:
 			gen_stmt(s, out, ret_ty)
 		symbol_table.pop()
-		out.append(f"  br label %{head_lbl}")
+		last = out[-1].strip() if out else ""
+		if not (last.startswith("ret") or last == "unreachable" or last.startswith("br ")):
+			out.append(f"  br label %{head_lbl}")
 		out.append(f"{end_lbl}:")
 		loop_stack.pop()
 	elif isinstance(stmt, ReturnStmt):
@@ -1732,7 +1738,9 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 					symbol_table.declare(var_name, llvm_payload_ty, var_name)
 			for s in case.body:
 				gen_stmt(s, out, ret_ty)
-			out.append(f"  br label %{end_lbl}")
+			last = out[-1].strip() if out else ""
+			if not (last.startswith("ret") or last == "unreachable" or last.startswith("br ")):
+				out.append(f"  br label %{end_lbl}")
 		out.append(f"{end_lbl}:")
 def gen_func(fn: Func) -> List[str]:
 	if fn.type_params:
