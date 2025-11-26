@@ -2,7 +2,7 @@
 clear
 
 time bash -c '
-  ./ORCC.bin main.orcat -o out.ll --config=ORCC.config &&
+  ./ORCC.bin main.orcat -o out.ll &&
   clang -Wno-override-module out.ll stdlib.c -o main &&
   ./main
   echo "Exit code: $?"
