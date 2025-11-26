@@ -20,7 +20,7 @@ declare void @exit(i64)
 @orcat_argv_global = global i8** null
 
 
-declare void @system(i8* %s)
+declare i64 @system(i8* %s)
 declare i64 @ilength(i64 %integer)
 declare i64 @flength(double %decimal)
 declare i64 @slength(i8* %str)
@@ -115,11 +115,9 @@ then1:
   %t10 = load i8*, i8** %path_addr
   %t11 = call i8* @read_file(i8* %t10)
   ret i8* %t11
-  br label %endif3
 else2:
   %t12 = getelementptr inbounds [1 x i8], [1 x i8]* @.str2, i32 0, i32 0
   ret i8* %t12
-  br label %endif3
 endif3:
   ret i8* null
 }
@@ -334,67 +332,67 @@ then27:
   %t115 = getelementptr inbounds [37 x i8], [37 x i8]* @.str30, i32 0, i32 0
   call void @print(i8* %t115)
   call void @newline()
-  %t116 = getelementptr inbounds [103 x i8], [103 x i8]* @.str31, i32 0, i32 0
-  call void @system(i8* %t116)
+  %t116 = getelementptr inbounds [100 x i8], [100 x i8]* @.str31, i32 0, i32 0
+  %t117 = call i64 @system(i8* %t116)
   call void @newline()
-  %t117 = call i8* @empty()
-  %t118 = getelementptr inbounds [45 x i8], [45 x i8]* @.str32, i32 0, i32 0
-  %t119 = call i8* @sb_append_str(i8* %t117, i8* %t118)
-  %t120 = call i8* @input(i8* %t119)
-  store i8* %t120, i8** @res
-  %t121 = load i8*, i8** @res
-  %t122 = call i8* @tal(i8* %t121)
-  %t123 = getelementptr inbounds [2 x i8], [2 x i8]* @.str33, i32 0, i32 0
-  %t124 = call i1 @streq(i8* %t122, i8* %t123)
-  %t125 = load i8*, i8** @res
-  %t126 = call i8* @tal(i8* %t125)
-  %t127 = getelementptr inbounds [4 x i8], [4 x i8]* @.str34, i32 0, i32 0
-  %t128 = call i1 @streq(i8* %t126, i8* %t127)
-  %t129 = or i1 %t124, %t128
-  br i1 %t129, label %then30, label %else31
+  %t118 = call i8* @empty()
+  %t119 = getelementptr inbounds [45 x i8], [45 x i8]* @.str32, i32 0, i32 0
+  %t120 = call i8* @sb_append_str(i8* %t118, i8* %t119)
+  %t121 = call i8* @input(i8* %t120)
+  store i8* %t121, i8** @res
+  %t122 = load i8*, i8** @res
+  %t123 = call i8* @tal(i8* %t122)
+  %t124 = getelementptr inbounds [2 x i8], [2 x i8]* @.str33, i32 0, i32 0
+  %t125 = call i1 @streq(i8* %t123, i8* %t124)
+  %t126 = load i8*, i8** @res
+  %t127 = call i8* @tal(i8* %t126)
+  %t128 = getelementptr inbounds [4 x i8], [4 x i8]* @.str34, i32 0, i32 0
+  %t129 = call i1 @streq(i8* %t127, i8* %t128)
+  %t130 = or i1 %t125, %t129
+  br i1 %t130, label %then30, label %else31
 then30:
   call void @linlibinstall()
-  %t130 = add i1 0, 0
-  call void @asklaunchscript(i1 %t130)
-  br label %endif32
-else31:
   %t131 = add i1 0, 0
   call void @asklaunchscript(i1 %t131)
+  br label %endif32
+else31:
+  %t132 = add i1 0, 0
+  call void @asklaunchscript(i1 %t132)
   br label %endif32
 endif32:
   br label %endif29
 else28:
-  %t132 = getelementptr inbounds [30 x i8], [30 x i8]* @.str35, i32 0, i32 0
-  call void @print(i8* %t132)
+  %t133 = getelementptr inbounds [30 x i8], [30 x i8]* @.str35, i32 0, i32 0
+  call void @print(i8* %t133)
   call void @newline()
-  %t133 = getelementptr inbounds [134 x i8], [134 x i8]* @.str36, i32 0, i32 0
-  call void @system(i8* %t133)
+  %t134 = getelementptr inbounds [131 x i8], [131 x i8]* @.str36, i32 0, i32 0
+  %t135 = call i64 @system(i8* %t134)
   call void @newline()
-  %t134 = call i8* @empty()
-  %t135 = getelementptr inbounds [45 x i8], [45 x i8]* @.str37, i32 0, i32 0
-  %t136 = call i8* @sb_append_str(i8* %t134, i8* %t135)
-  %t137 = call i8* @input(i8* %t136)
-  store i8* %t137, i8** @res
-  %t138 = load i8*, i8** @res
-  %t139 = call i8* @tal(i8* %t138)
-  %t140 = getelementptr inbounds [2 x i8], [2 x i8]* @.str38, i32 0, i32 0
-  %t141 = call i1 @streq(i8* %t139, i8* %t140)
-  %t142 = load i8*, i8** @res
-  %t143 = call i8* @tal(i8* %t142)
-  %t144 = getelementptr inbounds [4 x i8], [4 x i8]* @.str39, i32 0, i32 0
-  %t145 = call i1 @streq(i8* %t143, i8* %t144)
-  %t146 = or i1 %t141, %t145
-  br i1 %t146, label %then33, label %else34
+  %t136 = call i8* @empty()
+  %t137 = getelementptr inbounds [45 x i8], [45 x i8]* @.str37, i32 0, i32 0
+  %t138 = call i8* @sb_append_str(i8* %t136, i8* %t137)
+  %t139 = call i8* @input(i8* %t138)
+  store i8* %t139, i8** @res
+  %t140 = load i8*, i8** @res
+  %t141 = call i8* @tal(i8* %t140)
+  %t142 = getelementptr inbounds [2 x i8], [2 x i8]* @.str38, i32 0, i32 0
+  %t143 = call i1 @streq(i8* %t141, i8* %t142)
+  %t144 = load i8*, i8** @res
+  %t145 = call i8* @tal(i8* %t144)
+  %t146 = getelementptr inbounds [4 x i8], [4 x i8]* @.str39, i32 0, i32 0
+  %t147 = call i1 @streq(i8* %t145, i8* %t146)
+  %t148 = or i1 %t143, %t147
+  br i1 %t148, label %then33, label %else34
 then33:
-  %t147 = getelementptr inbounds [711 x i8], [711 x i8]* @.str40, i32 0, i32 0
-  call void @system(i8* %t147)
+  %t149 = getelementptr inbounds [690 x i8], [690 x i8]* @.str40, i32 0, i32 0
+  %t150 = call i64 @system(i8* %t149)
   call void @newline()
-  %t148 = add i1 0, 1
-  call void @asklaunchscript(i1 %t148)
+  %t151 = add i1 0, 1
+  call void @asklaunchscript(i1 %t151)
   br label %endif35
 else34:
-  %t149 = add i1 0, 1
-  call void @asklaunchscript(i1 %t149)
+  %t152 = add i1 0, 1
+  call void @asklaunchscript(i1 %t152)
   br label %endif35
 endif35:
   br label %endif29
@@ -405,42 +403,42 @@ define void @asklaunchscript(i1 %dir) {
 entry:
   %dir_addr = alloca i1
   store i1 %dir, i1* %dir_addr
-  %t150 = call i8* @empty()
-  %t151 = getelementptr inbounds [2 x i8], [2 x i8]* @.str41, i32 0, i32 0
-  %t152 = call i8* @sb_append_str(i8* %t150, i8* %t151)
-  %t153 = getelementptr inbounds [73 x i8], [73 x i8]* @.str42, i32 0, i32 0
-  %t154 = call i8* @sb_append_str(i8* %t152, i8* %t153)
-  %t155 = call i8* @input(i8* %t154)
-  store i8* %t155, i8** @res
-  %t156 = load i8*, i8** @res
-  %t157 = call i8* @tal(i8* %t156)
-  %t158 = getelementptr inbounds [2 x i8], [2 x i8]* @.str43, i32 0, i32 0
-  %t159 = call i1 @streq(i8* %t157, i8* %t158)
-  %t160 = load i8*, i8** @res
-  %t161 = call i8* @tal(i8* %t160)
-  %t162 = getelementptr inbounds [4 x i8], [4 x i8]* @.str44, i32 0, i32 0
-  %t163 = call i1 @streq(i8* %t161, i8* %t162)
-  %t164 = or i1 %t159, %t163
-  br i1 %t164, label %then36, label %else37
+  %t153 = call i8* @empty()
+  %t154 = getelementptr inbounds [2 x i8], [2 x i8]* @.str41, i32 0, i32 0
+  %t155 = call i8* @sb_append_str(i8* %t153, i8* %t154)
+  %t156 = getelementptr inbounds [73 x i8], [73 x i8]* @.str42, i32 0, i32 0
+  %t157 = call i8* @sb_append_str(i8* %t155, i8* %t156)
+  %t158 = call i8* @input(i8* %t157)
+  store i8* %t158, i8** @res
+  %t159 = load i8*, i8** @res
+  %t160 = call i8* @tal(i8* %t159)
+  %t161 = getelementptr inbounds [2 x i8], [2 x i8]* @.str43, i32 0, i32 0
+  %t162 = call i1 @streq(i8* %t160, i8* %t161)
+  %t163 = load i8*, i8** @res
+  %t164 = call i8* @tal(i8* %t163)
+  %t165 = getelementptr inbounds [4 x i8], [4 x i8]* @.str44, i32 0, i32 0
+  %t166 = call i1 @streq(i8* %t164, i8* %t165)
+  %t167 = or i1 %t162, %t166
+  br i1 %t167, label %then36, label %else37
 then36:
-  %t165 = load i1, i1* %dir_addr
-  %t166 = add i1 0, 1
-  %t167 = icmp eq i1 %t165, %t166
-  br i1 %t167, label %then39, label %else40
+  %t168 = load i1, i1* %dir_addr
+  %t169 = add i1 0, 1
+  %t170 = icmp eq i1 %t168, %t169
+  br i1 %t170, label %then39, label %else40
 then39:
-  %t168 = add i1 0, 1
-  call void @launchtempinstall(i1 %t168)
+  %t171 = add i1 0, 1
+  call void @launchtempinstall(i1 %t171)
   br label %endif41
 else40:
-  %t169 = add i1 0, 0
-  call void @launchtempinstall(i1 %t169)
+  %t172 = add i1 0, 0
+  call void @launchtempinstall(i1 %t172)
   br label %endif41
 endif41:
   br label %endif38
 else37:
   call void @thanks()
-  %t170 = add i64 0, 0
-  call void @exit(i64 %t170)
+  %t173 = add i64 0, 0
+  call void @exit(i64 %t173)
   br label %endif38
 endif38:
   ret void
@@ -449,61 +447,61 @@ define void @launchtempinstall(i1 %dir) {
 entry:
   %dir_addr = alloca i1
   store i1 %dir, i1* %dir_addr
-  %t171 = load i1, i1* %dir_addr
-  %t172 = add i1 0, 1
-  %t173 = icmp eq i1 %t171, %t172
-  br i1 %t173, label %then42, label %else43
+  %t174 = load i1, i1* %dir_addr
+  %t175 = add i1 0, 1
+  %t176 = icmp eq i1 %t174, %t175
+  br i1 %t176, label %then42, label %else43
 then42:
-  %t174 = call i8* @get_os()
-  %t175 = getelementptr inbounds [6 x i8], [6 x i8]* @.str45, i32 0, i32 0
-  %t176 = call i1 @streq(i8* %t174, i8* %t175)
-  br i1 %t176, label %then45, label %else46
+  %t177 = call i8* @get_os()
+  %t178 = getelementptr inbounds [6 x i8], [6 x i8]* @.str45, i32 0, i32 0
+  %t179 = call i1 @streq(i8* %t177, i8* %t178)
+  br i1 %t179, label %then45, label %else46
 then45:
-  %t177 = getelementptr inbounds [205 x i8], [205 x i8]* @.str46, i32 0, i32 0
-  call void @system(i8* %t177)
+  %t180 = getelementptr inbounds [199 x i8], [199 x i8]* @.str46, i32 0, i32 0
+  %t181 = call i64 @system(i8* %t180)
   call void @thanks()
-  %t178 = add i64 0, 0
-  call void @exit(i64 %t178)
+  %t182 = add i64 0, 0
+  call void @exit(i64 %t182)
   br label %endif47
 else46:
-  %t179 = call i8* @get_os()
-  %t180 = getelementptr inbounds [8 x i8], [8 x i8]* @.str47, i32 0, i32 0
-  %t181 = call i1 @streq(i8* %t179, i8* %t180)
-  br i1 %t181, label %then48, label %endif49
+  %t183 = call i8* @get_os()
+  %t184 = getelementptr inbounds [8 x i8], [8 x i8]* @.str47, i32 0, i32 0
+  %t185 = call i1 @streq(i8* %t183, i8* %t184)
+  br i1 %t185, label %then48, label %endif49
 then48:
-  %t182 = getelementptr inbounds [209 x i8], [209 x i8]* @.str48, i32 0, i32 0
-  call void @system(i8* %t182)
+  %t186 = getelementptr inbounds [203 x i8], [203 x i8]* @.str48, i32 0, i32 0
+  %t187 = call i64 @system(i8* %t186)
   call void @thanks()
-  %t183 = add i64 0, 0
-  call void @exit(i64 %t183)
+  %t188 = add i64 0, 0
+  call void @exit(i64 %t188)
   br label %endif49
 endif49:
   br label %endif47
 endif47:
   br label %endif44
 else43:
-  %t184 = call i8* @get_os()
-  %t185 = getelementptr inbounds [6 x i8], [6 x i8]* @.str49, i32 0, i32 0
-  %t186 = call i1 @streq(i8* %t184, i8* %t185)
-  br i1 %t186, label %then50, label %else51
+  %t189 = call i8* @get_os()
+  %t190 = getelementptr inbounds [6 x i8], [6 x i8]* @.str49, i32 0, i32 0
+  %t191 = call i1 @streq(i8* %t189, i8* %t190)
+  br i1 %t191, label %then50, label %else51
 then50:
-  %t187 = getelementptr inbounds [191 x i8], [191 x i8]* @.str50, i32 0, i32 0
-  call void @system(i8* %t187)
+  %t192 = getelementptr inbounds [185 x i8], [185 x i8]* @.str50, i32 0, i32 0
+  %t193 = call i64 @system(i8* %t192)
   call void @thanks()
-  %t188 = add i64 0, 0
-  call void @exit(i64 %t188)
+  %t194 = add i64 0, 0
+  call void @exit(i64 %t194)
   br label %endif52
 else51:
-  %t189 = call i8* @get_os()
-  %t190 = getelementptr inbounds [8 x i8], [8 x i8]* @.str51, i32 0, i32 0
-  %t191 = call i1 @streq(i8* %t189, i8* %t190)
-  br i1 %t191, label %then53, label %endif54
+  %t195 = call i8* @get_os()
+  %t196 = getelementptr inbounds [8 x i8], [8 x i8]* @.str51, i32 0, i32 0
+  %t197 = call i1 @streq(i8* %t195, i8* %t196)
+  br i1 %t197, label %then53, label %endif54
 then53:
-  %t192 = getelementptr inbounds [195 x i8], [195 x i8]* @.str52, i32 0, i32 0
-  call void @system(i8* %t192)
+  %t198 = getelementptr inbounds [189 x i8], [189 x i8]* @.str52, i32 0, i32 0
+  %t199 = call i64 @system(i8* %t198)
   call void @thanks()
-  %t193 = add i64 0, 0
-  call void @exit(i64 %t193)
+  %t200 = add i64 0, 0
+  call void @exit(i64 %t200)
   br label %endif54
 endif54:
   br label %endif52
@@ -514,102 +512,101 @@ endif44:
 }
 define void @thanks() {
 entry:
-  %t194 = getelementptr inbounds [36 x i8], [36 x i8]* @.str53, i32 0, i32 0
-  call void @system(i8* %t194)
-  %t195 = getelementptr inbounds [49 x i8], [49 x i8]* @.str54, i32 0, i32 0
-  call void @print(i8* %t195)
+  %t201 = getelementptr inbounds [36 x i8], [36 x i8]* @.str53, i32 0, i32 0
+  %t202 = call i64 @system(i8* %t201)
+  %t203 = getelementptr inbounds [49 x i8], [49 x i8]* @.str54, i32 0, i32 0
+  call void @print(i8* %t203)
   call void @newline()
-  %t196 = getelementptr inbounds [33 x i8], [33 x i8]* @.str55, i32 0, i32 0
-  call void @print(i8* %t196)
+  %t204 = getelementptr inbounds [33 x i8], [33 x i8]* @.str55, i32 0, i32 0
+  call void @print(i8* %t204)
   call void @newline()
-  %t197 = getelementptr inbounds [33 x i8], [33 x i8]* @.str56, i32 0, i32 0
-  call void @print(i8* %t197)
+  %t205 = getelementptr inbounds [33 x i8], [33 x i8]* @.str56, i32 0, i32 0
+  call void @print(i8* %t205)
   call void @newline()
-  %t198 = getelementptr inbounds [33 x i8], [33 x i8]* @.str57, i32 0, i32 0
-  call void @print(i8* %t198)
+  %t206 = getelementptr inbounds [33 x i8], [33 x i8]* @.str57, i32 0, i32 0
+  call void @print(i8* %t206)
   call void @newline()
-  %t199 = getelementptr inbounds [33 x i8], [33 x i8]* @.str58, i32 0, i32 0
-  call void @print(i8* %t199)
+  %t207 = getelementptr inbounds [33 x i8], [33 x i8]* @.str58, i32 0, i32 0
+  call void @print(i8* %t207)
   call void @newline()
-  %t200 = getelementptr inbounds [33 x i8], [33 x i8]* @.str59, i32 0, i32 0
-  call void @print(i8* %t200)
+  %t208 = getelementptr inbounds [33 x i8], [33 x i8]* @.str59, i32 0, i32 0
+  call void @print(i8* %t208)
   call void @newline()
-  %t201 = getelementptr inbounds [33 x i8], [33 x i8]* @.str60, i32 0, i32 0
-  call void @print(i8* %t201)
+  %t209 = getelementptr inbounds [33 x i8], [33 x i8]* @.str60, i32 0, i32 0
+  call void @print(i8* %t209)
   call void @newline()
   ret void
 }
 define void @linlibinstall() {
 entry:
-  %t202 = getelementptr inbounds [41 x i8], [41 x i8]* @.str61, i32 0, i32 0
-  call void @print(i8* %t202)
+  %t210 = getelementptr inbounds [41 x i8], [41 x i8]* @.str61, i32 0, i32 0
+  call void @print(i8* %t210)
   call void @newline()
-  %t203 = getelementptr inbounds [697 x i8], [697 x i8]* @.str62, i32 0, i32 0
-  call void @system(i8* %t203)
+  %t211 = getelementptr inbounds [579 x i8], [579 x i8]* @.str62, i32 0, i32 0
+  %t212 = call i64 @system(i8* %t211)
   ret void
 }
 define void @self_update() {
 entry:
-  %t204 = getelementptr inbounds [32 x i8], [32 x i8]* @.str63, i32 0, i32 0
-  call void @print(i8* %t204)
+  %t213 = getelementptr inbounds [32 x i8], [32 x i8]* @.str63, i32 0, i32 0
+  call void @print(i8* %t213)
   call void @newline()
   %code_addr = alloca i8*
-  %t205 = call i8* @sb_create()
-  store i8* %t205, i8** %code_addr
-  %t206 = load i8*, i8** %code_addr
-  %t207 = getelementptr inbounds [11 x i8], [11 x i8]* @.str64, i32 0, i32 0
-  %t208 = call i8* @sb_append_str(i8* %t206, i8* %t207)
-  store i8* %t208, i8** %code_addr
-  %t209 = load i8*, i8** %code_addr
-  %t210 = getelementptr inbounds [9 x i8], [9 x i8]* @.str65, i32 0, i32 0
-  %t211 = call i8* @sb_append_str(i8* %t209, i8* %t210)
-  store i8* %t211, i8** %code_addr
-  %t212 = load i8*, i8** %code_addr
-  %t213 = getelementptr inbounds [36 x i8], [36 x i8]* @.str66, i32 0, i32 0
-  %t214 = call i8* @sb_append_str(i8* %t212, i8* %t213)
+  %t214 = call i8* @sb_create()
   store i8* %t214, i8** %code_addr
   %t215 = load i8*, i8** %code_addr
-  %t216 = getelementptr inbounds [98 x i8], [98 x i8]* @.str67, i32 0, i32 0
+  %t216 = getelementptr inbounds [11 x i8], [11 x i8]* @.str64, i32 0, i32 0
   %t217 = call i8* @sb_append_str(i8* %t215, i8* %t216)
   store i8* %t217, i8** %code_addr
   %t218 = load i8*, i8** %code_addr
-  %t219 = getelementptr inbounds [15 x i8], [15 x i8]* @.str68, i32 0, i32 0
+  %t219 = getelementptr inbounds [9 x i8], [9 x i8]* @.str65, i32 0, i32 0
   %t220 = call i8* @sb_append_str(i8* %t218, i8* %t219)
   store i8* %t220, i8** %code_addr
   %t221 = load i8*, i8** %code_addr
-  %t222 = getelementptr inbounds [56 x i8], [56 x i8]* @.str69, i32 0, i32 0
+  %t222 = getelementptr inbounds [36 x i8], [36 x i8]* @.str66, i32 0, i32 0
   %t223 = call i8* @sb_append_str(i8* %t221, i8* %t222)
   store i8* %t223, i8** %code_addr
-  %script_addr = alloca i8*
   %t224 = load i8*, i8** %code_addr
-  %t225 = call i8* @sb_finish(i8* %t224)
-  store i8* %t225, i8** %script_addr
-  %t226 = getelementptr inbounds [16 x i8], [16 x i8]* @.str70, i32 0, i32 0
-  %t227 = load i8*, i8** %script_addr
-  %t228 = call i1 @write_file(i8* %t226, i8* %t227)
-  %t229 = getelementptr inbounds [16 x i8], [16 x i8]* @.str71, i32 0, i32 0
-  %t230 = load i8*, i8** %script_addr
-  %t231 = call i1 @write_file(i8* %t229, i8* %t230)
-  %t232 = xor i1 %t231, true
-  br i1 %t232, label %then55, label %endif56
+  %t225 = getelementptr inbounds [95 x i8], [95 x i8]* @.str67, i32 0, i32 0
+  %t226 = call i8* @sb_append_str(i8* %t224, i8* %t225)
+  store i8* %t226, i8** %code_addr
+  %t227 = load i8*, i8** %code_addr
+  %t228 = getelementptr inbounds [15 x i8], [15 x i8]* @.str68, i32 0, i32 0
+  %t229 = call i8* @sb_append_str(i8* %t227, i8* %t228)
+  store i8* %t229, i8** %code_addr
+  %t230 = load i8*, i8** %code_addr
+  %t231 = getelementptr inbounds [56 x i8], [56 x i8]* @.str69, i32 0, i32 0
+  %t232 = call i8* @sb_append_str(i8* %t230, i8* %t231)
+  store i8* %t232, i8** %code_addr
+  %script_addr = alloca i8*
+  %t233 = load i8*, i8** %code_addr
+  %t234 = call i8* @sb_finish(i8* %t233)
+  store i8* %t234, i8** %script_addr
+  %t235 = getelementptr inbounds [16 x i8], [16 x i8]* @.str70, i32 0, i32 0
+  %t236 = load i8*, i8** %script_addr
+  %t237 = call i1 @write_file(i8* %t235, i8* %t236)
+  %t238 = getelementptr inbounds [16 x i8], [16 x i8]* @.str71, i32 0, i32 0
+  %t239 = load i8*, i8** %script_addr
+  %t240 = call i1 @write_file(i8* %t238, i8* %t239)
+  %t241 = xor i1 %t240, true
+  br i1 %t241, label %then55, label %endif56
 then55:
-  %t233 = getelementptr inbounds [32 x i8], [32 x i8]* @.str72, i32 0, i32 0
-  call void @print(i8* %t233)
+  %t242 = getelementptr inbounds [32 x i8], [32 x i8]* @.str72, i32 0, i32 0
+  call void @print(i8* %t242)
   call void @newline()
-  %t234 = load i8*, i8** %script_addr
-  call void @free_str(i8* %t234)
+  %t243 = load i8*, i8** %script_addr
+  call void @free_str(i8* %t243)
   ret void
-  br label %endif56
 endif56:
-  %t235 = load i8*, i8** %script_addr
-  call void @free_str(i8* %t235)
-  %t236 = getelementptr inbounds [48 x i8], [48 x i8]* @.str73, i32 0, i32 0
-  call void @system(i8* %t236)
-  %t237 = getelementptr inbounds [54 x i8], [54 x i8]* @.str74, i32 0, i32 0
-  call void @print(i8* %t237)
+  %t244 = load i8*, i8** %script_addr
+  call void @free_str(i8* %t244)
+  %t245 = getelementptr inbounds [48 x i8], [48 x i8]* @.str73, i32 0, i32 0
+  %t246 = call i64 @system(i8* %t245)
+  %t247 = getelementptr inbounds [54 x i8], [54 x i8]* @.str74, i32 0, i32 0
+  call void @print(i8* %t247)
   call void @newline()
-  %t238 = add i64 0, 0
-  call void @exit(i64 %t238)
+  %t248 = add i64 0, 0
+  call void @exit(i64 %t248)
   ret void
 }
 @.str0 = private unnamed_addr constant [1 x i8] c"\00"
@@ -643,28 +640,28 @@ endif56:
 @.str28 = private unnamed_addr constant [4 x i8] c"yes\00"
 @.str29 = private unnamed_addr constant [38 x i8] c"quitting... since not in desired dir.\00"
 @.str30 = private unnamed_addr constant [37 x i8] c"Installing into current directory...\00"
-@.str31 = private unnamed_addr constant [103 x i8] c"wget -O ORCC.bin https://github.com/MikaLorielle/Orcat-Lang/releases/download/ORCC-mainstream/ORCC.bin\00"
+@.str31 = private unnamed_addr constant [100 x i8] c"wget -O ORCC.bin https://github.com/MikaSukie/Orcat-Lang/releases/download/ORCC-mainstream/ORCC.bin\00"
 @.str32 = private unnamed_addr constant [45 x i8] c"Do you want default libs with the compiler? \00"
 @.str33 = private unnamed_addr constant [2 x i8] c"y\00"
 @.str34 = private unnamed_addr constant [4 x i8] c"yes\00"
 @.str35 = private unnamed_addr constant [30 x i8] c"Installing into ./ocatenv/...\00"
-@.str36 = private unnamed_addr constant [134 x i8] c"mkdir ocatenv && cd ocatenv && wget -O ORCC.bin https://github.com/MikaLorielle/Orcat-Lang/releases/download/ORCC-mainstream/ORCC.bin\00"
+@.str36 = private unnamed_addr constant [131 x i8] c"mkdir ocatenv && cd ocatenv && wget -O ORCC.bin https://github.com/MikaSukie/Orcat-Lang/releases/download/ORCC-mainstream/ORCC.bin\00"
 @.str37 = private unnamed_addr constant [45 x i8] c"Do you want default libs with the compiler? \00"
 @.str38 = private unnamed_addr constant [2 x i8] c"y\00"
 @.str39 = private unnamed_addr constant [4 x i8] c"yes\00"
-@.str40 = private unnamed_addr constant [711 x i8] c"cd ocatenv && wget -O stdlib.c https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/stdlib.c && wget -O C_io.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_io.sorcat && wget -O C_fileio.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_fileio.sorcat && wget -O C_mem.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_mem.sorcat && wget -O C_types.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_types.sorcat && wget -O std.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/std.sorcat && wget -O C_union.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_union.sorcat\00"
+@.str40 = private unnamed_addr constant [690 x i8] c"cd ocatenv && wget -O stdlib.c https://raw.githubusercontent.com/MikaSukie/Orcat-Lang/main/stdlib.c && wget -O C_io.sorcat https://raw.githubusercontent.com/MikaSukie/Orcat-Lang/main/C_io.sorcat && wget -O C_fileio.sorcat https://raw.githubusercontent.com/MikaSukie/Orcat-Lang/main/C_fileio.sorcat && wget -O C_mem.sorcat https://raw.githubusercontent.com/MikaSukie/Orcat-Lang/main/C_mem.sorcat && wget -O C_types.sorcat https://raw.githubusercontent.com/MikaSukie/Orcat-Lang/main/C_types.sorcat && wget -O std.sorcat https://raw.githubusercontent.com/MikaSukie/Orcat-Lang/main/std.sorcat && wget -O C_union.sorcat https://raw.githubusercontent.com/MikaSukie/Orcat-Lang/main/C_union.sorcat\00"
 @.str41 = private unnamed_addr constant [2 x i8] c"\0A\00"
 @.str42 = private unnamed_addr constant [73 x i8] c"Do you want launch script (templates)? (will install according to OS.): \00"
 @.str43 = private unnamed_addr constant [2 x i8] c"y\00"
 @.str44 = private unnamed_addr constant [4 x i8] c"yes\00"
 @.str45 = private unnamed_addr constant [6 x i8] c"linux\00"
-@.str46 = private unnamed_addr constant [205 x i8] c"cd ocatenv && wget -O compile.sh https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/compile.sh && wget -O Rcompile.sh https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/Rcompile.sh\00"
+@.str46 = private unnamed_addr constant [199 x i8] c"cd ocatenv && wget -O compile.sh https://raw.githubusercontent.com/MikaSukie/Orcat-Lang/main/compile.sh && wget -O Rcompile.sh https://raw.githubusercontent.com/MikaSukie/Orcat-Lang/main/Rcompile.sh\00"
 @.str47 = private unnamed_addr constant [8 x i8] c"windows\00"
-@.str48 = private unnamed_addr constant [209 x i8] c"cd ocatenv && wget -O compile.bat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/compile.bat && wget -O Rcompile.bat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/Rcompile.bat\00"
+@.str48 = private unnamed_addr constant [203 x i8] c"cd ocatenv && wget -O compile.bat https://raw.githubusercontent.com/MikaSukie/Orcat-Lang/main/compile.bat && wget -O Rcompile.bat https://raw.githubusercontent.com/MikaSukie/Orcat-Lang/main/Rcompile.bat\00"
 @.str49 = private unnamed_addr constant [6 x i8] c"linux\00"
-@.str50 = private unnamed_addr constant [191 x i8] c"wget -O compile.sh https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/compile.sh && wget -O Rcompile.sh https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/Rcompile.sh\00"
+@.str50 = private unnamed_addr constant [185 x i8] c"wget -O compile.sh https://raw.githubusercontent.com/MikaSukie/Orcat-Lang/main/compile.sh && wget -O Rcompile.sh https://raw.githubusercontent.com/MikaSukie/Orcat-Lang/main/Rcompile.sh\00"
 @.str51 = private unnamed_addr constant [8 x i8] c"windows\00"
-@.str52 = private unnamed_addr constant [195 x i8] c"wget -O compile.bat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/compile.bat && wget -O Rcompile.bat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/Rcompile.bat\00"
+@.str52 = private unnamed_addr constant [189 x i8] c"wget -O compile.bat https://raw.githubusercontent.com/MikaSukie/Orcat-Lang/main/compile.bat && wget -O Rcompile.bat https://raw.githubusercontent.com/MikaSukie/Orcat-Lang/main/Rcompile.bat\00"
 @.str53 = private unnamed_addr constant [36 x i8] c"find . -type f -exec chmod +x {} \\;\00"
 @.str54 = private unnamed_addr constant [49 x i8] c"Thanks for downloading ORCat Language! Have fun!\00"
 @.str55 = private unnamed_addr constant [33 x i8] c"   ____  _____   _____      _   \00"
@@ -674,12 +671,12 @@ endif56:
 @.str59 = private unnamed_addr constant [33 x i8] c" | |__| | | \\ \\| |___| (_| | |_ \00"
 @.str60 = private unnamed_addr constant [33 x i8] c"  \\____/|_|  \\_\\\\_____\\__,_|\\__|\00"
 @.str61 = private unnamed_addr constant [41 x i8] c"[IMPORTANT] MAKE SURE WGET is installed!\00"
-@.str62 = private unnamed_addr constant [697 x i8] c"wget -O stdlib.c https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/stdlib.c && wget -O C_io.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_io.sorcat && wget -O C_fileio.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_fileio.sorcat && wget -O C_mem.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_mem.sorcat && wget -O C_types.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_types.sorcat && wget -O std.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/std.sorcat && wget -O C_union.sorcat https://raw.githubusercontent.com/MikaLorielle/Orcat-Lang/main/C_union.sorcat\00"
+@.str62 = private unnamed_addr constant [579 x i8] c"wget -O stdlib.c https://raw.githubusercontent.com/MikaSukie/Orcat-Lang/main/stdlib.c && wget -O C_io.sorcat https://raw.githubusercontent.com/MikaSukie/Orcat-Lang/main/C_io.sorcat && wget -O C_fileio.sorcat https://raw.githubusercontent.com/MikaSukie/Orcat-Lang/main/C_fileio.sorcat && wget -O C_types.sorcat https://raw.githubusercontent.com/MikaSukie/Orcat-Lang/main/C_types.sorcat && wget -O std.sorcat https://raw.githubusercontent.com/MikaSukie/Orcat-Lang/main/std.sorcat && wget -O C_union.sorcat https://raw.githubusercontent.com/MikaSukie/Orcat-Lang/main/C_union.sorcat\00"
 @.str63 = private unnamed_addr constant [32 x i8] c"Preparing background updater...\00"
 @.str64 = private unnamed_addr constant [11 x i8] c"#!/bin/sh\0A\00"
 @.str65 = private unnamed_addr constant [9 x i8] c"sleep 1\0A\00"
 @.str66 = private unnamed_addr constant [36 x i8] c"echo '[UPDATER] Replacing ocat...'\0A\00"
-@.str67 = private unnamed_addr constant [98 x i8] c"wget -O ocat https://github.com/MikaLorielle/Orcat-Lang/releases/download/ORCC-BETA-NEWGEN/ocatl\0A\00"
+@.str67 = private unnamed_addr constant [95 x i8] c"wget -O ocat https://github.com/MikaSukie/Orcat-Lang/releases/download/ORCC-BETA-NEWGEN/ocatl\0A\00"
 @.str68 = private unnamed_addr constant [15 x i8] c"chmod +x ocat\0A\00"
 @.str69 = private unnamed_addr constant [56 x i8] c"echo '[UPDATER] Update complete. Press enter to exit.'\0A\00"
 @.str70 = private unnamed_addr constant [16 x i8] c"ocat_updater.sh\00"
