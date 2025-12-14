@@ -85,17 +85,22 @@ class TypeEnv:
 				return scope[name]
 		return None
 def llvm_ty_of(typ: str) -> str:
+	if typ.endswith('*'):
+		base = typ[:-1]
+		if base in enum_variant_map and any(p is not None for _, p in enum_variant_map[base]):
+			return f"%enum.{base}**"
+		if base in enum_variant_map:
+			return type_map.get(base, type_map.get("int", "i64")) + "*"
+		if base in type_map:
+			return type_map[base] + "*"
+		return f"%struct.{base}*"
+	if typ in enum_variant_map:
+		if any(p is not None for _, p in enum_variant_map[typ]):
+			return f"%enum.{typ}*"
+		return type_map.get(typ, type_map.get("int", "i64"))
 	if typ in type_map:
 		return type_map[typ]
-	base = typ.rstrip('*')
-	is_ptr = typ.endswith('*')
-	if base in type_map:
-		return f"{type_map[base]}*" if is_ptr else type_map[base]
-	if base.startswith("int") and base[3:].isdigit():
-		return f"i{base[3:]}*" if is_ptr else f"i{base[3:]}"
-	if base == "void" and is_ptr:
-		return "i8*"
-	return f"%struct.{base}*" if is_ptr else f"%struct.{base}"
+	return f"%struct.{typ}"
 def clean_struct_name(name: str) -> str:
 	return name.rstrip("*").removeprefix("%struct.")
 def llvm_int_bitsize(ty: str) -> Optional[int]:
@@ -505,8 +510,20 @@ class Parser:
 			variant_name = self.expect('IDENT').value
 			variant_type: Optional[str] = None
 			if self.match('COLON'):
-				variant_type = self.expect('IDENT').value
-			self.expect('SEMI')
+				if self.peek().kind in TYPE_TOKENS or self.peek().kind == 'IDENT':
+					variant_type = self.bump().value
+				else:
+					raise SyntaxError(f"Expected type after ':', got {self.peek().kind} at {self.peek().line}:{self.peek().col}")
+				self.expect('SEMI')
+			elif self.match('LPAREN'):
+				if self.peek().kind in TYPE_TOKENS or self.peek().kind == 'IDENT':
+					variant_type = self.bump().value
+				else:
+					raise SyntaxError(f"Expected type inside variant parentheses, got {self.peek().kind} at {self.peek().line}:{self.peek().col}")
+				self.expect('RPAREN')
+				self.expect('SEMI')
+			else:
+				self.expect('SEMI')
 			variants.append(EnumVariant(variant_name, variant_type))
 		self.expect('RBRACE')
 		return EnumDef(name, type_param, variants)
@@ -1337,12 +1354,70 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 	if isinstance(expr, Call):
 		args_ir: List[str] = []
 		arg_types: List[str] = []
+		arg_vals: List[str] = []
 		for arg in expr.args:
 			a = gen_expr(arg, out)
 			ty2 = infer_type(arg)
 			arg_types.append(ty2)
+			arg_vals.append(a)
 			llvm_ty = llvm_ty_of(ty2)
 			args_ir.append(f"{llvm_ty} {a}")
+		found_enum = None
+		found_variant_idx = None
+		found_variant_payload = None
+		for ename, variants in enum_variant_map.items():
+			for idx, (vname, payload) in enumerate(variants):
+				if vname == expr.name:
+					found_enum = ename
+					found_variant_idx = idx
+					found_variant_payload = payload
+					break
+			if found_enum is not None:
+				break
+		if found_enum is not None:
+			llvm_enum_ty = type_map.get(found_enum, type_map.get("int", "i64"))
+			if found_variant_payload is None:
+				if llvm_enum_ty.startswith('i'):
+					if len(expr.args) != 0:
+						raise RuntimeError(f"Enum variant {expr.name} for {found_enum} takes no arguments")
+					tmp = new_tmp()
+					out.append(f"  {tmp} = add {llvm_enum_ty} 0, {found_variant_idx}")
+					return tmp
+				else:
+					szptr = new_tmp()
+					out.append(f"  {szptr} = getelementptr inbounds %enum.{found_enum}, %enum.{found_enum}* null, i32 1")
+					sz64 = new_tmp()
+					out.append(f"  {sz64} = ptrtoint %enum.{found_enum}* {szptr} to i64")
+					raw = new_tmp()
+					out.append(f"  {raw} = call i8* @malloc(i64 {sz64})")
+					struct_ptr = new_tmp()
+					out.append(f"  {struct_ptr} = bitcast i8* {raw} to %enum.{found_enum}*")
+					tag_ptr = new_tmp()
+					out.append(f"  {tag_ptr} = getelementptr inbounds %enum.{found_enum}, %enum.{found_enum}* {struct_ptr}, i32 0, i32 0")
+					out.append(f"  store i32 {found_variant_idx}, i32* {tag_ptr}")
+					return struct_ptr
+			if found_variant_payload is not None:
+				if len(expr.args) != 1:
+					raise RuntimeError(f"Enum constructor '{expr.name}' requires exactly one argument")
+				payload_val = arg_vals[0]
+				payload_ty = found_variant_payload
+				llvm_payload_ty = llvm_ty_of(payload_ty)
+				szptr = new_tmp()
+				out.append(f"  {szptr} = getelementptr inbounds %enum.{found_enum}, %enum.{found_enum}* null, i32 1")
+				sz64 = new_tmp()
+				out.append(f"  {sz64} = ptrtoint %enum.{found_enum}* {szptr} to i64")
+				raw = new_tmp()
+				out.append(f"  {raw} = call i8* @malloc(i64 {sz64})")
+				struct_ptr = new_tmp()
+				out.append(f"  {struct_ptr} = bitcast i8* {raw} to %enum.{found_enum}*")
+				tag_ptr = new_tmp()
+				out.append(f"  {tag_ptr} = getelementptr inbounds %enum.{found_enum}, %enum.{found_enum}* {struct_ptr}, i32 0, i32 0")
+				out.append(f"  store i32 {found_variant_idx}, i32* {tag_ptr}")
+				payload_ptr = new_tmp()
+				out.append(f"  {payload_ptr} = getelementptr inbounds %enum.{found_enum}, %enum.{found_enum}* {struct_ptr}, i32 0, i32 1")
+				out.append(f"  store {llvm_payload_ty} {payload_val}, {llvm_payload_ty}* {payload_ptr}")
+				return struct_ptr
+			raise RuntimeError(f"Enum variant '{expr.name}' mismatches enum '{found_enum}' payload specification")
 		if expr.name == "!" and len(expr.args) == 1:
 			arg = gen_expr(expr.args[0], out)
 			arg_ty = infer_type(expr.args[0])
@@ -1355,7 +1430,9 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 		if base_fn and base_fn.is_async:
 			raise RuntimeError(f"async function '{expr.name}' must be awaited")
 		if base_fn and base_fn.type_params:
-			actual = arg_types[0]
+			actual = arg_types[0] if arg_types else None
+			if actual is None:
+				raise RuntimeError(f"Generic function '{expr.name}' called with no arguments")
 			mononame = f"{expr.name}_{actual}"
 			if mononame not in generated_mono:
 				subst_map = {base_fn.type_params[0]: actual}
@@ -1433,19 +1510,38 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 				return tmp2
 		raise RuntimeError(f"Call to undefined function '{expr.name}'")
 	if isinstance(expr, FieldAccess):
+		if isinstance(expr.base, Var) and expr.base.name in enum_variant_map:
+			base_name = expr.base.name
+			llvm_enum_ty = type_map.get(base_name, type_map.get("int", "i64"))
+			if llvm_enum_ty.startswith('i'):
+				variants = enum_variant_map[base_name]
+				for idx, (vname, payload) in enumerate(variants):
+					if vname == expr.field:
+						tmp = new_tmp()
+						out.append(f"  {tmp} = add {llvm_enum_ty} 0, {idx}")
+						return tmp
+				raise RuntimeError(f"Enum '{base_name}' has no variant '{expr.field}'")
+			raise RuntimeError(f"Cannot access variant {expr.field} on enum type {base_name} (tagged enums require constructors like Some(...))")
 		base_ptr = gen_expr(expr.base, out)
-		base_type = infer_type(expr.base).rstrip("*").removeprefix("%struct.")
-		if base_type not in struct_field_map:
-			raise RuntimeError(f"Struct type '{base_type}' not found")
-		fields = struct_field_map[base_type]
+		base_raw = infer_type(expr.base)
+		base_name = base_raw
+		if base_name.endswith("*"):
+			base_name = base_name[:-1]
+		if base_name.startswith("%struct."):
+			base_name = base_name[len("%struct."):]
+		if base_name in enum_variant_map and type_map.get(base_name, "").startswith('i'):
+			raise RuntimeError("Field access on an enum value is not supported; use match or constructors")
+		if base_name not in struct_field_map:
+			raise RuntimeError(f"Struct type '{base_name}' not found")
+		fields = struct_field_map[base_name]
 		field_dict = dict(fields)
 		if expr.field not in field_dict:
-			raise RuntimeError(f"Struct '{base_type}' has no field '{expr.field}'")
+			raise RuntimeError(f"Struct '{base_name}' has no field '{expr.field}'")
 		index = list(field_dict.keys()).index(expr.field)
 		field_typ = field_dict[expr.field]
 		field_llvm = llvm_ty_of(field_typ)
 		ptr = new_tmp()
-		out.append(f"  {ptr} = getelementptr inbounds %struct.{base_type}, %struct.{base_type}* {base_ptr}, i32 0, i32 {index}")
+		out.append(f"  {ptr} = getelementptr inbounds %struct.{base_name}, %struct.{base_name}* {base_ptr}, i32 0, i32 {index}")
 		tmp = new_tmp()
 		out.append(f"  {tmp} = load {field_llvm}, {field_llvm}* {ptr}")
 		return tmp
@@ -1520,13 +1616,22 @@ def infer_type(expr: Expr) -> str:
 		if expr.kind in {'typeof', 'etypeof'}:
 			return 'string'
 	if isinstance(expr, FieldAccess):
-		base_type = clean_struct_name(infer_type(expr.base))
-		if base_type not in struct_field_map:
-			raise RuntimeError(f"Struct type '{base_type}' not found")
-		fields = struct_field_map[base_type]
+		if isinstance(expr.base, Var) and expr.base.name in enum_variant_map:
+			return 'int'
+		base_raw = infer_type(expr.base)
+		base_name = base_raw
+		if base_name.endswith("*"):
+			base_name = base_name[:-1]
+		if base_name.startswith("%struct."):
+			base_name = base_name[len("%struct."):]
+		if base_name in enum_variant_map:
+			return 'int'
+		if base_name not in struct_field_map:
+			raise RuntimeError(f"Struct type '{base_name}' not found")
+		fields = struct_field_map[base_name]
 		field_dict = dict(fields)
 		if expr.field not in field_dict:
-			raise RuntimeError(f"Field '{expr.field}' not in struct '{base_type}'")
+			raise RuntimeError(f"Field '{expr.field}' not in struct '{base_name}'")
 		return field_dict[expr.field]
 	if isinstance(expr, StructInit):
 		return expr.name + "*"
@@ -1542,6 +1647,12 @@ def infer_type(expr: Expr) -> str:
 			return 'bool'
 		return common
 	if isinstance(expr, Call):
+		for ename, variants in enum_variant_map.items():
+			for vname, payload in variants:
+				if vname == expr.name:
+					if type_map.get(ename, "").startswith('i') and payload is None:
+						return ename
+					return ename + "*"
 		if expr.name in func_table:
 			ret_llvm_ty = func_table[expr.name]
 			for k, v in type_map.items():
@@ -1763,29 +1874,72 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 		out.append(f"  {cast_tmp} = bitcast {llvm_ty} {ptr_tmp} to i8*")
 		out.append(f"  call void @free(i8* {cast_tmp})")
 	elif isinstance(stmt, Match):
+		raw_ty = infer_type(stmt.expr)
+		enum_name = None
+		base = raw_ty
+		while base.endswith('*'):
+			base = base[:-1]
+		if base.startswith("%enum."):
+			enum_name = base[len("%enum."):]
+		elif base.startswith("%struct."):
+			nm = base[len("%struct."):]
+			if nm in enum_variant_map:
+				enum_name = nm
+		elif base in enum_variant_map:
+			enum_name = base
+		else:
+			raw_llvm = type_map.get(raw_ty, raw_ty)
+			for high, low in type_map.items():
+				if low == raw_llvm and high in enum_variant_map:
+					enum_name = high
+					break
+		if enum_name is None:
+			raise RuntimeError(f"Match expression is not an enum type: {raw_ty}")
+		llvm_enum_ty = type_map.get(enum_name, None)
+		has_payloads = any(p is not None for (_, p) in enum_variant_map[enum_name])
+		if llvm_enum_ty and llvm_enum_ty.startswith("i") and not has_payloads:
+			val = gen_expr(stmt.expr, out)
+			end_lbl = new_label("match_end")
+			variant_labels = {vname: new_label(f"case_{vname}") for vname, _ in enum_variant_map[enum_name]}
+			out.append(f"  switch {llvm_enum_ty} {val}, label %{end_lbl} [")
+			for idx, (vname, _) in enumerate(enum_variant_map[enum_name]):
+				out.append(f"    {llvm_enum_ty} {idx}, label %{variant_labels[vname]}")
+			out.append("  ]")
+			for case in stmt.cases:
+				lbl = variant_labels.get(case.variant)
+				if not lbl:
+					raise RuntimeError(f"Unknown variant {case.variant} for enum {enum_name}")
+				out.append(f"{lbl}:")
+				for s in case.body:
+					gen_stmt(s, out, ret_ty)
+				last = out[-1].strip() if out else ""
+				if not (last.startswith("ret") or last == "unreachable" or last.startswith("br ")):
+					out.append(f"  br label %{end_lbl}")
+			out.append(f"{end_lbl}:")
+			return
 		enum_ptr = gen_expr(stmt.expr, out)
-		tag_tmp = new_tmp()
-		out.append(f"  {tag_tmp} = getelementptr inbounds %enum.{infer_type(stmt.expr)}, %enum.{infer_type(stmt.expr)}* {enum_ptr}, i32 0, i32 0")
+		tag_ptr = new_tmp()
+		out.append(f"  {tag_ptr} = getelementptr inbounds %enum.{enum_name}, %enum.{enum_name}* {enum_ptr}, i32 0, i32 0")
 		loaded_tag = new_tmp()
-		out.append(f"  {loaded_tag} = load i32, i32* {tag_tmp}")
+		out.append(f"  {loaded_tag} = load i32, i32* {tag_ptr}")
 		end_lbl = new_label("match_end")
-		variant_labels = {}
-		for case in stmt.cases:
-			lbl = new_label(f"case_{case.variant}")
-			variant_labels[case.variant] = lbl
+		variant_labels = {vname: new_label(f"case_{vname}") for vname, _ in enum_variant_map[enum_name]}
 		out.append(f"  switch i32 {loaded_tag}, label %{end_lbl} [")
-		for idx, (vname, payload) in enumerate(enum_variant_map[infer_type(stmt.expr)]):
-			lbl = variant_labels[vname]
-			out.append(f"	i32 {idx}, label %{lbl}")
+		for idx, (vname, _) in enumerate(enum_variant_map[enum_name]):
+			out.append(f"    i32 {idx}, label %{variant_labels[vname]}")
 		out.append("  ]")
-		for idx, case in enumerate(stmt.cases):
-			lbl = variant_labels[case.variant]
+		for case in stmt.cases:
+			lbl = variant_labels.get(case.variant)
+			if not lbl:
+				raise RuntimeError(f"Unknown variant {case.variant} for enum {enum_name}")
 			out.append(f"{lbl}:")
-			variant_info = next(v for v in enum_variant_map[infer_type(stmt.expr)] if v[0] == case.variant)
+			variant_info = next((v for v in enum_variant_map[enum_name] if v[0] == case.variant), None)
+			if variant_info is None:
+				raise RuntimeError(f"Unknown variant {case.variant} for enum {enum_name}")
 			payload_type = variant_info[1]
 			if payload_type is not None:
 				payload_ptr = new_tmp()
-				out.append(f"  {payload_ptr} = getelementptr inbounds %enum.{infer_type(stmt.expr)}, %enum.{infer_type(stmt.expr)}* {enum_ptr}, i32 0, i32 1")
+				out.append(f"  {payload_ptr} = getelementptr inbounds %enum.{enum_name}, %enum.{enum_name}* {enum_ptr}, i32 0, i32 1")
 				loaded_payload = new_tmp()
 				llvm_payload_ty = llvm_ty_of(payload_type)
 				out.append(f"  {loaded_payload} = load {llvm_payload_ty}, {llvm_payload_ty}* {payload_ptr}")
@@ -1810,7 +1964,7 @@ def gen_func(fn: Func) -> List[str]:
 		return [f"declare {ret_ty} @{fn.name}({param_sig})"]
 	if fn.is_async:
 		if fn.body is None or len(fn.body) == 0:
-			raise RuntimeError(f"Async function '{fn.name}' has an empty body — cannot generate async state machine.")
+			raise RuntimeError(f"Async function '{fn.name}' has an empty body, cannot generate async state machine.")
 		generated_mono[fn.name] = True
 		symbol_table.push()
 		codegen_adapter = type("CodegenAdapter", (), {})()
@@ -1959,9 +2113,10 @@ def compile_program(prog: Program) -> str:
 		lines.extend(struct_llvm_defs)
 		lines.append("")
 	for ename, variants in enum_variant_map.items():
-		llvm_line = f"%enum.{ename} = type {{ i32, [8 x i8] }}"
-		lines.append(llvm_line)
-	if enum_variant_map:
+		if any(payload is not None for (_, payload) in variants):
+			llvm_line = f"%enum.{ename} = type {{ i32, [8 x i8] }}"
+			lines.append(llvm_line)
+	if any(any(p is not None for (_, p) in v) for v in enum_variant_map.values()):
 		lines.append("")
 	existing_globals = set()
 	existing_funcs = set()
@@ -2011,8 +2166,16 @@ def check_types(prog: Program):
 		struct_field_map[sdef.name] = [(fld.name, fld.typ) for fld in sdef.fields]
 	for struct_name in struct_defs:
 		env.declare(struct_name, struct_name)
-	for enum_name in enum_defs:
-		env.declare(enum_name, enum_name)
+	for ename, edef in enum_defs.items():
+		variants = []
+		has_payload = False
+		for v in edef.variants:
+			variants.append((v.name, v.typ))
+			if getattr(v, "typ", None) is not None:
+				has_payload = True
+		enum_variant_map[ename] = variants
+		if not has_payload:
+			type_map[ename] = type_map.get('int', 'i64')
 def check_expr(expr: Expr) -> str:
 	if isinstance(expr, AwaitExpr):
 		inner_t = check_expr(expr.expr)
@@ -2403,7 +2566,7 @@ class AsyncStateMachine:
 		if self.states:
 			lines.append(f"  switch i32 %st, label %state0 [")
 			for i in range(len(self.states)):
-				lines.append(f"    i32 {i}, label %state{i}")
+				lines.append(f"	i32 {i}, label %state{i}")
 			lines.append("  ]")
 		for i, st in enumerate(self.states):
 			lines.append(f"state{i}:")
@@ -2624,7 +2787,7 @@ def main():
 		raise RuntimeError("No startpoint: no main function found. Add a 'fn main(...) <...>' function.")
 	for fn in final_prog.funcs:
 		if getattr(fn, "is_async", False) and (fn.body is None or len(fn.body) == 0):
-			raise RuntimeError(f"Async function '{fn.name}' has an empty body — async functions must contain at least one statement or be removed.")
+			raise RuntimeError(f"Async function '{fn.name}' has an empty body, async functions must contain at least one statement or be removed.")
 	check_types(final_prog)
 	llvm = compile_program(final_prog)
 	with open(args.output, 'w', encoding="utf-8", errors="ignore") as f:
