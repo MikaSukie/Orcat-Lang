@@ -84,6 +84,14 @@ class TypeEnv:
 			if name in scope:
 				return scope[name]
 		return None
+def mangle_type_name(base_name: str, type_args: List[str]) -> str:
+	if not type_args:
+		return base_name
+	sanitized_args = []
+	for arg in type_args:
+		clean = arg.replace("*", "ptr").replace("%struct.", "").replace("%enum.", "")
+		sanitized_args.append(clean)
+	return f"{base_name}_{'_'.join(sanitized_args)}"
 def llvm_ty_of(typ: str) -> str:
 	if typ.endswith('*'):
 		base = typ[:-1]
@@ -93,6 +101,10 @@ def llvm_ty_of(typ: str) -> str:
 			return type_map.get(base, type_map.get("int", "i64")) + "*"
 		if base in type_map:
 			return type_map[base] + "*"
+		if base in monomorphized_structs:
+			return f"%struct.{base}*"
+		if base in monomorphized_enums:
+			return f"%enum.{base}*"
 		return f"%struct.{base}*"
 	if typ in enum_variant_map:
 		if any(p is not None for _, p in enum_variant_map[typ]):
@@ -100,6 +112,10 @@ def llvm_ty_of(typ: str) -> str:
 		return type_map.get(typ, type_map.get("int", "i64"))
 	if typ in type_map:
 		return type_map[typ]
+	if typ in monomorphized_structs:
+		return f"%struct.{typ}"
+	if typ in monomorphized_enums:
+		return f"%enum.{typ}"
 	return f"%struct.{typ}"
 def clean_struct_name(name: str) -> str:
 	return name.rstrip("*").removeprefix("%struct.")
@@ -312,6 +328,12 @@ class EnumDef(Stmt):
 	name: str
 	type_param: Optional[str]
 	variants: List[EnumVariant]
+	type_params: List[str] = None
+	def __post_init__(self):
+		if self.type_params is None:
+			self.type_params = []
+		if self.type_param and not self.type_params:
+			self.type_params = [self.type_param]
 @dataclass
 class CrumbleStmt(Stmt):
 	name: str
@@ -345,6 +367,10 @@ class IndexAssign(Stmt):
 class StructDef(Stmt):
 	name: str
 	fields: List[StructField]
+	type_params: List[str] = None
+	def __post_init__(self):
+		if self.type_params is None:
+			self.type_params = []
 @dataclass
 class FieldAccess(Expr):
 	base: Expr
@@ -425,6 +451,10 @@ generated_mono: Dict[str, bool] = {}
 all_funcs: List[Func] = []
 enum_variant_map: Dict[str, List[Tuple[str, Optional[str]]]] = {}
 loop_stack: List[Dict[str, str]] = []
+generic_struct_defs: Dict[str, StructDef] = {}
+generic_enum_defs: Dict[str, EnumDef] = {}
+monomorphized_structs: Dict[str, StructDef] = {}
+monomorphized_enums: Dict[str, EnumDef] = {}
 class Parser:
 	def __init__(self, tokens: List[Token]):
 		self.declared_vars: Dict[str, VarDecl] = {}
@@ -445,6 +475,19 @@ class Parser:
 			self.bump()
 			return True
 		return False
+	def parse_type_with_generics(self) -> Tuple[str, List[str]]:
+		base_type = self.expect('IDENT').value
+		type_args: List[str] = []
+		if self.match('LT'):
+			while True:
+				arg_type = self.expect('IDENT').value
+				if self.match('STAR'):
+					arg_type += '*'
+				type_args.append(arg_type)
+				if not self.match('COMMA'):
+					break
+			self.expect('GT')
+		return base_type, type_args
 	def parse(self) -> Program:
 		funcs = []
 		imports = []
@@ -500,9 +543,12 @@ class Parser:
 	def parse_enum_def(self) -> EnumDef:
 		self.expect('ENUM')
 		name = self.expect('IDENT').value
-		type_param: Optional[str] = None
+		type_params: List[str] = []
 		if self.match('LT'):
-			type_param = self.expect('IDENT').value
+			while True:
+				type_params.append(self.expect('IDENT').value)
+				if not self.match('COMMA'):
+					break
 			self.expect('GT')
 		self.expect('LBRACE')
 		variants: List[EnumVariant] = []
@@ -526,14 +572,23 @@ class Parser:
 				self.expect('SEMI')
 			variants.append(EnumVariant(variant_name, variant_type))
 		self.expect('RBRACE')
-		return EnumDef(name, type_param, variants)
+		enum_def = EnumDef(name, None, variants)
+		enum_def.type_params = type_params
+		return enum_def
 	def parse_struct_def(self) -> StructDef:
 		self.expect('STRUCT')
-		name = self.expect('IDENT').value
+		name = self.expect('IDENT').value		
+		type_params: List[str] = []
+		if self.match('LT'):
+			while True:
+				type_params.append(self.expect('IDENT').value)
+				if not self.match('COMMA'):
+					break
+			self.expect('GT')
 		self.expect('LBRACE')
 		fields = []
 		while self.peek().kind != 'RBRACE':
-			if self.peek().kind in TYPE_TOKENS:
+			if self.peek().kind in TYPE_TOKENS or self.peek().kind == 'IDENT':
 				typ = self.bump().value
 				fname = self.expect('IDENT').value
 			else:
@@ -542,7 +597,9 @@ class Parser:
 			self.expect('SEMI')
 			fields.append(StructField(fname, typ))
 		self.expect('RBRACE')
-		return StructDef(name, fields)
+		struct_def = StructDef(name, fields)
+		struct_def.type_params = type_params
+		return struct_def
 	def parse_func(self) -> Func:
 		access = 'pub'
 		is_extern = False
@@ -735,6 +792,20 @@ class Parser:
 			nomd = True
 		if self.peek().kind in TYPE_TOKENS or self.peek().kind == 'IDENT':
 			typ = self.bump().value
+			if self.match('LT'):
+				type_args = []
+				while True:
+					arg = self.expect('IDENT').value
+					if self.match('STAR'):
+						arg += '*'
+					type_args.append(arg)
+					if not self.match('COMMA'):
+						break
+				self.expect('GT')
+				if typ in generic_struct_defs:
+					typ = monomorphize_struct(typ, type_args)
+				elif typ in generic_enum_defs:
+					typ = monomorphize_enum(typ, type_args)
 			if self.match('STAR'):
 				typ += '*'
 			if self.match('LBRACKET'):
@@ -903,7 +974,19 @@ class Parser:
 			if t.kind == 'IDENT' and t.value == 'ORCC.get_args':
 				return Call('ORCC.get_args', [])
 			if t.kind == 'IDENT':
-				base = Var(t.value)
+				base_name = t.value
+				type_args: List[str] = []
+				if self.peek().kind == 'LT' and (self.pos + 1 < len(self.tokens) and self.tokens[self.pos + 1].kind == 'IDENT'):
+					self.bump()
+					while True:
+						arg = self.expect('IDENT').value
+						if self.match('STAR'):
+							arg += '*'
+						type_args.append(arg)
+						if not self.match('COMMA'):
+							break
+					self.expect('GT')
+				base = Var(base_name)
 				if self.peek().kind == 'LBRACE':
 					self.bump()
 					fields_list: List[Tuple[str, Expr]] = []
@@ -914,7 +997,8 @@ class Parser:
 						self.expect('SEMI')
 						fields_list.append((fname, fexpr))
 					self.expect('RBRACE')
-					return StructInit(t.value, fields_list)
+					mangled_name = mangle_type_name(base_name, type_args) if type_args else base_name
+					return StructInit(mangled_name, fields_list)
 				if self.peek().kind == 'LPAREN':
 					self.bump()
 					args: List[Expr] = []
@@ -1096,6 +1180,97 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 	if isinstance(expr, AwaitExpr):
 		inner = expr.expr
 		if isinstance(inner, Call):
+			base_fn = next((f for f in all_funcs if f.name == inner.name), None)
+			actual_name = inner.name
+			if base_fn and base_fn.type_params:
+				arg_types: List[str] = []
+				for a in inner.args:
+					arg_types.append(infer_type(a))
+				if len(arg_types) < len(base_fn.type_params):
+					raise RuntimeError(
+						f"Cannot infer all type parameters for async '{inner.name}': "
+						f"expected {len(base_fn.type_params)}, got {len(arg_types)} args"
+					)
+				inferred_types = arg_types[:len(base_fn.type_params)]
+				mononame = mangle_type_name(inner.name, inferred_types)
+				if mononame not in generated_mono:
+					subst_map = dict(zip(base_fn.type_params, inferred_types))
+					new_params = [(subst_map.get(p[0], p[0]), p[1]) for p in base_fn.params]
+					new_ret = subst_map.get(base_fn.ret_type, base_fn.ret_type)
+					def replace_in_expr(e: Expr) -> Expr:
+						if isinstance(e, Var):
+							if e.name in subst_map:
+								return Var(subst_map[e.name])
+							return e
+						if isinstance(e, BinOp):
+							return BinOp(e.op, replace_in_expr(e.left), replace_in_expr(e.right))
+						if isinstance(e, Call):
+							return Call(e.name, [replace_in_expr(a) for a in e.args])
+						if isinstance(e, FieldAccess):
+							return FieldAccess(replace_in_expr(e.base), e.field)
+						if isinstance(e, AwaitExpr):
+							return AwaitExpr(replace_in_expr(e.expr))
+						if isinstance(e, UnaryOp):
+							return UnaryOp(e.op, replace_in_expr(e.expr))
+						if isinstance(e, UnaryDeref):
+							return UnaryDeref(replace_in_expr(e.ptr))
+						if isinstance(e, Index):
+							return Index(replace_in_expr(e.array), replace_in_expr(e.index))
+						if isinstance(e, StructInit):
+							return StructInit(e.name, [(fn, replace_in_expr(fv)) for fn, fv in e.fields])
+						if isinstance(e, Ternary):
+							return Ternary(replace_in_expr(e.cond), replace_in_expr(e.then_expr), replace_in_expr(e.else_expr))
+						if isinstance(e, Cast):
+							return Cast(subst_map.get(e.typ, e.typ), replace_in_expr(e.expr))
+						return e
+					def replace_in_stmt(s: Stmt) -> Stmt:
+						if isinstance(s, VarDecl):
+							typ = subst_map.get(s.typ, s.typ)
+							expr0 = replace_in_expr(s.expr) if s.expr else None
+							return VarDecl(s.access, typ, s.name, expr0, s.nomd)
+						if isinstance(s, Assign):
+							return Assign(s.name, replace_in_expr(s.expr))
+						if isinstance(s, ReturnStmt):
+							return ReturnStmt(replace_in_expr(s.expr) if s.expr else None)
+						if isinstance(s, ExprStmt):
+							return ExprStmt(replace_in_expr(s.expr))
+						if isinstance(s, IfStmt):
+							cond0 = replace_in_expr(s.cond)
+							then_body0 = [replace_in_stmt(ss) for ss in s.then_body]
+							else_body0 = None
+							if s.else_body:
+								if isinstance(s.else_body, IfStmt):
+									else_body0 = replace_in_stmt(s.else_body)
+								else:
+									else_body0 = [replace_in_stmt(ss) for ss in s.else_body]
+							return IfStmt(cond0, then_body0, else_body0)
+						if isinstance(s, WhileStmt):
+							return WhileStmt(replace_in_expr(s.cond), [replace_in_stmt(ss) for ss in s.body])
+						if isinstance(s, IndexAssign):
+							return IndexAssign(s.array, replace_in_expr(s.index), replace_in_expr(s.value))
+						if isinstance(s, ContinueStmt):
+							return ContinueStmt()
+						if isinstance(s, BreakStmt):
+							return BreakStmt()
+						return s
+					new_body = [replace_in_stmt(stmt) for stmt in base_fn.body] if base_fn.body else None
+					new_fn = Func(base_fn.access, mononame, [], new_params, new_ret, new_body, 
+								base_fn.is_extern, is_async=True)
+					all_funcs.append(new_fn)
+					symbol_table.push()
+					codegen_adapter = type("CodegenAdapter", (), {})()
+					setattr(codegen_adapter, "gen_expr", gen_expr)
+					def _adapter_gen_stmt(stmt, outlist, ret_ty_inner):
+						return gen_stmt(stmt, outlist, ret_ty_inner)
+					setattr(codegen_adapter, "_gen_stmt", _adapter_gen_stmt)
+					asm = AsyncStateMachine(new_fn, codegen_adapter)
+					llvm_lines = asm.generate()
+					out.insert(0, "\n".join(llvm_lines))
+					func_table[f"{mononame}_init"] = f"%async.{mononame}*"
+					func_table[f"{mononame}_resume"] = "i1"
+					generated_mono[mononame] = True
+					symbol_table.pop()
+				actual_name = mononame
 			args_ir: List[str] = []
 			for a in inner.args:
 				tmpa = gen_expr(a, out)
@@ -1104,23 +1279,23 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 			args_sig = ", ".join(args_ir)
 			handle_tmp = new_tmp()
 			if args_sig:
-				out.append(f"  {handle_tmp} = call %async.{inner.name}* @{inner.name}_init({args_sig})")
+				out.append(f"  {handle_tmp} = call %async.{actual_name}* @{actual_name}_init({args_sig})")
 			else:
-				out.append(f"  {handle_tmp} = call %async.{inner.name}* @{inner.name}_init()")
+				out.append(f"  {handle_tmp} = call %async.{actual_name}* @{actual_name}_init()")
 			loop_lbl = new_label("await_loop")
 			done_lbl = new_label("await_done")
 			out.append(f"  br label %{loop_lbl}")
 			out.append(f"{loop_lbl}:")
 			done_tmp = new_tmp()
-			out.append(f"  {done_tmp} = call i1 @{inner.name}_resume(%async.{inner.name}* {handle_tmp})")
+			out.append(f"  {done_tmp} = call i1 @{actual_name}_resume(%async.{actual_name}* {handle_tmp})")
 			cmp_tmp = new_tmp()
 			out.append(f"  {cmp_tmp} = icmp eq i1 {done_tmp}, 0")
 			out.append(f"  br i1 {cmp_tmp}, label %{loop_lbl}, label %{done_lbl}")
 			out.append(f"{done_lbl}:")
-			base_fn = next((f for f in all_funcs if f.name == inner.name), None)
-			ret_llvm = llvm_ty_of(base_fn.ret_type) if base_fn else "i64"
+			actual_fn = next((f for f in all_funcs if f.name == actual_name), base_fn)
+			ret_llvm = llvm_ty_of(actual_fn.ret_type) if actual_fn else "i64"
 			ret_ptr_tmp = new_tmp()
-			out.append(f"  {ret_ptr_tmp} = getelementptr inbounds %async.{inner.name}, %async.{inner.name}* {handle_tmp}, i32 0, i32 1")
+			out.append(f"  {ret_ptr_tmp} = getelementptr inbounds %async.{actual_name}, %async.{actual_name}* {handle_tmp}, i32 0, i32 1")
 			ret_val_tmp = new_tmp()
 			out.append(f"  {ret_val_tmp} = load {ret_llvm}, {ret_llvm}* {ret_ptr_tmp}")
 			return ret_val_tmp
@@ -1430,12 +1605,15 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 		if base_fn and base_fn.is_async:
 			raise RuntimeError(f"async function '{expr.name}' must be awaited")
 		if base_fn and base_fn.type_params:
-			actual = arg_types[0] if arg_types else None
-			if actual is None:
-				raise RuntimeError(f"Generic function '{expr.name}' called with no arguments")
-			mononame = f"{expr.name}_{actual}"
+			if len(expr.args) < len(base_fn.type_params):
+				raise RuntimeError(
+					f"Cannot infer all type parameters for '{expr.name}': "
+					f"expected {len(base_fn.type_params)}, got {len(expr.args)} args"
+				)
+			inferred_types = [infer_type(expr.args[i]) for i in range(len(base_fn.type_params))]
+			mononame = mangle_type_name(expr.name, inferred_types)
 			if mononame not in generated_mono:
-				subst_map = {base_fn.type_params[0]: actual}
+				subst_map = dict(zip(base_fn.type_params, inferred_types))
 				new_params = [(subst_map.get(p[0], p[0]), p[1]) for p in base_fn.params]
 				new_ret = subst_map.get(base_fn.ret_type, base_fn.ret_type)
 				def replace_in_expr(e: Expr) -> Expr:
@@ -1449,12 +1627,26 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 						return Call(e.name, [replace_in_expr(a0) for a0 in e.args])
 					if isinstance(e, FieldAccess):
 						return FieldAccess(replace_in_expr(e.base), e.field)
+					if isinstance(e, UnaryOp):
+						return UnaryOp(e.op, replace_in_expr(e.expr))
+					if isinstance(e, UnaryDeref):
+						return UnaryDeref(replace_in_expr(e.ptr))
+					if isinstance(e, Index):
+						return Index(replace_in_expr(e.array), replace_in_expr(e.index))
+					if isinstance(e, StructInit):
+						return StructInit(e.name, [(fn, replace_in_expr(fv)) for fn, fv in e.fields])
+					if isinstance(e, Ternary):
+						return Ternary(replace_in_expr(e.cond), replace_in_expr(e.then_expr), replace_in_expr(e.else_expr))
+					if isinstance(e, Cast):
+						return Cast(subst_map.get(e.typ, e.typ), replace_in_expr(e.expr))
+					if isinstance(e, AwaitExpr):
+						return AwaitExpr(replace_in_expr(e.expr))
 					return e
 				def replace_in_stmt(s: Stmt) -> Stmt:
 					if isinstance(s, VarDecl):
 						typ = subst_map.get(s.typ, s.typ)
 						expr0 = replace_in_expr(s.expr) if s.expr else None
-						return VarDecl(s.access, typ, s.name, expr0)
+						return VarDecl(s.access, typ, s.name, expr0, s.nomd)
 					if isinstance(s, Assign):
 						return Assign(s.name, replace_in_expr(s.expr))
 					if isinstance(s, IndexAssign):
@@ -1487,9 +1679,13 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 							new_body0 = [replace_in_stmt(ss) for ss in case.body]
 							new_cases.append(MatchCase(case.variant, case.binding, new_body0))
 						return Match(new_expr0, new_cases)
-					raise RuntimeError(f"Unsupported Stmt in generic substitution: {s}")
+					if isinstance(s, ContinueStmt):
+						return ContinueStmt()
+					if isinstance(s, BreakStmt):
+						return BreakStmt()
+					return s
 				new_body = [replace_in_stmt(stmt) for stmt in base_fn.body] if base_fn.body else None
-				new_fn = Func(base_fn.access, mononame, [], new_params, new_ret, new_body, base_fn.is_extern)
+				new_fn = Func(base_fn.access, mononame, [], new_params, new_ret, new_body, base_fn.is_extern, base_fn.is_async)
 				all_funcs.append(new_fn)
 				func_table[mononame] = llvm_ty_of(new_ret)
 				llvm_lines = gen_func(new_fn)
@@ -1497,8 +1693,12 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 				generated_mono[mononame] = True
 			ret_ty = func_table[mononame]
 			tmp2 = new_tmp()
-			out.append(f"  {tmp2} = call {ret_ty} @{mononame}({', '.join(args_ir)})")
-			return tmp2
+			if ret_ty == 'void':
+				out.append(f"  call void @{mononame}({', '.join(args_ir)})")
+				return ''
+			else:
+				out.append(f"  {tmp2} = call {ret_ty} @{mononame}({', '.join(args_ir)})")
+				return tmp2
 		if expr.name in func_table:
 			ret_ty = func_table[expr.name]
 			if ret_ty == 'void':
@@ -1547,6 +1747,8 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 		return tmp
 	if isinstance(expr, StructInit):
 		struct_name = expr.name
+		if struct_name not in struct_field_map and struct_name not in monomorphized_structs:
+			raise RuntimeError(f"Struct '{struct_name}' not found")
 		struct_ty = f"%struct.{struct_name}"
 		tmp_ptr = new_tmp()
 		out.append(f"  {tmp_ptr} = alloca {struct_ty}")
@@ -1591,6 +1793,11 @@ def infer_type(expr: Expr) -> str:
 			base_fn = next((f for f in all_funcs if f.name == inner.name), None)
 			if base_fn is None:
 				raise TypeError(f"Await of unknown function '{inner.name}'")
+			if base_fn.type_params:
+				arg_types = [infer_type(a) for a in inner.args]
+				inferred = arg_types[:len(base_fn.type_params)]
+				subst_map = dict(zip(base_fn.type_params, inferred))
+				return subst_map.get(base_fn.ret_type, base_fn.ret_type)
 			return base_fn.ret_type
 		else:
 			raise TypeError("Await supports only direct Call(...) expressions in type checking")
@@ -1903,7 +2110,7 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 			variant_labels = {vname: new_label(f"case_{vname}") for vname, _ in enum_variant_map[enum_name]}
 			out.append(f"  switch {llvm_enum_ty} {val}, label %{end_lbl} [")
 			for idx, (vname, _) in enumerate(enum_variant_map[enum_name]):
-				out.append(f"    {llvm_enum_ty} {idx}, label %{variant_labels[vname]}")
+				out.append(f"		{llvm_enum_ty} {idx}, label %{variant_labels[vname]}")
 			out.append("  ]")
 			for case in stmt.cases:
 				lbl = variant_labels.get(case.variant)
@@ -1926,7 +2133,7 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 		variant_labels = {vname: new_label(f"case_{vname}") for vname, _ in enum_variant_map[enum_name]}
 		out.append(f"  switch i32 {loaded_tag}, label %{end_lbl} [")
 		for idx, (vname, _) in enumerate(enum_variant_map[enum_name]):
-			out.append(f"    i32 {idx}, label %{variant_labels[vname]}")
+			out.append(f"		i32 {idx}, label %{variant_labels[vname]}")
 		out.append("  ]")
 		for case in stmt.cases:
 			lbl = variant_labels.get(case.variant)
@@ -1961,6 +2168,7 @@ def gen_func(fn: Func) -> List[str]:
 		param_sig = ", ".join(f"{llvm_ty_of(t)} %{n}" for t, n in fn.params)
 		ret_ty = llvm_ty_of(fn.ret_type)
 		generated_mono[fn.name] = True
+		func_table[fn.name] = ret_ty
 		return [f"declare {ret_ty} @{fn.name}({param_sig})"]
 	if fn.is_async:
 		if fn.body is None or len(fn.body) == 0:
@@ -2016,16 +2224,77 @@ def gen_func(fn: Func) -> List[str]:
 	out.append("}")
 	symbol_table.pop()
 	return out
+def monomorphize_struct(base_name: str, type_args: List[str]) -> str:
+	if not type_args:
+		return base_name
+	mangled = mangle_type_name(base_name, type_args)
+	if mangled in monomorphized_structs:
+		return mangled
+	if base_name not in generic_struct_defs:
+		raise RuntimeError(f"Generic struct '{base_name}' not found")
+	template = generic_struct_defs[base_name]
+	if len(type_args) != len(template.type_params):
+		raise RuntimeError(
+			f"Struct '{base_name}' expects {len(template.type_params)} type args, got {len(type_args)}"
+		)
+	subst_map = dict(zip(template.type_params, type_args))
+	new_fields = []
+	for field in template.fields:
+		new_type = subst_map.get(field.typ, field.typ)
+		new_fields.append(StructField(field.name, new_type))
+	mono_struct = StructDef(mangled, new_fields)
+	mono_struct.type_params = []
+	monomorphized_structs[mangled] = mono_struct
+	struct_field_map[mangled] = [(f.name, f.typ) for f in new_fields]
+	return mangled
+def monomorphize_enum(base_name: str, type_args: List[str]) -> str:
+	if not type_args:
+		return base_name
+	mangled = mangle_type_name(base_name, type_args)
+	if mangled in monomorphized_enums:
+		return mangled
+	if base_name not in generic_enum_defs:
+		raise RuntimeError(f"Generic enum '{base_name}' not found")
+	template = generic_enum_defs[base_name]
+	if len(type_args) != len(template.type_params):
+		raise RuntimeError(
+			f"Enum '{base_name}' expects {len(template.type_params)} type args, got {len(type_args)}"
+		)
+	subst_map = dict(zip(template.type_params, type_args))
+	new_variants = []
+	for variant in template.variants:
+		new_payload = subst_map.get(variant.typ, variant.typ) if variant.typ else None
+		new_variants.append(EnumVariant(variant.name, new_payload))
+	mono_enum = EnumDef(mangled, None, new_variants)
+	mono_enum.type_params = []
+	monomorphized_enums[mangled] = mono_enum
+	enum_variant_map[mangled] = [(v.name, v.typ) for v in new_variants]
+	has_payload = any(v.typ is not None for v in new_variants)
+	if not has_payload:
+		type_map[mangled] = type_map.get('int', 'i64')
+	return mangled
 def compile_program(prog: Program) -> str:
 	global all_funcs, func_table, builtins_emitted
 	all_funcs = prog.funcs[:]
 	string_constants.clear()
 	func_table.clear()
-	for fn in prog.funcs:
-		if fn.type_params:
-			continue
-		llvm_ret_ty = llvm_ty_of(fn.ret_type)
-		func_table[fn.name] = llvm_ret_ty
+	generic_struct_defs.clear()
+	generic_enum_defs.clear()
+	monomorphized_structs.clear()
+	monomorphized_enums.clear()
+	for sdef in prog.structs:
+		if sdef.type_params:
+			generic_struct_defs[sdef.name] = sdef
+		else:
+			struct_field_map[sdef.name] = [(f.name, f.typ) for f in sdef.fields]
+	for edef in prog.enums:
+		if edef.type_params:
+			generic_enum_defs[edef.name] = edef
+		else:
+			enum_variant_map[edef.name] = [(v.name, v.typ) for v in edef.variants]
+			has_payload = any(v.typ is not None for v in edef.variants)
+			if not has_payload:
+				type_map[edef.name] = type_map.get('int', 'i64')
 	func_table["exit"] = "void"
 	func_table["malloc"] = "i8*"
 	func_table["free"] = "void"
@@ -2100,19 +2369,31 @@ def compile_program(prog: Program) -> str:
 		symbol_table.declare(g.name, llvm_ty, f"@{g.name}")
 	struct_llvm_defs: List[str] = []
 	for sdef in prog.structs:
+		if not sdef.type_params:
+			field_tys: List[str] = []
+			struct_field_map[sdef.name] = [(f.name, f.typ) for f in sdef.fields]
+			for fld in sdef.fields:
+				if fld.typ in type_map:
+					field_tys.append(type_map[fld.typ])
+				else:
+					field_tys.append(f"%struct.{fld.typ}")
+			llvm_line = f"%struct.{sdef.name} = type {{ {', '.join(field_tys)} }}"
+			struct_llvm_defs.append(llvm_line)
+	for mangled_name, mono_struct in monomorphized_structs.items():
 		field_tys: List[str] = []
-		struct_field_map[sdef.name] = [(f.name, f.typ) for f in sdef.fields]
-		for fld in sdef.fields:
+		for fld in mono_struct.fields:
 			if fld.typ in type_map:
 				field_tys.append(type_map[fld.typ])
 			else:
 				field_tys.append(f"%struct.{fld.typ}")
-		llvm_line = f"%struct.{sdef.name} = type {{ {', '.join(field_tys)} }}"
+		llvm_line = f"%struct.{mangled_name} = type {{ {', '.join(field_tys)} }}"
 		struct_llvm_defs.append(llvm_line)
 	if struct_llvm_defs:
 		lines.extend(struct_llvm_defs)
 		lines.append("")
-	for ename, variants in enum_variant_map.items():
+	all_enum_names = set(enum_variant_map.keys()) | set(monomorphized_enums.keys())
+	for ename in all_enum_names:
+		variants = enum_variant_map.get(ename, [])
 		if any(payload is not None for (_, payload) in variants):
 			llvm_line = f"%enum.{ename} = type {{ i32, [8 x i8] }}"
 			lines.append(llvm_line)
@@ -2135,6 +2416,19 @@ def compile_program(prog: Program) -> str:
 		lines.append("")
 		lines.append("")
 		builtins_emitted = True
+	def register_func_signature(fn):
+		if getattr(fn, "type_params", None):
+			return
+		if fn.name == "main":
+			func_table["main"] = "i32"
+			return
+		try:
+			ret_ty = llvm_ty_of(fn.ret_type)
+		except Exception:
+			ret_ty = "i64"
+		func_table[fn.name] = ret_ty
+	for fn in prog.funcs:
+		register_func_signature(fn)
 	for fn in prog.funcs:
 		lines += gen_func(fn)
 	if string_constants:
@@ -2161,21 +2455,26 @@ def check_types(prog: Program):
 		if g.nomd:
 			crumb_map[g.name] = (None, 0, 0, 0)
 	struct_defs: Dict[str, StructDef] = {s.name: s for s in prog.structs}
-	enum_defs:   Dict[str, EnumDef]   = {e.name: e for e in prog.enums}
+	enum_defs: Dict[str, EnumDef] = {e.name: e for e in prog.enums}
 	for sdef in prog.structs:
-		struct_field_map[sdef.name] = [(fld.name, fld.typ) for fld in sdef.fields]
-	for struct_name in struct_defs:
-		env.declare(struct_name, struct_name)
+		if sdef.type_params:
+			generic_struct_defs[sdef.name] = sdef
+		else:
+			struct_field_map[sdef.name] = [(fld.name, fld.typ) for fld in sdef.fields]
+			env.declare(sdef.name, sdef.name)
 	for ename, edef in enum_defs.items():
-		variants = []
-		has_payload = False
-		for v in edef.variants:
-			variants.append((v.name, v.typ))
-			if getattr(v, "typ", None) is not None:
-				has_payload = True
-		enum_variant_map[ename] = variants
-		if not has_payload:
-			type_map[ename] = type_map.get('int', 'i64')
+		if edef.type_params:
+			generic_enum_defs[ename] = edef
+		else:
+			variants = []
+			has_payload = False
+			for v in edef.variants:
+				variants.append((v.name, v.typ))
+				if getattr(v, "typ", None) is not None:
+					has_payload = True
+			enum_variant_map[ename] = variants
+			if not has_payload:
+				type_map[ename] = type_map.get('int', 'i64')
 def check_expr(expr: Expr) -> str:
 	if isinstance(expr, AwaitExpr):
 		inner_t = check_expr(expr.expr)
@@ -2290,25 +2589,46 @@ def check_expr(expr: Expr) -> str:
 				return "void"
 			raise TypeError(f"Call to undeclared function '{expr.name}'")
 		if fn.type_params:
-			if len(fn.type_params) != 1:
-				raise TypeError(f"Only single-type-param generics supported, but got {fn.type_params}")
-			concrete_type = check_expr(expr.args[0])
-			type_param = fn.type_params[0]
-			mononame = f"{expr.name}_{concrete_type}"
+			if len(expr.args) < len(fn.type_params):
+				raise TypeError(
+					f"Cannot infer all type parameters for '{expr.name}': "
+					f"expected at least {len(fn.type_params)} args, got {len(expr.args)}"
+				)
+			concrete_types = [check_expr(expr.args[i]) for i in range(len(fn.type_params))]
+			mononame = mangle_type_name(expr.name, concrete_types)
 			if mononame not in funcs:
+				subst_map = dict(zip(fn.type_params, concrete_types))
 				new_params = [
-					(concrete_type if param_type == type_param else param_type, name)
+					(subst_map.get(param_type, param_type), name)
 					for (param_type, name) in fn.params
 				]
-				new_ret = concrete_type if fn.ret_type == type_param else fn.ret_type
+				new_ret = subst_map.get(fn.ret_type, fn.ret_type)
 				def substitute_stmt_types(s: Stmt) -> Stmt:
 					if isinstance(s, VarDecl):
-						typ = concrete_type if s.typ == type_param else s.typ
+						typ = subst_map.get(s.typ, s.typ)
 						expr2 = s.expr
-						return VarDecl(s.access, typ, s.name, expr2)
+						return VarDecl(s.access, typ, s.name, expr2, s.nomd)
+					if isinstance(s, Assign):
+						return s
+					if isinstance(s, IfStmt):
+						then_body_new = [substitute_stmt_types(ss) for ss in s.then_body]
+						else_body_new = None
+						if s.else_body:
+							if isinstance(s.else_body, IfStmt):
+								else_body_new = substitute_stmt_types(s.else_body)
+							else:
+								else_body_new = [substitute_stmt_types(ss) for ss in s.else_body]
+						return IfStmt(s.cond, then_body_new, else_body_new)
+					if isinstance(s, WhileStmt):
+						body_new = [substitute_stmt_types(ss) for ss in s.body]
+						return WhileStmt(s.cond, body_new)
+					if isinstance(s, ReturnStmt):
+						return s
+					if isinstance(s, ExprStmt):
+						return s
 					return s
 				new_body = [substitute_stmt_types(s) for s in fn.body] if fn.body else None
-				new_fn = Func(fn.access, mononame, [], new_params, new_ret, new_body, fn.is_extern)
+				new_fn = Func(fn.access, mononame, [], new_params, new_ret, new_body, fn.is_extern, fn.is_async)
 				funcs[mononame] = new_fn
 				prog.funcs.append(new_fn)
 			expr.name = mononame
@@ -2346,9 +2666,12 @@ def check_expr(expr: Expr) -> str:
 				return ftyp
 		raise TypeError(f"Struct '{base_type}' has no field '{expr.field}'")
 	if isinstance(expr, StructInit):
-		if expr.name not in struct_defs:
+		if expr.name in monomorphized_structs:
+			expected_fields = struct_field_map[expr.name][:]
+		elif expr.name in struct_defs:
+			expected_fields = struct_field_map[expr.name][:]
+		else:
 			raise TypeError(f"Unknown struct type '{expr.name}' in initializer")
-		expected_fields = struct_field_map[expr.name][:]
 		seen_fields = set()
 		for (fname, fexpr) in expr.fields:
 			match_list = [ft for (fn, ft) in expected_fields if fn == fname]
@@ -2531,8 +2854,9 @@ class AsyncStateMachine:
 		self.states: List[List[str]] = []
 		self.current_state = 0
 		self.allocas: List[Tuple[str, str]] = []
+		self.mangled_name = func.name
 	def generate(self) -> List[str]:
-		name = self.func.name
+		name = self.mangled_name
 		st_ty = f"%async.{name}"
 		lines: List[str] = []
 		param_types = [llvm_ty_of(t) for t, n in self.func.params]
@@ -2628,10 +2952,18 @@ class AsyncStateMachine:
 				self.current_state += 1
 				if isinstance(await_expr.expr, Call):
 					cal = await_expr.expr
-					arg_tokens: List[str] = []
 					base_fn = next((f for f in all_funcs if f.name == cal.name), None)
-					if base_fn:
-						for a, (param_typ, _) in zip(cal.args, base_fn.params):
+					actual_name = cal.name
+					if base_fn and base_fn.type_params:
+						arg_types = []
+						for a in cal.args:
+							arg_types.append(infer_type(a))
+						inferred = arg_types[:len(base_fn.type_params)]
+						actual_name = mangle_type_name(cal.name, inferred)
+					arg_tokens: List[str] = []
+					actual_fn = next((f for f in all_funcs if f.name == actual_name), base_fn)
+					if actual_fn:
+						for a, (param_typ, _) in zip(cal.args, actual_fn.params):
 							arg_tmp = self.codegen.gen_expr(a, []) if hasattr(self.codegen, 'gen_expr') else None
 							if arg_tmp is None:
 								arg_tokens.append(f"{llvm_ty_of(param_typ)} 0")
@@ -2645,8 +2977,8 @@ class AsyncStateMachine:
 							else:
 								arg_tokens.append(f"i64 {arg_tmp}")
 					args_ir = ", ".join(arg_tokens)
-					accum.append(f"  %await_handle = call %async.{cal.name}* @{cal.name}_init({args_ir})")
-					accum.append(f"  %await_done = call i1 @{cal.name}_resume(%async.{cal.name}* %await_handle)")
+					accum.append(f"  %await_handle = call %async.{actual_name}* @{actual_name}_init({args_ir})")
+					accum.append(f"  %await_done = call i1 @{actual_name}_resume(%async.{actual_name}* %await_handle)")
 					suspend_lbl = new_label("await_suspend")
 					cont_lbl = new_label("await_cont")
 					accum.append(f"  %cmp{self.current_state} = icmp eq i1 %await_done, 0")
@@ -2655,9 +2987,8 @@ class AsyncStateMachine:
 					accum.append(f"  store i32 {self.current_state}, i32* %stptr")
 					accum.append(f"  ret i1 0")
 					accum.append(f"{cont_lbl}:")
-					base_fn = next((f for f in all_funcs if f.name == cal.name), None)
-					ret_llvm = llvm_ty_of(base_fn.ret_type) if base_fn else 'i64'
-					accum.append(f"  %res_ptr = getelementptr inbounds %async.{cal.name}, %async.{cal.name}* %await_handle, i32 0, i32 1")
+					ret_llvm = llvm_ty_of(actual_fn.ret_type) if actual_fn else 'i64'
+					accum.append(f"  %res_ptr = getelementptr inbounds %async.{actual_name}, %async.{actual_name}* %await_handle, i32 0, i32 1")
 					accum.append(f"  %await_ret = load {ret_llvm}, {ret_llvm}* %res_ptr")
 				else:
 					accum.append("  ret i1 0")
@@ -2717,6 +3048,10 @@ def main():
 	struct_field_map.clear()
 	string_constants.clear()
 	generated_mono.clear()
+	generic_struct_defs.clear()
+	generic_enum_defs.clear()
+	monomorphized_structs.clear()
+	monomorphized_enums.clear()
 	parser = argparse.ArgumentParser(description="Orcat Compiler")
 	parser.add_argument("input", help="Input source file (.orcat or .sorcat)")
 	parser.add_argument("-o", "--output", required=True, help="Output LLVM IR file (.ll)")
