@@ -46,7 +46,7 @@ Want to be part of this?
 - This is a “small” but VERY ambitious compiler project.
 - *(because I do not like compiled languages that slap the dev for doing something risky),
 - safety, and simplicity in a language.
-
+- Somehow I added Async 💀
 ---
 
 Stay tuned for more updates! 🌟  
