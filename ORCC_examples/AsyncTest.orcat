@@ -1,0 +1,15 @@
+/*
+ * Example file for ORCatLang
+ *
+ * This file is for demonstration purposes and is not licensed.
+ * Feel free to modify, share, or adapt this file as you like.
+ */
+fn main() <int> {
+    return await test();
+}
+
+async fn test() <int> {
+    int f = 0;
+    f += 1;
+    return 1;
+}
