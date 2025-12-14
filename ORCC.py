@@ -37,7 +37,8 @@ KEYWORDS = {
 	'int', 'int8', 'int16', 'int32', 'int64',
 	'float', 'bool', 'char', 'string', 'void',
 	'true', 'false', 'struct', 'enum', 'match', 'nomd',
-	'pin', 'crumble', 'null', 'continue', 'break'
+	'pin', 'crumble', 'null', 'continue', 'break',
+	'async', 'await'
 	}
 SINGLE_CHARS = {
 	'(': 'LPAREN',   ')': 'RPAREN',   '{': 'LBRACE',   '}': 'RBRACE',
@@ -394,6 +395,9 @@ class Cast(Expr):
 	typ: str
 	expr: Expr
 @dataclass
+class AwaitExpr(Expr):
+	expr: Expr
+@dataclass
 class Func:
 	access: str
 	name: str
@@ -402,6 +406,7 @@ class Func:
 	ret_type: str
 	body: Optional[List[Stmt]] = None
 	is_extern: bool = False
+	is_async: bool = False
 @dataclass
 class Program:
 	funcs: List[Func]
@@ -524,6 +529,7 @@ class Parser:
 	def parse_func(self) -> Func:
 		access = 'pub'
 		is_extern = False
+		is_async = False
 		modifiers = []
 		while True:
 			tk = self.peek().kind
@@ -533,6 +539,10 @@ class Parser:
 				continue
 			if tk in {'PUB', 'PRIV', 'PROT'}:
 				access = self.bump().kind.lower()
+				continue
+			if tk == 'ASYNC':
+				is_async = True
+				self.bump()
 				continue
 			if tk != 'FN' and tk.lower() in KEYWORDS:
 				modifiers.append(self.bump().value)
@@ -572,11 +582,11 @@ class Parser:
 		self.expect('GT')
 		if is_extern:
 			self.expect('SEMI')
-			return Func(access, name, type_params, params, ret_type, None, True)
+			return Func(access, name, type_params, params, ret_type, None, True, is_async)
 		self.expect('LBRACE')
 		body = self.parse_block()
 		self.expect('RBRACE')
-		return Func(access, name, type_params, params, ret_type, body, False)
+		return Func(access, name, type_params, params, ret_type, body, False, is_async)
 	def parse_block(self) -> List[Stmt]:
 		stmts = []
 		while self.peek().kind != 'RBRACE':
@@ -824,6 +834,10 @@ class Parser:
 		if self.peek().kind in {'RPAREN', 'RBRACE', 'RBRACKET', 'COMMA', 'SEMI', 'COLON'}:
 			t = self.peek()
 			raise SyntaxError(f"Unexpected token while parsing expression: {t.kind} at {t.line}:{t.col}")
+		if self.peek().kind == 'AWAIT':
+			self.bump()
+			inner = self.parse_primary()
+			return AwaitExpr(inner)
 		if self.peek().kind == 'STAR':
 			self.bump()
 			inner = self.parse_primary()
@@ -1062,6 +1076,39 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 			out.append(f"  {cast_tmp} = ptrtoint {src_llvm} {val} to {dst_llvm}")
 			return cast_tmp
 		raise RuntimeError(f"Unsupported cast from {src_t} -> {dst_t}")
+	if isinstance(expr, AwaitExpr):
+		inner = expr.expr
+		if isinstance(inner, Call):
+			args_ir: List[str] = []
+			for a in inner.args:
+				tmpa = gen_expr(a, out)
+				ty_a = infer_type(a)
+				args_ir.append(f"{llvm_ty_of(ty_a)} {tmpa}")
+			args_sig = ", ".join(args_ir)
+			handle_tmp = new_tmp()
+			if args_sig:
+				out.append(f"  {handle_tmp} = call %async.{inner.name}* @{inner.name}_init({args_sig})")
+			else:
+				out.append(f"  {handle_tmp} = call %async.{inner.name}* @{inner.name}_init()")
+			loop_lbl = new_label("await_loop")
+			done_lbl = new_label("await_done")
+			out.append(f"  br label %{loop_lbl}")
+			out.append(f"{loop_lbl}:")
+			done_tmp = new_tmp()
+			out.append(f"  {done_tmp} = call i1 @{inner.name}_resume(%async.{inner.name}* {handle_tmp})")
+			cmp_tmp = new_tmp()
+			out.append(f"  {cmp_tmp} = icmp eq i1 {done_tmp}, 0")
+			out.append(f"  br i1 {cmp_tmp}, label %{loop_lbl}, label %{done_lbl}")
+			out.append(f"{done_lbl}:")
+			base_fn = next((f for f in all_funcs if f.name == inner.name), None)
+			ret_llvm = llvm_ty_of(base_fn.ret_type) if base_fn else "i64"
+			ret_ptr_tmp = new_tmp()
+			out.append(f"  {ret_ptr_tmp} = getelementptr inbounds %async.{inner.name}, %async.{inner.name}* {handle_tmp}, i32 0, i32 1")
+			ret_val_tmp = new_tmp()
+			out.append(f"  {ret_val_tmp} = load {ret_llvm}, {ret_llvm}* {ret_ptr_tmp}")
+			return ret_val_tmp
+		else:
+			raise RuntimeError("Await supports only direct Call(.) expressions for now")
 	if isinstance(expr, UnaryOp):
 		val = gen_expr(expr.expr, out)
 		ty = infer_type(expr.expr)
@@ -1305,6 +1352,8 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 			out.append(f"  {tmp} = xor i1 {arg}, true")
 			return tmp
 		base_fn = next((f for f in all_funcs if f.name == expr.name), None)
+		if base_fn and base_fn.is_async:
+			raise RuntimeError(f"async function '{expr.name}' must be awaited")
 		if base_fn and base_fn.type_params:
 			actual = arg_types[0]
 			mononame = f"{expr.name}_{actual}"
@@ -1343,7 +1392,7 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 							else:
 								else_body_list: List[Stmt] = []
 								for ss in s.else_body:
-									else_body_list.extend([replace_in_stmt(ss)])
+									else_body_list.append(replace_in_stmt(ss))
 								else_body0 = else_body_list
 						return IfStmt(cond0, then_body0, else_body0)
 					if isinstance(s, WhileStmt):
@@ -1440,6 +1489,15 @@ def infer_type(expr: Expr) -> str:
 		return 'void*'
 	if isinstance(expr, Cast):
 		return expr.typ
+	if isinstance(expr, AwaitExpr):
+		inner = expr.expr
+		if isinstance(inner, Call):
+			base_fn = next((f for f in all_funcs if f.name == inner.name), None)
+			if base_fn is None:
+				raise TypeError(f"Await of unknown function '{inner.name}'")
+			return base_fn.ret_type
+		else:
+			raise TypeError("Await supports only direct Call(...) expressions in type checking")
 	if isinstance(expr, Var):
 		result = symbol_table.lookup(expr.name)
 		if result is None:
@@ -1747,19 +1805,36 @@ def gen_func(fn: Func) -> List[str]:
 		return []
 	if fn.is_extern:
 		param_sig = ", ".join(f"{llvm_ty_of(t)} %{n}" for t, n in fn.params)
-		ret_ty	= llvm_ty_of(fn.ret_type)
+		ret_ty = llvm_ty_of(fn.ret_type)
 		generated_mono[fn.name] = True
 		return [f"declare {ret_ty} @{fn.name}({param_sig})"]
+	if fn.is_async:
+		if fn.body is None or len(fn.body) == 0:
+			raise RuntimeError(f"Async function '{fn.name}' has an empty body — cannot generate async state machine.")
+		generated_mono[fn.name] = True
+		symbol_table.push()
+		codegen_adapter = type("CodegenAdapter", (), {})()
+		setattr(codegen_adapter, "gen_expr", gen_expr)
+		def _adapter_gen_stmt(stmt, outlist, ret_ty_inner):
+			return gen_stmt(stmt, outlist, ret_ty_inner)
+		setattr(codegen_adapter, "_gen_stmt", _adapter_gen_stmt)
+		asm = AsyncStateMachine(fn, codegen_adapter)
+		lines = asm.generate()
+		struct_ty = f"%async.{fn.name}"
+		func_table[f"{fn.name}_init"] = f"{struct_ty}*"
+		func_table[f"{fn.name}_resume"] = "i1"
+		symbol_table.pop()
+		return lines
 	symbol_table.push()
 	generated_mono[fn.name] = True
 	if fn.name == "main":
 		ret_ty = "i32"
-		out	= [f"define i32 @main(i32 %argc, i8** %argv) {{", "entry:"]
+		out = [f"define i32 @main(i32 %argc, i8** %argv) {{", "entry:"]
 		out.append("  store i8** %argv, i8*** @__argv_ptr")
 	else:
-		ret_ty	= llvm_ty_of(fn.ret_type)
+		ret_ty = llvm_ty_of(fn.ret_type)
 		param_sig = ", ".join(f"{llvm_ty_of(t)} %{n}" for t, n in fn.params)
-		out	   = [f"define {ret_ty} @{fn.name}({param_sig}) {{", "entry:"]
+		out = [f"define {ret_ty} @{fn.name}({param_sig}) {{", "entry:"]
 	for typ, name in fn.params:
 		llvm_ty = llvm_ty_of(typ)
 		out.append(f"  %{name}_addr = alloca {llvm_ty}")
@@ -1938,192 +2013,195 @@ def check_types(prog: Program):
 		env.declare(struct_name, struct_name)
 	for enum_name in enum_defs:
 		env.declare(enum_name, enum_name)
-	def check_expr(expr: Expr) -> str:
-		if isinstance(expr, UnaryOp):
-			inner_t = check_expr(expr.expr)
-			if expr.op in {'-', '+'}:
-				if inner_t == 'float' or inner_t.startswith('int') or inner_t == 'int':
-					return inner_t
-				raise TypeError(f"Unary '{expr.op}' requires integer or float operand, got '{inner_t}'")
-			raise TypeError(f"Unsupported unary operator: {expr.op}")
-		if isinstance(expr, IntLit):
-			return 'int'
-		if isinstance(expr, FloatLit):
-			return 'float'
-		if isinstance(expr, BoolLit):
-			return 'bool'
-		if isinstance(expr, CharLit):
-			return 'char'
-		if isinstance(expr, StrLit):
-			return 'string'
-		if isinstance(expr, NullLit):
-			return 'null'
-		if isinstance(expr, Cast):
-			inner_type = check_expr(expr.expr)
-			if expr.typ.startswith("int") and inner_type == "int":
-				return expr.typ
-			if inner_type in {"null", "void*"} and (expr.typ.endswith("*") or expr.typ == "string"):
-				return expr.typ
-			common = unify_types(inner_type, expr.typ)
-			if inner_type != expr.typ and (not common or common != expr.typ):
-				raise TypeError(f"Cannot cast {inner_type} to {expr.typ}")
+def check_expr(expr: Expr) -> str:
+	if isinstance(expr, AwaitExpr):
+		inner_t = check_expr(expr.expr)
+		return inner_t
+	if isinstance(expr, UnaryOp):
+		inner_t = check_expr(expr.expr)
+		if expr.op in {'-', '+'}:
+			if inner_t == 'float' or inner_t.startswith('int') or inner_t == 'int':
+				return inner_t
+			raise TypeError(f"Unary '{expr.op}' requires integer or float operand, got '{inner_t}'")
+		raise TypeError(f"Unsupported unary operator: {expr.op}")
+	if isinstance(expr, IntLit):
+		return 'int'
+	if isinstance(expr, FloatLit):
+		return 'float'
+	if isinstance(expr, BoolLit):
+		return 'bool'
+	if isinstance(expr, CharLit):
+		return 'char'
+	if isinstance(expr, StrLit):
+		return 'string'
+	if isinstance(expr, NullLit):
+		return 'null'
+	if isinstance(expr, Cast):
+		inner_type = check_expr(expr.expr)
+		if expr.typ.startswith("int") and inner_type == "int":
 			return expr.typ
-		if isinstance(expr, Var):
-			typ = env.lookup(expr.name)
-			if not typ:
-				raise TypeError(f"Use of undeclared variable '{expr.name}'")
-			if typ == "undefined":
-				raise TypeError(f"Use of variable '{expr.name}' after deref (use-after-free)")
-			if expr.name in crumb_map:
-				rmax, wmax, rc, wc = crumb_map[expr.name]
-				crumb_map[expr.name] = (rmax, wmax, rc + 1, wc)
-			return typ
-		if isinstance(expr, TypeofExpr):
-			inner_type = check_expr(expr.expr)
-			if expr.kind in {"typeof", "etypeof"}:
-				return "string"
-			elif expr.kind in {"kwtypeof", "kwetypeof"}:
-				return inner_type
-		if isinstance(expr, Ternary):
-			cond_type = check_expr(expr.cond)
-			if cond_type != 'bool':
-				raise TypeError("Ternary condition must be bool")
-			then_t = check_expr(expr.then_expr)
-			else_t = check_expr(expr.else_expr)
-			if then_t != else_t:
-				raise TypeError(f"Ternary branches must match: {then_t} vs {else_t}")
-			return then_t
-		if isinstance(expr, BinOp):
-			left = check_expr(expr.left)
-			right = check_expr(expr.right)
-			if expr.op == "+" and left == "string" and right == "string":
-				return "string"
-			if expr.op in {"&&", "||"}:
-				if left != "bool" or right != "bool":
+		if inner_type in {"null", "void*"} and (expr.typ.endswith("*") or expr.typ == "string"):
+			return expr.typ
+		common = unify_types(inner_type, expr.typ)
+		if inner_type != expr.typ and (not common or common != expr.typ):
+			raise TypeError(f"Cannot cast {inner_type} to {expr.typ}")
+		return expr.typ
+	if isinstance(expr, Var):
+		typ = env.lookup(expr.name)
+		if not typ:
+			raise TypeError(f"Use of undeclared variable '{expr.name}'")
+		if typ == "undefined":
+			raise TypeError(f"Use of variable '{expr.name}' after deref (use-after-free)")
+		if expr.name in crumb_map:
+			rmax, wmax, rc, wc = crumb_map[expr.name]
+			crumb_map[expr.name] = (rmax, wmax, rc + 1, wc)
+		return typ
+	if isinstance(expr, TypeofExpr):
+		inner_type = check_expr(expr.expr)
+		if expr.kind in {"typeof", "etypeof"}:
+			return "string"
+		elif expr.kind in {"kwtypeof", "kwetypeof"}:
+			return inner_type
+	if isinstance(expr, Ternary):
+		cond_type = check_expr(expr.cond)
+		if cond_type != 'bool':
+			raise TypeError("Ternary condition must be bool")
+		then_t = check_expr(expr.then_expr)
+		else_t = check_expr(expr.else_expr)
+		if then_t != else_t:
+			raise TypeError(f"Ternary branches must match: {then_t} vs {else_t}")
+		return then_t
+	if isinstance(expr, BinOp):
+		left = check_expr(expr.left)
+		right = check_expr(expr.right)
+		if expr.op == "+" and left == "string" and right == "string":
+			return "string"
+		if expr.op in {"&&", "||"}:
+			if left != "bool" or right != "bool":
+				raise TypeError(
+					f"Logical '{expr.op}' requires both operands to be bool, got {left} and {right}")
+			return "bool"
+		if expr.op == "%":
+			if left == "int" and right == "int":
+				return "int"
+			elif left == "float" and right == "float":
+				return "float"
+			else:
+				raise TypeError(f"Modulo '%' requires int or float, got {left} and {right}")
+		common = unify_types(left, right)
+		if not common:
+			raise TypeError(f"Type mismatch: {left} {expr.op} {right}")
+		if expr.op in {"==", "!=", "<", ">", "<=", ">="}:
+			return "bool"
+		return common
+	if isinstance(expr, Call):
+		for a in expr.args:
+			check_expr(a)
+		if expr.name == "!" and len(expr.args) == 1:
+			arg_type = check_expr(expr.args[0])
+			if arg_type != "bool":
+				raise TypeError("Unary ! requires a bool")
+			return "bool"
+		fn = funcs.get(expr.name)
+		if fn is None:
+			if expr.name == "exit":
+				if len(expr.args) != 1:
+					raise TypeError("exit() takes exactly one int argument")
+				arg_ty = check_expr(expr.args[0])
+				if not arg_ty.startswith("int"):
+					raise TypeError("exit() expects an integer argument")
+				return "void"
+			if expr.name == "malloc":
+				if len(expr.args) != 1:
+					raise TypeError("malloc() takes exactly one int argument")
+				arg_ty = check_expr(expr.args[0])
+				if not arg_ty.startswith("int"):
+					raise TypeError("malloc() expects an integer argument")
+				return "int*"
+			if expr.name == "free":
+				if len(expr.args) != 1:
+					raise TypeError("free() takes exactly one pointer argument")
+				arg_ty = check_expr(expr.args[0])
+				if not arg_ty.endswith("*"):
+					raise TypeError("free() expects a pointer argument")
+				return "void"
+			raise TypeError(f"Call to undeclared function '{expr.name}'")
+		if fn.type_params:
+			if len(fn.type_params) != 1:
+				raise TypeError(f"Only single-type-param generics supported, but got {fn.type_params}")
+			concrete_type = check_expr(expr.args[0])
+			type_param = fn.type_params[0]
+			mononame = f"{expr.name}_{concrete_type}"
+			if mononame not in funcs:
+				new_params = [
+					(concrete_type if param_type == type_param else param_type, name)
+					for (param_type, name) in fn.params
+				]
+				new_ret = concrete_type if fn.ret_type == type_param else fn.ret_type
+				def substitute_stmt_types(s: Stmt) -> Stmt:
+					if isinstance(s, VarDecl):
+						typ = concrete_type if s.typ == type_param else s.typ
+						expr2 = s.expr
+						return VarDecl(s.access, typ, s.name, expr2)
+					return s
+				new_body = [substitute_stmt_types(s) for s in fn.body] if fn.body else None
+				new_fn = Func(fn.access, mononame, [], new_params, new_ret, new_body, fn.is_extern)
+				funcs[mononame] = new_fn
+				prog.funcs.append(new_fn)
+			expr.name = mononame
+			fn = funcs[mononame]
+		if not fn.is_extern:
+			if len(expr.args) != len(fn.params):
+				raise TypeError(f"Arity mismatch in call to '{expr.name}'")
+			for arg_expr, (expected_type, _) in zip(expr.args, fn.params):
+				actual_type = check_expr(arg_expr)
+				common = unify_int_types(actual_type, expected_type)
+				if expected_type != "void" and actual_type != expected_type and (not common or common != expected_type):
 					raise TypeError(
-						f"Logical '{expr.op}' requires both operands to be bool, got {left} and {right}")
-				return "bool"
-			if expr.op == "%":
-				if left == "int" and right == "int":
-					return "int"
-				elif left == "float" and right == "float":
-					return "float"
-				else:
-					raise TypeError(f"Modulo '%' requires int or float, got {left} and {right}")
-			common = unify_types(left, right)
-			if not common:
-				raise TypeError(f"Type mismatch: {left} {expr.op} {right}")
-			if expr.op in {"==", "!=", "<", ">", "<=", ">="}:
-				return "bool"
-			return common
-		if isinstance(expr, Call):
-			for a in expr.args:
-				check_expr(a)
-			if expr.name == "!" and len(expr.args) == 1:
-				arg_type = check_expr(expr.args[0])
-				if arg_type != "bool":
-					raise TypeError("Unary ! requires a bool")
-				return "bool"
-			fn = funcs.get(expr.name)
-			if fn is None:
-				if expr.name == "exit":
-					if len(expr.args) != 1:
-						raise TypeError("exit() takes exactly one int argument")
-					arg_ty = check_expr(expr.args[0])
-					if not arg_ty.startswith("int"):
-						raise TypeError("exit() expects an integer argument")
-					return "void"
-				if expr.name == "malloc":
-					if len(expr.args) != 1:
-						raise TypeError("malloc() takes exactly one int argument")
-					arg_ty = check_expr(expr.args[0])
-					if not arg_ty.startswith("int"):
-						raise TypeError("malloc() expects an integer argument")
-					return "int*"
-				if expr.name == "free":
-					if len(expr.args) != 1:
-						raise TypeError("free() takes exactly one pointer argument")
-					arg_ty = check_expr(expr.args[0])
-					if not arg_ty.endswith("*"):
-						raise TypeError("free() expects a pointer argument")
-					return "void"
-				raise TypeError(f"Call to undeclared function '{expr.name}'")
-			if fn.type_params:
-				if len(fn.type_params) != 1:
-					raise TypeError(f"Only single-type-param generics supported, but got {fn.type_params}")
-				concrete_type = check_expr(expr.args[0])
-				type_param = fn.type_params[0]
-				mononame = f"{expr.name}_{concrete_type}"
-				if mononame not in funcs:
-					new_params = [
-						(concrete_type if param_type == type_param else param_type, name)
-						for (param_type, name) in fn.params
-					]
-					new_ret = concrete_type if fn.ret_type == type_param else fn.ret_type
-					def substitute_stmt_types(s: Stmt) -> Stmt:
-						if isinstance(s, VarDecl):
-							typ = concrete_type if s.typ == type_param else s.typ
-							expr2 = s.expr
-							return VarDecl(s.access, typ, s.name, expr2)
-						return s
-					new_body = [substitute_stmt_types(s) for s in fn.body] if fn.body else None
-					new_fn = Func(fn.access, mononame, [], new_params, new_ret, new_body, fn.is_extern)
-					funcs[mononame] = new_fn
-					prog.funcs.append(new_fn)
-				expr.name = mononame
-				fn = funcs[mononame]
-			if not fn.is_extern:
-				if len(expr.args) != len(fn.params):
-					raise TypeError(f"Arity mismatch in call to '{expr.name}'")
-				for arg_expr, (expected_type, _) in zip(expr.args, fn.params):
-					actual_type = check_expr(arg_expr)
-					common = unify_int_types(actual_type, expected_type)
-					if expected_type != "void" and actual_type != expected_type and (not common or common != expected_type):
-						raise TypeError(
-							f"Argument type mismatch in call to '{expr.name}': "
-							f"expected {expected_type}, got {actual_type}"
-						)
-			return fn.ret_type
-		if isinstance(expr, Index):
-			var_typ = env.lookup(expr.array.name)
-			if not var_typ:
-				raise TypeError(f"Indexing undeclared variable '{expr.array.name}'")
-			if '[' not in var_typ or not var_typ.endswith(']'):
-				raise TypeError(f"Attempting to index non-array type '{var_typ}'")
-			base_type = var_typ.split('[', 1)[0]
-			idx_type = check_expr(expr.index)
-			if idx_type != 'int':
-				raise TypeError(f"Array index must be 'int', got '{idx_type}'")
-			return base_type
-		if isinstance(expr, FieldAccess):
-			base_type = check_expr(expr.base).rstrip('*')
-			if base_type not in struct_defs:
-				raise TypeError(f"Attempting field access on non‐struct type '{base_type}'")
-			fields = struct_field_map[base_type]
-			for (fname, ftyp) in fields:
-				if fname == expr.field:
-					return ftyp
-			raise TypeError(f"Struct '{base_type}' has no field '{expr.field}'")
-		if isinstance(expr, StructInit):
-			if expr.name not in struct_defs:
-				raise TypeError(f"Unknown struct type '{expr.name}' in initializer")
-			expected_fields = struct_field_map[expr.name][:]
-			seen_fields = set()
-			for (fname, fexpr) in expr.fields:
-				match_list = [ft for (fn, ft) in expected_fields if fn == fname]
-				if not match_list:
-					raise TypeError(f"Struct '{expr.name}' has no field '{fname}'")
-				declared_type = match_list[0]
-				actual_type = check_expr(fexpr)
-				if actual_type != declared_type:
-					raise TypeError(
-						f"Struct '{expr.name}' field '{fname}': expected '{declared_type}', got '{actual_type}'")
-				seen_fields.add(fname)
-			all_field_names = {fn for (fn, _) in expected_fields}
-			if seen_fields != all_field_names:
-				missing = all_field_names - seen_fields
-				raise TypeError(f"Struct '{expr.name}' initializer missing fields {missing}")
-			return expr.name + "*"
+						f"Argument type mismatch in call to '{expr.name}': "
+						f"expected {expected_type}, got {actual_type}"
+					)
+		return fn.ret_type
+	if isinstance(expr, Index):
+		var_typ = env.lookup(expr.array.name)
+		if not var_typ:
+			raise TypeError(f"Indexing undeclared variable '{expr.array.name}'")
+		if '[' not in var_typ or not var_typ.endswith(']'):
+			raise TypeError(f"Attempting to index non-array type '{var_typ}'")
+		base_type = var_typ.split('[', 1)[0]
+		idx_type = check_expr(expr.index)
+		if idx_type != 'int':
+			raise TypeError(f"Array index must be 'int', got '{idx_type}'")
+		return base_type
+	if isinstance(expr, FieldAccess):
+		base_type = check_expr(expr.base).rstrip('*')
+		if base_type not in struct_defs:
+			raise TypeError(f"Attempting field access on non‐struct type '{base_type}'")
+		fields = struct_field_map[base_type]
+		for (fname, ftyp) in fields:
+			if fname == expr.field:
+				return ftyp
+		raise TypeError(f"Struct '{base_type}' has no field '{expr.field}'")
+	if isinstance(expr, StructInit):
+		if expr.name not in struct_defs:
+			raise TypeError(f"Unknown struct type '{expr.name}' in initializer")
+		expected_fields = struct_field_map[expr.name][:]
+		seen_fields = set()
+		for (fname, fexpr) in expr.fields:
+			match_list = [ft for (fn, ft) in expected_fields if fn == fname]
+			if not match_list:
+				raise TypeError(f"Struct '{expr.name}' has no field '{fname}'")
+			declared_type = match_list[0]
+			actual_type = check_expr(fexpr)
+			if actual_type != declared_type:
+				raise TypeError(
+					f"Struct '{expr.name}' field '{fname}': expected '{declared_type}', got '{actual_type}'")
+			seen_fields.add(fname)
+		all_field_names = {fn for (fn, _) in expected_fields}
+		if seen_fields != all_field_names:
+			missing = all_field_names - seen_fields
+			raise TypeError(f"Struct '{expr.name}' initializer missing fields {missing}")
+		return expr.name + "*"
 	def check_stmt(stmt: Stmt, expected_ret: str):
 		if isinstance(stmt, VarDecl):
 			if env.lookup(stmt.name):
@@ -2283,6 +2361,189 @@ def check_types(prog: Program):
 			if wmax is not None and wc < wmax:
 				print(f"[Crawl-Checker]-[WARN]: unused write crumbs on '{name}': {wmax - wc} left. [This is not an error but a security warning!]")
 		crumb_map.clear()
+class AsyncStateMachine:
+	def __init__(self, func: Func, codegen):
+		self.func = func
+		self.codegen = codegen
+		self.states: List[List[str]] = []
+		self.current_state = 0
+		self.allocas: List[Tuple[str, str]] = []
+	def generate(self) -> List[str]:
+		name = self.func.name
+		st_ty = f"%async.{name}"
+		lines: List[str] = []
+		param_types = [llvm_ty_of(t) for t, n in self.func.params]
+		ret_ty = llvm_ty_of(self.func.ret_type)
+		local_types = [llvm_ty_of(t) for (t, n) in getattr(self, 'local_decls', [])]
+		fields = ["i32", ret_ty] + param_types + local_types
+		lines.append(f"{st_ty} = type {{ {', '.join(fields)} }}")
+		params = ", ".join(f"{llvm_ty_of(t)} %{n}" for t, n in self.func.params)
+		lines.append(f"define {st_ty}* @{name}_init({params}) {{")
+		lines.append("entry:")
+		lines.append(f"  %szptr = getelementptr inbounds {st_ty}, {st_ty}* null, i32 1")
+		lines.append(f"  %sz = ptrtoint {st_ty}* %szptr to i64")
+		lines.append(f"  %raw = call i8* @malloc(i64 %sz)")
+		lines.append(f"  %s = bitcast i8* %raw to {st_ty}*")
+		lines.append(f"  %st0 = getelementptr inbounds {st_ty}, {st_ty}* %s, i32 0, i32 0")
+		lines.append(f"  store i32 0, i32* %st0")
+		for i, (typ, namep) in enumerate(self.func.params):
+			idx = 2 + i
+			lines.append(f"  %p{i}_ptr = getelementptr inbounds {st_ty}, {st_ty}* %s, i32 0, i32 {idx}")
+			lines.append(f"  store {llvm_ty_of(typ)} %{namep}, {llvm_ty_of(typ)}* %p{i}_ptr")
+		lines.append(f"  ret {st_ty}* %s")
+		lines.append("}")
+		lines.append(f"define i1 @{name}_resume({st_ty}* %sm) {{")
+		lines.append("entry:")
+		self._build_states()
+		for idx, (nm, ty) in enumerate(self.allocas):
+			field_index = 2 + len(self.func.params) + idx
+			lines.append(f"  %{nm}_addr = getelementptr inbounds {st_ty}, {st_ty}* %sm, i32 0, i32 {field_index}")
+		lines.append(f"  %stptr = getelementptr inbounds {st_ty}, {st_ty}* %sm, i32 0, i32 0")
+		lines.append(f"  %st = load i32, i32* %stptr")
+		if self.states:
+			lines.append(f"  switch i32 %st, label %state0 [")
+			for i in range(len(self.states)):
+				lines.append(f"    i32 {i}, label %state{i}")
+			lines.append("  ]")
+		for i, st in enumerate(self.states):
+			lines.append(f"state{i}:")
+			for l in st:
+				lines.append(l)
+			last = st[-1].strip() if st else ""
+			if not (last.startswith("ret") or last == "unreachable" or last.startswith("br ")):
+				if i + 1 < len(self.states):
+					lines.append(f"  br label %state{i+1}")
+				else:
+					if ret_ty != 'void':
+						lines.append(f"  %ret_ptr = getelementptr inbounds {st_ty}, {st_ty}* %sm, i32 0, i32 1")
+						if ret_ty == 'double':
+							lines.append(f"  store {ret_ty} 0.0, {ret_ty}* %ret_ptr")
+						elif ret_ty.startswith('i'):
+							lines.append(f"  store {ret_ty} 0, {ret_ty}* %ret_ptr")
+						else:
+							lines.append(f"  store {ret_ty} null, {ret_ty}* %ret_ptr")
+					lines.append("  ret i1 1")
+		if not self.states:
+			lines.append("state0:")
+			if ret_ty != 'void':
+				lines.append(f"  %ret_ptr = getelementptr inbounds {st_ty}, {st_ty}* %sm, i32 0, i32 1")
+				if ret_ty == 'double':
+					lines.append(f"  store {ret_ty} 0.0, {ret_ty}* %ret_ptr")
+				elif ret_ty.startswith('i'):
+					lines.append(f"  store {ret_ty} 0, {ret_ty}* %ret_ptr")
+				else:
+					lines.append(f"  store {ret_ty} null, {ret_ty}* %ret_ptr")
+			lines.append("  ret i1 1")
+		lines.append("}")
+		return lines
+	def _build_states(self):
+		if not self.func.body:
+			self.states = []
+			self.allocas = []
+			self.current_state = 0
+			self.local_decls = []
+			return
+		self.states = []
+		self.allocas = []
+		self.current_state = 0
+		self.local_decls = []
+		accum: List[str] = []
+		for st in self.func.body:
+			if self._contains_await(st):
+				before, await_expr, after = self._split_at_await(st)
+				for bstmt in before:
+					accum.append(bstmt)
+				if isinstance(st, VarDecl) and isinstance(st.expr, AwaitExpr):
+					llvm_ty = llvm_ty_of(st.typ)
+					if not symbol_table.lookup(st.name):
+						symbol_table.declare(st.name, llvm_ty, st.name)
+					if not any(nm == st.name for nm, _ in self.allocas):
+						self.allocas.append((st.name, llvm_ty))
+						self.local_decls.append((st.typ, st.name))
+				self.states.append(list(accum))
+				accum = []
+				self.current_state += 1
+				if isinstance(await_expr.expr, Call):
+					cal = await_expr.expr
+					arg_tokens: List[str] = []
+					base_fn = next((f for f in all_funcs if f.name == cal.name), None)
+					if base_fn:
+						for a, (param_typ, _) in zip(cal.args, base_fn.params):
+							arg_tmp = self.codegen.gen_expr(a, []) if hasattr(self.codegen, 'gen_expr') else None
+							if arg_tmp is None:
+								arg_tokens.append(f"{llvm_ty_of(param_typ)} 0")
+							else:
+								arg_tokens.append(f"{llvm_ty_of(param_typ)} {arg_tmp}")
+					else:
+						for a in cal.args:
+							arg_tmp = self.codegen.gen_expr(a, []) if hasattr(self.codegen, 'gen_expr') else None
+							if arg_tmp is None:
+								arg_tokens.append("i64 0")
+							else:
+								arg_tokens.append(f"i64 {arg_tmp}")
+					args_ir = ", ".join(arg_tokens)
+					accum.append(f"  %await_handle = call %async.{cal.name}* @{cal.name}_init({args_ir})")
+					accum.append(f"  %await_done = call i1 @{cal.name}_resume(%async.{cal.name}* %await_handle)")
+					suspend_lbl = new_label("await_suspend")
+					cont_lbl = new_label("await_cont")
+					accum.append(f"  %cmp{self.current_state} = icmp eq i1 %await_done, 0")
+					accum.append(f"  br i1 %cmp{self.current_state}, label %{suspend_lbl}, label %{cont_lbl}")
+					accum.append(f"{suspend_lbl}:")
+					accum.append(f"  store i32 {self.current_state}, i32* %stptr")
+					accum.append(f"  ret i1 0")
+					accum.append(f"{cont_lbl}:")
+					base_fn = next((f for f in all_funcs if f.name == cal.name), None)
+					ret_llvm = llvm_ty_of(base_fn.ret_type) if base_fn else 'i64'
+					accum.append(f"  %res_ptr = getelementptr inbounds %async.{cal.name}, %async.{cal.name}* %await_handle, i32 0, i32 1")
+					accum.append(f"  %await_ret = load {ret_llvm}, {ret_llvm}* %res_ptr")
+				else:
+					accum.append("  ret i1 0")
+				if after:
+					accum.extend(after)
+			else:
+				if isinstance(st, ReturnStmt):
+					if st.expr is not None:
+						tmp = self.codegen.gen_expr(st.expr, accum)
+						ret_ty = llvm_ty_of(self.func.ret_type)
+						accum.append(f"  %ret_ptr = getelementptr inbounds %async.{self.func.name}, %async.{self.func.name}* %sm, i32 0, i32 1")
+						accum.append(f"  store {ret_ty} {tmp}, {ret_ty}* %ret_ptr")
+					accum.append("  ret i1 1")
+				else:
+					self.codegen._gen_stmt(st, accum, llvm_ty_of(self.func.ret_type))
+		if accum:
+			self.states.append(list(accum))
+	def _contains_await(self, stmt: Stmt) -> bool:
+		if isinstance(stmt, ExprStmt):
+			return self._expr_contains_await(stmt.expr)
+		if isinstance(stmt, VarDecl):
+			return stmt.expr is not None and self._expr_contains_await(stmt.expr)
+		if isinstance(stmt, Assign):
+			return self._expr_contains_await(stmt.expr)
+		if isinstance(stmt, ReturnStmt):
+			return stmt.expr is not None and self._expr_contains_await(stmt.expr)
+		return False
+	def _expr_contains_await(self, e: Expr) -> bool:
+		if isinstance(e, AwaitExpr):
+			return True
+		if isinstance(e, BinOp):
+			return self._expr_contains_await(e.left) or self._expr_contains_await(e.right)
+		if isinstance(e, UnaryOp):
+			return self._expr_contains_await(e.expr)
+		if isinstance(e, Call):
+			return any(self._expr_contains_await(a) for a in e.args)
+		return False
+	def _split_at_await(self, stmt: Stmt) -> Tuple[List[str], Optional[AwaitExpr], List[str]]:
+		if isinstance(stmt, ExprStmt) and isinstance(stmt.expr, AwaitExpr):
+			return ([], stmt.expr, [])
+		if isinstance(stmt, VarDecl) and isinstance(stmt.expr, AwaitExpr):
+			llvm_ty = llvm_ty_of(stmt.typ)
+			after_lines = [f"  store {llvm_ty} %await_ret, {llvm_ty}* %{stmt.name}_addr"]
+			return ([], stmt.expr, after_lines)
+		if isinstance(stmt, Assign) and isinstance(stmt.expr, AwaitExpr):
+			return ([], stmt.expr, [])
+		if isinstance(stmt, ReturnStmt) and isinstance(stmt.expr, AwaitExpr):
+			return ([], stmt.expr, [])
+		return ([], None, [])
 def main():
 	global all_funcs, func_table, builtins_emitted
 	all_funcs = []
@@ -2358,6 +2619,12 @@ def main():
 		enums=all_enums,
 		globals=all_globals
 	)
+	has_main = any(fn.name == "main" for fn in final_prog.funcs)
+	if not has_main:
+		raise RuntimeError("No startpoint: no main function found. Add a 'fn main(...) <...>' function.")
+	for fn in final_prog.funcs:
+		if getattr(fn, "is_async", False) and (fn.body is None or len(fn.body) == 0):
+			raise RuntimeError(f"Async function '{fn.name}' has an empty body — async functions must contain at least one statement or be removed.")
 	check_types(final_prog)
 	llvm = compile_program(final_prog)
 	with open(args.output, 'w', encoding="utf-8", errors="ignore") as f:
