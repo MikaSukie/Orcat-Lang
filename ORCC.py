@@ -425,6 +425,8 @@ generated_mono: Dict[str, bool] = {}
 all_funcs: List[Func] = []
 enum_variant_map: Dict[str, List[Tuple[str, Optional[str]]]] = {}
 loop_stack: List[Dict[str, str]] = []
+crumb_runtime: Dict[str, Dict[str, Optional[int]]] = {}
+owned_vars: set = set()
 class Parser:
 	def __init__(self, tokens: List[Token]):
 		self.declared_vars: Dict[str, VarDecl] = {}
@@ -1302,6 +1304,19 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 			out.append(f"  {tmp} = load {typ}, {typ}* {name}_addr")
 		else:
 			out.append(f"  {tmp} = load {typ}, {typ}* %{name}_addr")
+		vn = expr.name
+		cr = crumb_runtime.get(vn)
+		if cr is not None:
+			cr['rc'] = (cr.get('rc', 0) or 0) + 1
+			cr['owned'] = cr.get('owned', False) or (vn in owned_vars)
+			rmax = cr.get('rmax')
+			if rmax is not None and cr['rc'] == rmax and cr['owned']:
+				cast_tmp = new_tmp()
+				out.append(f"  {cast_tmp} = bitcast {typ} {tmp} to i8*")
+				out.append(f"  call void @free(i8* {cast_tmp})")
+				cr['owned'] = False
+				if vn in owned_vars:
+					owned_vars.discard(vn)
 		return tmp
 	if isinstance(expr, BinOp):
 		lhs = gen_expr(expr.left, out)
@@ -1746,15 +1761,40 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 			val = gen_expr(stmt.expr, out)
 			llvm_ty, ir_name = symbol_table.lookup(stmt.name)
 			if ir_name.startswith('@'):
-				out.append(f"  store {llvm_ty} {val}, {llvm_ty}* {ir_name}")
+				addr_token = ir_name
 			else:
-				out.append(f"  store {llvm_ty} {val}, {llvm_ty}* %{ir_name}_addr")
+				addr_token = f"%{ir_name}_addr"
+			vn = stmt.name
+			cr = crumb_runtime.get(vn)
+			if cr is not None:
+				cr['wc'] = (cr.get('wc', 0) or 0) + 1
+				if cr.get('wmax') is not None and cr['wc'] == cr['wmax'] and cr.get('owned'):
+					old_tmp = new_tmp()
+					out.append(f"  {old_tmp} = load {llvm_ty}, {llvm_ty}* {addr_token}")
+					cast_tmp = new_tmp()
+					out.append(f"  {cast_tmp} = bitcast {llvm_ty} {old_tmp} to i8*")
+					out.append(f"  call void @free(i8* {cast_tmp})")
+					cr['owned'] = False
+					owned_vars.discard(vn)
+			out.append(f"  store {llvm_ty} {val}, {llvm_ty}* {addr_token}")
+			if isinstance(stmt.expr, Call):
+				ret_t = infer_type(stmt.expr)
+				if ret_t is not None and (ret_t.endswith('*') or ret_t == 'string'):
+					owned_vars.add(vn)
+					if vn in crumb_runtime:
+						crumb_runtime[vn]['owned'] = True
 	elif isinstance(stmt, ContinueStmt):
 		if not loop_stack:
 			raise RuntimeError("`continue` used outside of a loop")
 		head_lbl = loop_stack[-1]['continue']
 		out.append(f"  br label %{head_lbl}")
 		out.append("  unreachable")
+	elif isinstance(stmt, CrumbleStmt):
+		name = stmt.name
+		rmax = stmt.max_reads
+		wmax = stmt.max_writes
+		crumb_runtime[name] = {'rmax': rmax, 'wmax': wmax, 'rc': 0, 'wc': 0, 'owned': (name in owned_vars)}
+		return
 	elif isinstance(stmt, BreakStmt):
 		if not loop_stack:
 			raise RuntimeError("`break` used outside of a loop")
@@ -2161,377 +2201,409 @@ def compile_program(prog: Program) -> str:
 		lines.append("}")
 	return "\n".join(lines)
 def check_types(prog: Program):
-	env = TypeEnv()
-	crumb_map: Dict[str, Tuple[Optional[int], Optional[int], int, int]] = {}
-	funcs = {f.name: f for f in prog.funcs}
-	for g in prog.globals:
-		env.declare(g.name, g.typ)
-		if g.nomd:
-			crumb_map[g.name] = (None, 0, 0, 0)
-	struct_defs: Dict[str, StructDef] = {s.name: s for s in prog.structs}
-	enum_defs:   Dict[str, EnumDef]   = {e.name: e for e in prog.enums}
-	for sdef in prog.structs:
-		struct_field_map[sdef.name] = [(fld.name, fld.typ) for fld in sdef.fields]
-	for struct_name in struct_defs:
-		env.declare(struct_name, struct_name)
-	for ename, edef in enum_defs.items():
-		variants = []
-		has_payload = False
-		for v in edef.variants:
-			variants.append((v.name, v.typ))
-			if getattr(v, "typ", None) is not None:
-				has_payload = True
-		enum_variant_map[ename] = variants
-		if not has_payload:
-			type_map[ename] = type_map.get('int', 'i64')
-def check_expr(expr: Expr) -> str:
-	if isinstance(expr, AwaitExpr):
-		inner_t = check_expr(expr.expr)
-		return inner_t
-	if isinstance(expr, UnaryOp):
-		inner_t = check_expr(expr.expr)
-		if expr.op in {'-', '+'}:
-			if inner_t == 'float' or inner_t.startswith('int') or inner_t == 'int':
-				return inner_t
-			raise TypeError(f"Unary '{expr.op}' requires integer or float operand, got '{inner_t}'")
-		raise TypeError(f"Unsupported unary operator: {expr.op}")
-	if isinstance(expr, IntLit):
-		return 'int'
-	if isinstance(expr, FloatLit):
-		return 'float'
-	if isinstance(expr, BoolLit):
-		return 'bool'
-	if isinstance(expr, CharLit):
-		return 'char'
-	if isinstance(expr, StrLit):
-		return 'string'
-	if isinstance(expr, NullLit):
-		return 'null'
-	if isinstance(expr, Cast):
-		inner_type = check_expr(expr.expr)
-		if expr.typ.startswith("int") and inner_type == "int":
-			return expr.typ
-		if inner_type in {"null", "void*"} and (expr.typ.endswith("*") or expr.typ == "string"):
-			return expr.typ
-		common = unify_types(inner_type, expr.typ)
-		if inner_type != expr.typ and (not common or common != expr.typ):
-			raise TypeError(f"Cannot cast {inner_type} to {expr.typ}")
-		return expr.typ
-	if isinstance(expr, Var):
-		typ = env.lookup(expr.name)
-		if not typ:
-			raise TypeError(f"Use of undeclared variable '{expr.name}'")
-		if typ == "undefined":
-			raise TypeError(f"Use of variable '{expr.name}' after deref (use-after-free)")
-		if expr.name in crumb_map:
-			rmax, wmax, rc, wc = crumb_map[expr.name]
-			crumb_map[expr.name] = (rmax, wmax, rc + 1, wc)
-		return typ
-	if isinstance(expr, TypeofExpr):
-		inner_type = check_expr(expr.expr)
-		if expr.kind in {"typeof", "etypeof"}:
-			return "string"
-		elif expr.kind in {"kwtypeof", "kwetypeof"}:
-			return inner_type
-	if isinstance(expr, Ternary):
-		cond_type = check_expr(expr.cond)
-		if cond_type != 'bool':
-			raise TypeError("Ternary condition must be bool")
-		then_t = check_expr(expr.then_expr)
-		else_t = check_expr(expr.else_expr)
-		if then_t != else_t:
-			raise TypeError(f"Ternary branches must match: {then_t} vs {else_t}")
-		return then_t
-	if isinstance(expr, BinOp):
-		left = check_expr(expr.left)
-		right = check_expr(expr.right)
-		if expr.op == "+" and left == "string" and right == "string":
-			return "string"
-		if expr.op in {"&&", "||"}:
-			if left != "bool" or right != "bool":
-				raise TypeError(
-					f"Logical '{expr.op}' requires both operands to be bool, got {left} and {right}")
-			return "bool"
-		if expr.op == "%":
-			if left == "int" and right == "int":
-				return "int"
-			elif left == "float" and right == "float":
-				return "float"
-			else:
-				raise TypeError(f"Modulo '%' requires int or float, got {left} and {right}")
-		common = unify_types(left, right)
-		if not common:
-			raise TypeError(f"Type mismatch: {left} {expr.op} {right}")
-		if expr.op in {"==", "!=", "<", ">", "<=", ">="}:
-			return "bool"
-		return common
-	if isinstance(expr, Call):
-		for a in expr.args:
-			check_expr(a)
-		if expr.name == "!" and len(expr.args) == 1:
-			arg_type = check_expr(expr.args[0])
-			if arg_type != "bool":
-				raise TypeError("Unary ! requires a bool")
-			return "bool"
-		fn = funcs.get(expr.name)
-		if fn is None:
-			if expr.name == "exit":
-				if len(expr.args) != 1:
-					raise TypeError("exit() takes exactly one int argument")
-				arg_ty = check_expr(expr.args[0])
-				if not arg_ty.startswith("int"):
-					raise TypeError("exit() expects an integer argument")
-				return "void"
-			if expr.name == "malloc":
-				if len(expr.args) != 1:
-					raise TypeError("malloc() takes exactly one int argument")
-				arg_ty = check_expr(expr.args[0])
-				if not arg_ty.startswith("int"):
-					raise TypeError("malloc() expects an integer argument")
-				return "int*"
-			if expr.name == "free":
-				if len(expr.args) != 1:
-					raise TypeError("free() takes exactly one pointer argument")
-				arg_ty = check_expr(expr.args[0])
-				if not arg_ty.endswith("*"):
-					raise TypeError("free() expects a pointer argument")
-				return "void"
-			raise TypeError(f"Call to undeclared function '{expr.name}'")
-		if fn.type_params:
-			if len(fn.type_params) != 1:
-				raise TypeError(f"Only single-type-param generics supported, but got {fn.type_params}")
-			concrete_type = check_expr(expr.args[0])
-			type_param = fn.type_params[0]
-			mononame = f"{expr.name}_{concrete_type}"
-			if mononame not in funcs:
-				new_params = [
-					(concrete_type if param_type == type_param else param_type, name)
-					for (param_type, name) in fn.params
-				]
-				new_ret = concrete_type if fn.ret_type == type_param else fn.ret_type
-				def substitute_stmt_types(s: Stmt) -> Stmt:
-					if isinstance(s, VarDecl):
-						typ = concrete_type if s.typ == type_param else s.typ
-						expr2 = s.expr
-						return VarDecl(s.access, typ, s.name, expr2)
-					return s
-				new_body = [substitute_stmt_types(s) for s in fn.body] if fn.body else None
-				new_fn = Func(fn.access, mononame, [], new_params, new_ret, new_body, fn.is_extern)
-				funcs[mononame] = new_fn
-				prog.funcs.append(new_fn)
-			expr.name = mononame
-			fn = funcs[mononame]
-		if not fn.is_extern:
-			if len(expr.args) != len(fn.params):
-				raise TypeError(f"Arity mismatch in call to '{expr.name}'")
-			for arg_expr, (expected_type, _) in zip(expr.args, fn.params):
-				actual_type = check_expr(arg_expr)
-				common = unify_int_types(actual_type, expected_type)
-				if expected_type != "void" and actual_type != expected_type and (not common or common != expected_type):
-					raise TypeError(
-						f"Argument type mismatch in call to '{expr.name}': "
-						f"expected {expected_type}, got {actual_type}"
-					)
-		return fn.ret_type
-	if isinstance(expr, Index):
-		var_typ = env.lookup(expr.array.name)
-		if not var_typ:
-			raise TypeError(f"Indexing undeclared variable '{expr.array.name}'")
-		if '[' not in var_typ or not var_typ.endswith(']'):
-			raise TypeError(f"Attempting to index non-array type '{var_typ}'")
-		base_type = var_typ.split('[', 1)[0]
-		idx_type = check_expr(expr.index)
-		if idx_type != 'int':
-			raise TypeError(f"Array index must be 'int', got '{idx_type}'")
-		return base_type
-	if isinstance(expr, FieldAccess):
-		base_type = check_expr(expr.base).rstrip('*')
-		if base_type not in struct_defs:
-			raise TypeError(f"Attempting field access on non‐struct type '{base_type}'")
-		fields = struct_field_map[base_type]
-		for (fname, ftyp) in fields:
-			if fname == expr.field:
-				return ftyp
-		raise TypeError(f"Struct '{base_type}' has no field '{expr.field}'")
-	if isinstance(expr, StructInit):
-		if expr.name not in struct_defs:
-			raise TypeError(f"Unknown struct type '{expr.name}' in initializer")
-		expected_fields = struct_field_map[expr.name][:]
-		seen_fields = set()
-		for (fname, fexpr) in expr.fields:
-			match_list = [ft for (fn, ft) in expected_fields if fn == fname]
-			if not match_list:
-				raise TypeError(f"Struct '{expr.name}' has no field '{fname}'")
-			declared_type = match_list[0]
-			actual_type = check_expr(fexpr)
-			if actual_type != declared_type:
-				raise TypeError(
-					f"Struct '{expr.name}' field '{fname}': expected '{declared_type}', got '{actual_type}'")
-			seen_fields.add(fname)
-		all_field_names = {fn for (fn, _) in expected_fields}
-		if seen_fields != all_field_names:
-			missing = all_field_names - seen_fields
-			raise TypeError(f"Struct '{expr.name}' initializer missing fields {missing}")
-		return expr.name + "*"
-	def check_stmt(stmt: Stmt, expected_ret: str):
-		if isinstance(stmt, VarDecl):
-			if env.lookup(stmt.name):
-				raise TypeError(f"Variable '{stmt.name}' already declared")
-			raw_typ = stmt.typ
-			base_type = raw_typ.rstrip('*')
-			if '[' in base_type and base_type.endswith(']'):
-				base_type = base_type.split('[', 1)[0]
-			if base_type not in type_map and base_type not in struct_defs and base_type not in enum_defs:
-				raise TypeError(f"Unknown type '{raw_typ}'")
-			env.declare(stmt.name, raw_typ)
-			if stmt.expr:
-				expr_type = check_expr(stmt.expr)
-				if stmt.name in crumb_map:
-					rmax, wmax, rc, wc = crumb_map[stmt.name]
-					crumb_map[stmt.name] = (rmax, wmax, rc, wc + 1)
-				if isinstance(stmt.expr, IntLit):
-					int_targets = {"int8", "int16", "int32", "int64"}
-					if raw_typ in int_targets:
-						return
-				common = unify_types(expr_type, raw_typ)
-				if expr_type != raw_typ and (not common or common != raw_typ):
-					raise TypeError(
-						f"Type mismatch in variable init '{stmt.name}': expected {raw_typ}, got {expr_type}")
-		elif isinstance(stmt, ContinueStmt):
-			return
-		elif isinstance(stmt, BreakStmt):
-			return
-		elif isinstance(stmt, Assign):
-			if isinstance(stmt.name, UnaryDeref):
-				ptr_type = check_expr(stmt.name.ptr)
-				if not ptr_type.endswith('*'):
-					raise TypeError(f"Dereferencing non-pointer type '{ptr_type}'")
-				pointee = ptr_type[:-1]
-				expr_type = check_expr(stmt.expr)
-				if expr_type != pointee:
-					raise TypeError(
-						f"Pointer-assign type mismatch: attempted to store '{expr_type}' into '{ptr_type}'"
-					)
-				return
-			var_type = env.lookup(stmt.name)
-			if not var_type:
-				raise TypeError(f"Assign to undeclared variable '{stmt.name}'")
-			global_decl = next((g for g in prog.globals if g.name == stmt.name), None)
-			if global_decl and global_decl.nomd:
-				raise TypeError(f"Cannot assign to 'nomd' global variable '{stmt.name}'")
-			expr_type = check_expr(stmt.expr)
-			if expr_type != var_type:
-				raise TypeError(f"Assign type mismatch: {var_type} = {expr_type}")
-			if stmt.name in crumb_map:
-				rmax, wmax, rc, wc = crumb_map[stmt.name]
-				crumb_map[stmt.name] = (rmax, wmax, rc, wc + 1)
-		elif isinstance(stmt, DerefStmt):
-			ptr_typ = env.lookup(stmt.varname)
-			if ptr_typ is None:
-				raise TypeError(f"Cannot deref undeclared variable '{stmt.varname}'")
-			if not ptr_typ.endswith('*'):
-				raise TypeError(f"Dereferencing non-pointer variable '{stmt.varname}' of type '{ptr_typ}'")
-			env.declare(stmt.varname, "undefined")
-		elif isinstance(stmt, CrumbleStmt):
-			if env.lookup(stmt.name) is None:
-				raise TypeError(f"Cannot crumble undeclared variable '{stmt.name}'")
-			if stmt.name in crumb_map:
-				raise TypeError(f"Variable '{stmt.name}' already crumbled")
-			crumb_map[stmt.name] = (stmt.max_reads, stmt.max_writes, 0, 0)
-		elif isinstance(stmt, IndexAssign):
-			arr_name = stmt.array
-			var_type = env.lookup(arr_name)
-			if not var_type:
-				raise TypeError(f"Index‐assign to undeclared variable '{arr_name}'")
-			if '[' not in var_type or not var_type.endswith(']'):
-				raise TypeError(f"Index‐assign to non-array variable '{var_type}'")
-			base_type = var_type.split('[', 1)[0]
-			idx_type = check_expr(stmt.index)
-			if idx_type != 'int':
-				raise TypeError(f"Array index must be 'int', got '{idx_type}'")
-			val_type = check_expr(stmt.value)
-			if val_type != base_type:
-				raise TypeError(f"Index‐assign type mismatch: array of {base_type}, got {val_type}")
-		elif isinstance(stmt, IfStmt):
-			cond_type = check_expr(stmt.cond)
-			if cond_type != 'bool':
-				raise TypeError(f"If condition must be bool, got {cond_type}")
-			env.push()
-			for s in stmt.then_body:
-				check_stmt(s, expected_ret)
-			env.pop()
-			if stmt.else_body:
-				env.push()
-				if isinstance(stmt.else_body, list):
-					for s in stmt.else_body:
-						check_stmt(s, expected_ret)
-				else:
-					check_stmt(stmt.else_body, expected_ret)
-				env.pop()
-		elif isinstance(stmt, WhileStmt):
-			cond_type = check_expr(stmt.cond)
-			if cond_type != 'bool':
-				raise TypeError(f"While condition must be bool, got {cond_type}")
-			env.push()
-			for s in stmt.body:
-				check_stmt(s, expected_ret)
-			env.pop()
-		elif isinstance(stmt, ReturnStmt):
-			if stmt.expr:
-				actual = check_expr(stmt.expr)
-				common = unify_int_types(actual, expected_ret)
-				if actual != expected_ret and (not common or common != expected_ret):
-					raise TypeError(f"Return type mismatch: expected {expected_ret}, got {actual}")
-			else:
-				if expected_ret != 'void':
-					raise TypeError(f"Return without value in function returning {expected_ret}")
-		elif isinstance(stmt, ExprStmt):
-			check_expr(stmt.expr)
-		elif isinstance(stmt, Match):
-			enum_typ = check_expr(stmt.expr)
-			if enum_typ not in enum_defs:
-				raise TypeError(f"Cannot match on non-enum type '{enum_typ}'")
-			enum_def = enum_defs[enum_typ]
-			defined_variants = {v.name for v in enum_def.variants}
-			seen_variants = set()
-			for case in stmt.cases:
-				if case.variant not in defined_variants:
-					raise TypeError(f"Enum '{enum_typ}' has no variant '{case.variant}'")
-				variant_info = next(v for v in enum_def.variants if v.name == case.variant)
-				payload_type = variant_info.typ
-				if payload_type is None and case.binding is not None:
-					raise TypeError(f"Variant '{case.variant}' carries no payload; remove binding")
-				if payload_type is not None and case.binding is None:
-					raise TypeError(f"Variant '{case.variant}' requires binding of type '{payload_type}'")
-				env.push()
-				if case.binding is not None:
-					env.declare(case.binding, payload_type)
-				for s in case.body:
-					check_stmt(s, expected_ret)
-				env.pop()
-				seen_variants.add(case.variant)
-			if seen_variants != defined_variants:
-				missing = defined_variants - seen_variants
-				raise TypeError(f"Non‐exhaustive match on '{enum_typ}', missing {missing}")
-		else:
-			raise TypeError(f"Unsupported statement: {stmt}")
-	for func in prog.funcs:
-		env.push()
-		for (param_typ, param_name) in func.params:
-			env.declare(param_name, param_typ)
-		for s in (func.body or []):
-			check_stmt(s, func.ret_type)
-		env.pop()
-		for name, (rmax, wmax, rc, wc) in crumb_map.items():
-			if rmax is not None and rc > rmax:
-				raise TypeError(f"[Crawl-Checker]-[ERR]: Too many reads of '{name}': {rc} > {rmax}")
-			if wmax is not None and wc > wmax:
-				raise TypeError(f"[Crawl-Checker]-[ERR]: Too many writes of '{name}': {wc} > {wmax}")
-			if rmax is not None and rc < rmax:
-				print(f"[Crawl-Checker]-[WARN]: unused read crumbs on '{name}': {rmax - rc} left. [This is not an error but a security warning!]")
-			if wmax is not None and wc < wmax:
-				print(f"[Crawl-Checker]-[WARN]: unused write crumbs on '{name}': {wmax - wc} left. [This is not an error but a security warning!]")
-		crumb_map.clear()
+    env = TypeEnv()
+    crumb_map: Dict[str, Tuple[Optional[int], Optional[int], int, int]] = {}
+    funcs = {f.name: f for f in prog.funcs}
+    def _inc_read(name: str, node_desc: Optional[str] = None):
+        if name not in crumb_map:
+            return
+        rmax, wmax, rc, wc = crumb_map[name]
+        rc += 1
+        crumb_map[name] = (rmax, wmax, rc, wc)
+        print(f"[Crawl-Checker] Var \"{name}\" read -> now {rc}/{rmax} {('('+node_desc+')' if node_desc else '')}")
+    def _inc_write(name: str, node_desc: Optional[str] = None):
+        if name not in crumb_map:
+            return
+        rmax, wmax, rc, wc = crumb_map[name]
+        wc += 1
+        crumb_map[name] = (rmax, wmax, rc, wc)
+        print(f"[Crawl-Checker] Var \"{name}\" write -> now {wc}/{wmax} {('('+node_desc+')' if node_desc else '')}")
+    def _subst_type(typ: str, subst: Dict[str, str]) -> str:
+        if typ in subst:
+            return subst[typ]
+        for param, concrete in subst.items():
+            if typ == param:
+                return concrete
+            if typ.startswith(param) and typ[len(param):] in ('*', '[]'):
+                return concrete + typ[len(param):]
+        return typ
+    struct_defs: Dict[str, StructDef] = {s.name: s for s in prog.structs}
+    enum_defs: Dict[str, EnumDef] = {e.name: e for e in prog.enums}
+    for sdef in prog.structs:
+        struct_field_map[sdef.name] = [(fld.name, fld.typ) for fld in sdef.fields]
+    for struct_name in struct_defs:
+        env.declare(struct_name, struct_name)
+    for ename, edef in enum_defs.items():
+        variants = []
+        has_payload = False
+        for v in edef.variants:
+            variants.append((v.name, v.typ))
+            if getattr(v, "typ", None) is not None:
+                has_payload = True
+        enum_variant_map[ename] = variants
+        if not has_payload:
+            type_map[ename] = type_map.get('int', 'i64')
+    def check_expr(expr: Expr) -> str:
+        if isinstance(expr, AwaitExpr):
+            return check_expr(expr.expr)
+        if isinstance(expr, UnaryOp):
+            inner_t = check_expr(expr.expr)
+            if expr.op in {'-', '+'}:
+                if inner_t == 'float' or inner_t.startswith('int') or inner_t == 'int':
+                    return inner_t
+                raise TypeError(f"Unary '{expr.op}' requires integer or float operand, got '{inner_t}'")
+            raise TypeError(f"Unsupported unary operator: {expr.op}")
+        if isinstance(expr, IntLit):
+            return 'int'
+        if isinstance(expr, FloatLit):
+            return 'float'
+        if isinstance(expr, BoolLit):
+            return 'bool'
+        if isinstance(expr, CharLit):
+            return 'char'
+        if isinstance(expr, StrLit):
+            return 'string'
+        if isinstance(expr, NullLit):
+            return 'null'
+        if isinstance(expr, Cast):
+            inner_type = check_expr(expr.expr)
+            if expr.typ.startswith("int") and inner_type == "int":
+                return expr.typ
+            if inner_type in {"null", "void*"} and (expr.typ.endswith("*") or expr.typ == "string"):
+                return expr.typ
+            common = unify_types(inner_type, expr.typ)
+            if inner_type != expr.typ and (not common or common != expr.typ):
+                raise TypeError(f"Cannot cast {inner_type} to {expr.typ}")
+            return expr.typ
+        if isinstance(expr, Var):
+            typ = env.lookup(expr.name)
+            if not typ:
+                raise TypeError(f"Use of undeclared variable '{expr.name}'")
+            if typ == "undefined":
+                raise TypeError(f"Use of variable '{expr.name}' after deref (use-after-free)")
+            _inc_read(expr.name, node_desc=f"Var@{getattr(expr,'lineno','?')}")
+            return typ
+        if isinstance(expr, TypeofExpr):
+            inner_type = check_expr(expr.expr)
+            if expr.kind in {"typeof", "etypeof"}:
+                return "string"
+            elif expr.kind in {"kwtypeof", "kwetypeof"}:
+                return inner_type
+        if isinstance(expr, Ternary):
+            cond_type = check_expr(expr.cond)
+            if cond_type != 'bool':
+                raise TypeError("Ternary condition must be bool")
+            then_t = check_expr(expr.then_expr)
+            else_t = check_expr(expr.else_expr)
+            if then_t != else_t:
+                raise TypeError(f"Ternary branches must match: {then_t} vs {else_t}")
+            return then_t
+        if isinstance(expr, BinOp):
+            left = check_expr(expr.left)
+            right = check_expr(expr.right)
+            if expr.op == "+" and left == "string" and right == "string":
+                return "string"
+            if expr.op in {"&&", "||"}:
+                if left != "bool" or right != "bool":
+                    raise TypeError(f"Logical '{expr.op}' requires both operands to be bool, got {left} and {right}")
+                return "bool"
+            if expr.op == "%":
+                if left == "int" and right == "int":
+                    return "int"
+                elif left == "float" and right == "float":
+                    return "float"
+                else:
+                    raise TypeError(f"Modulo '%' requires int or float, got {left} and {right}")
+            common = unify_types(left, right)
+            if not common:
+                raise TypeError(f"Type mismatch: {left} {expr.op} {right}")
+            if expr.op in {"==", "!=", "<", ">", "<=", ">="}:
+                return "bool"
+            return common
+        if isinstance(expr, Call):
+            arg_types = [check_expr(a) for a in expr.args]
+            if expr.name == "exit":
+                if len(arg_types) != 1:
+                    raise TypeError("exit() takes exactly one int argument")
+                arg_ty = arg_types[0]
+                if not arg_ty.startswith("int"):
+                    raise TypeError("exit() expects an integer argument")
+                return "void"
+            if expr.name == "malloc":
+                if len(arg_types) != 1:
+                    raise TypeError("malloc() takes exactly one int argument")
+                arg_ty = arg_types[0]
+                if not arg_ty.startswith("int"):
+                    raise TypeError("malloc() expects an integer argument")
+                return "int*"
+            if expr.name == "free":
+                if len(arg_types) != 1:
+                    raise TypeError("free() takes exactly one pointer argument")
+                arg_ty = arg_types[0]
+                if not arg_ty.endswith("*"):
+                    raise TypeError("free() expects a pointer argument")
+                return "void"
+            fn = funcs.get(expr.name)
+            if fn is None:
+                raise TypeError(f"Call to undeclared function '{expr.name}'")
+            type_subst: Dict[str, str] = {}
+            if getattr(fn, "type_params", None):
+                for (param_type, _), actual in zip(fn.params, arg_types):
+                    if param_type in getattr(fn, "type_params", []):
+                        type_subst[param_type] = actual
+                    else:
+                        for tp in fn.type_params:
+                            if param_type == tp:
+                                type_subst[tp] = actual
+                            elif param_type.startswith(tp) and param_type[len(tp):] in ('*', '[]'):
+                                type_subst[tp] = actual
+                if fn.type_params and not any(tp in type_subst for tp in fn.type_params):
+                    if arg_types:
+                        type_subst[fn.type_params[0]] = arg_types[0]
+            if not fn.is_extern:
+                if len(arg_types) != len(fn.params):
+                    raise TypeError(f"Arity mismatch in call to '{expr.name}'")
+                for actual_type, (expected_type, _) in zip(arg_types, fn.params):
+                    expected_concrete = _subst_type(expected_type, type_subst)
+                    common = unify_int_types(actual_type, expected_concrete)
+                    if expected_concrete != "void" and actual_type != expected_concrete and (not common or common != expected_concrete):
+                        raise TypeError(f"Argument type mismatch in call to '{expr.name}': expected {expected_concrete}, got {actual_type}")
+            ret = fn.ret_type
+            if getattr(fn, "type_params", None) and isinstance(ret, str):
+                ret = _subst_type(ret, type_subst)
+            return ret
+        if isinstance(expr, Index):
+            if not isinstance(expr.array, Var):
+                raise TypeError(f"Only direct variable array indexing is supported, got: {expr.array}")
+            arr_name = expr.array.name
+            _inc_read(arr_name, node_desc=f"Index@{getattr(expr,'lineno','?')}")
+            var_typ = env.lookup(arr_name)
+            if not var_typ:
+                raise TypeError(f"Indexing undeclared variable '{arr_name}'")
+            if '[' not in var_typ or not var_typ.endswith(']'):
+                raise TypeError(f"Attempting to index non-array type '{var_typ}'")
+            base_type = var_typ.split('[', 1)[0]
+            idx_type = check_expr(expr.index)
+            if idx_type != 'int':
+                raise TypeError(f"Array index must be 'int', got '{idx_type}'")
+            return base_type
+        if isinstance(expr, FieldAccess):
+            base_type = check_expr(expr.base).rstrip('*')
+            if base_type not in struct_defs:
+                raise TypeError(f"Attempting field access on non-struct type '{base_type}'")
+            fields = struct_field_map[base_type]
+            for (fname, ftyp) in fields:
+                if fname == expr.field:
+                    return ftyp
+            raise TypeError(f"Struct '{base_type}' has no field '{expr.field}'")
+        if isinstance(expr, StructInit):
+            if expr.name not in struct_defs:
+                raise TypeError(f"Unknown struct type '{expr.name}' in initializer")
+            expected_fields = struct_field_map[expr.name][:]
+            seen_fields = set()
+            for (fname, fexpr) in expr.fields:
+                match_list = [ft for (fn, ft) in expected_fields if fn == fname]
+                if not match_list:
+                    raise TypeError(f"Struct '{expr.name}' has no field '{fname}'")
+                declared_type = match_list[0]
+                actual_type = check_expr(fexpr)
+                if actual_type != declared_type:
+                    raise TypeError(f"Struct '{expr.name}' field '{fname}': expected '{declared_type}', got '{actual_type}'")
+                seen_fields.add(fname)
+            all_field_names = {fn for (fn, _) in expected_fields}
+            if seen_fields != all_field_names:
+                missing = all_field_names - seen_fields
+                raise TypeError(f"Struct '{expr.name}' initializer missing fields {missing}")
+            return expr.name + "*"
+        raise TypeError(f"Unsupported expression: {expr}")
+    def check_stmt(stmt: Stmt, expected_ret: str, func: Optional[Func] = None):
+        if isinstance(stmt, VarDecl):
+            if env.lookup(stmt.name):
+                raise TypeError(f"Variable '{stmt.name}' already declared")
+            raw_typ = stmt.typ
+            base_type = raw_typ.rstrip('*')
+            if '[' in base_type and base_type.endswith(']'):
+                base_type = base_type.split('[', 1)[0]
+            if base_type not in type_map and base_type not in struct_defs and base_type not in enum_defs:
+                raise TypeError(f"Unknown type '{raw_typ}'")
+            env.declare(stmt.name, raw_typ)
+            if stmt.expr:
+                expr_type = check_expr(stmt.expr)
+                _inc_write(stmt.name, node_desc=f"VarInit@{getattr(stmt,'lineno','?')}")
+                common = unify_types(expr_type, raw_typ)
+                if expr_type != raw_typ and (not common or common != raw_typ):
+                    raise TypeError(f"Type mismatch in variable init '{stmt.name}': expected {raw_typ}, got {expr_type}")
+            return
+        if isinstance(stmt, ContinueStmt) or isinstance(stmt, BreakStmt):
+            return
+        if isinstance(stmt, Assign):
+            if isinstance(stmt.name, UnaryDeref):
+                ptr_type = check_expr(stmt.name.ptr)
+                if not ptr_type.endswith('*'):
+                    raise TypeError(f"Dereferencing non-pointer type '{ptr_type}'")
+                pointee = ptr_type[:-1]
+                expr_type = check_expr(stmt.expr)
+                if expr_type != pointee:
+                    raise TypeError(f"Pointer-assign type mismatch: attempted to store '{expr_type}' into '{ptr_type}'")
+                return
+            var_type = env.lookup(stmt.name)
+            if not var_type:
+                raise TypeError(f"Assign to undeclared variable '{stmt.name}'")
+            global_decl = next((g for g in prog.globals if g.name == stmt.name), None)
+            if global_decl and global_decl.nomd:
+                raise TypeError(f"Cannot assign to 'nomd' global variable '{stmt.name}'")
+            if isinstance(stmt.expr, BinOp) and isinstance(stmt.expr.left, Var) and stmt.expr.left.name == stmt.name:
+                right_type = check_expr(stmt.expr.right)
+                left_type = var_type
+                if stmt.expr.op == "+" and left_type == "string" and right_type == "string":
+                    expr_type = "string"
+                else:
+                    common = unify_int_types(left_type, right_type)
+                    if not common:
+                        if left_type != right_type:
+                            raise TypeError(f"Type mismatch in compound assignment '{stmt.expr.op}': {left_type} vs {right_type}")
+                        common = left_type
+                    expr_type = common
+                _inc_read(stmt.name, node_desc=f"CompoundAssignRead@{getattr(stmt,'lineno','?')}")
+            else:
+                expr_type = check_expr(stmt.expr)
+            if expr_type != var_type:
+                raise TypeError(f"Assign type mismatch: {var_type} = {expr_type}")
+            _inc_write(stmt.name, node_desc=f"AssignWrite@{getattr(stmt,'lineno','?')}")
+            return
+        if isinstance(stmt, DerefStmt):
+            ptr_typ = env.lookup(stmt.varname)
+            if ptr_typ is None:
+                raise TypeError(f"Cannot deref undeclared variable '{stmt.varname}'")
+            if not ptr_typ.endswith('*'):
+                raise TypeError(f"Dereferencing non-pointer variable '{stmt.varname}' of type '{ptr_typ}'")
+            env.declare(stmt.varname, "undefined")
+            return
+        if isinstance(stmt, CrumbleStmt):
+            if env.lookup(stmt.name) is None:
+                raise TypeError(f"Cannot crumble undeclared variable '{stmt.name}'")
+            if stmt.name in crumb_map:
+                raise TypeError(f"Variable '{stmt.name}' already crumbled")
+            crumb_map[stmt.name] = (stmt.max_reads, stmt.max_writes, 0, 0)
+            print(f"[Crawl-Checker] registered crumble {stmt.name} r={stmt.max_reads} w={stmt.max_writes}")
+            return
+        if isinstance(stmt, IndexAssign):
+            arr_name = stmt.array
+            var_type = env.lookup(arr_name)
+            if not var_type:
+                raise TypeError(f"Index-assign to undeclared variable '{arr_name}'")
+            if '[' not in var_type or not var_type.endswith(']'):
+                raise TypeError(f"Index-assign to non-array variable '{var_type}'")
+            base_type = var_type.split('[', 1)[0]
+            _inc_write(arr_name, node_desc=f"IndexAssign@{getattr(stmt,'lineno','?')}")
+            idx_type = check_expr(stmt.index)
+            if idx_type != 'int':
+                raise TypeError(f"Array index must be 'int', got '{idx_type}'")
+            val_type = check_expr(stmt.value)
+            if val_type != base_type:
+                raise TypeError(f"Index-assign type mismatch: array of {base_type}, got {val_type}")
+            return
+        if isinstance(stmt, IfStmt):
+            cond_type = check_expr(stmt.cond)
+            if cond_type != 'bool':
+                raise TypeError(f"If condition must be bool, got {cond_type}")
+            env.push()
+            for s in stmt.then_body:
+                check_stmt(s, expected_ret, func)
+            env.pop()
+            if stmt.else_body:
+                env.push()
+                if isinstance(stmt.else_body, list):
+                    for s in stmt.else_body:
+                        check_stmt(s, expected_ret, func)
+                else:
+                    check_stmt(stmt.else_body, expected_ret, func)
+                env.pop()
+            return
+        if isinstance(stmt, WhileStmt):
+            cond_type = check_expr(stmt.cond)
+            if cond_type != 'bool':
+                raise TypeError(f"While condition must be bool, got {cond_type}")
+            env.push()
+            for s in stmt.body:
+                check_stmt(s, expected_ret, func)
+            env.pop()
+            return
+        if isinstance(stmt, ReturnStmt):
+            if stmt.expr:
+                actual = check_expr(stmt.expr)
+                common = unify_int_types(actual, expected_ret)
+                if actual != expected_ret and (not common or common != expected_ret):
+                    raise TypeError(f"Return type mismatch: expected {expected_ret}, got {actual}")
+            else:
+                if expected_ret != 'void':
+                    raise TypeError(f"Return without value in function returning {expected_ret}")
+            return
+        if isinstance(stmt, ExprStmt):
+            check_expr(stmt.expr)
+            return
+        if isinstance(stmt, Match):
+            enum_typ = check_expr(stmt.expr)
+            if enum_typ not in enum_defs:
+                raise TypeError(f"Cannot match on non-enum type '{enum_typ}'")
+            enum_def = enum_defs[enum_typ]
+            defined_variants = {v.name for v in enum_def.variants}
+            seen_variants = set()
+            for case in stmt.cases:
+                if case.variant not in defined_variants:
+                    raise TypeError(f"Enum '{enum_typ}' has no variant '{case.variant}'")
+                variant_info = next(v for v in enum_def.variants if v.name == case.variant)
+                payload_type = variant_info.typ
+                if payload_type is None and case.binding is not None:
+                    raise TypeError(f"Variant '{case.variant}' carries no payload; remove binding")
+                if payload_type is not None and case.binding is None:
+                    raise TypeError(f"Variant '{case.variant}' requires binding of type '{payload_type}'")
+                env.push()
+                if case.binding is not None:
+                    env.declare(case.binding, payload_type)
+                for s in case.body:
+                    check_stmt(s, expected_ret, func)
+                env.pop()
+                seen_variants.add(case.variant)
+            if seen_variants != defined_variants:
+                missing = defined_variants - seen_variants
+                raise TypeError(f"Non-exhaustive match on '{enum_typ}', missing {missing}")
+            return
+        raise TypeError(f"Unsupported statement: {stmt}")
+    for g in prog.globals:
+        env.declare(g.name, g.typ)
+        if g.nomd:
+            crumb_map[g.name] = (None, 0, 0, 0)
+    for func in prog.funcs:
+        env.push()
+        for (param_typ, param_name) in func.params:
+            env.declare(param_name, param_typ)
+        for s in (func.body or []):
+            check_stmt(s, func.ret_type, func)
+        env.pop()
+        summary_lines = []
+        over_errors = []
+        for name, (rmax, wmax, rc, wc) in list(crumb_map.items()):
+            over_r = (rc - rmax) if (rmax is not None and rc > rmax) else 0
+            over_w = (wc - wmax) if (wmax is not None and wc > wmax) else 0
+            summary_lines.append(f"  Var \"{name}\": reads={rc} (limit={rmax}, over={over_r}), writes={wc} (limit={wmax}, over={over_w})")
+            if over_r or over_w:
+                over_errors.append((name, rmax, wmax, rc, wc, over_r, over_w))
+        if summary_lines:
+            print("[Crawl-Checker]-Result:")
+            for line in summary_lines:
+                print(line)
+        if over_errors:
+            msgs = []
+            for (name, rmax, wmax, rc, wc, orr, ow) in over_errors:
+                msgs.append(f"'Var \"{name}\"': reads {rc} (limit {rmax}, over {orr}), writes {wc} (limit {wmax}, over {ow})")
+            raise TypeError("[Crawl-Checker]-[ERR] Crumble limits exceeded: " + "; ".join(msgs))
+        for name, (rmax, wmax, rc, wc) in list(crumb_map.items()):
+            if rmax is not None and rc < rmax:
+                print(f"[Crawl-Checker]-[WARN]: unused read crumbs on '{name}': {rmax - rc} left. [This is not an error but a security warning!]")
+            if wmax is not None and wc < wmax:
+                print(f"[Crawl-Checker]-[WARN]: unused write crumbs on '{name}': {wmax - wc} left. [This is not an error but a security warning!]")
+        crumb_map.clear()
 class AsyncStateMachine:
 	def __init__(self, func: Func, codegen):
 		self.func = func
