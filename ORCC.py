@@ -1808,6 +1808,12 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 						out.append(f"  {cast_tmp} = sext {src_llvm} {val} to {llvm_ty}")
 					val = cast_tmp
 			out.append(f"  store {llvm_ty} {val}, {llvm_ty}* %{stmt.name}_addr")
+			if isinstance(stmt.expr, Call):
+				ret_t = infer_type(stmt.expr)
+				if ret_t is not None and (ret_t.endswith('*') or ret_t == 'string'):
+					owned_vars.add(stmt.name)
+					if stmt.name in crumb_runtime:
+						crumb_runtime[stmt.name]['owned'] = True
 		return
 	elif isinstance(stmt, Assign):
 		if isinstance(stmt.name, UnaryDeref):
