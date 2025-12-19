@@ -8,5 +8,6 @@ import C_io;
 
 pub fn main() <int8> {
     print(etypeof(int8(0)));
+    newline();
     return int8(0);
 }
