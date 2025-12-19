@@ -2204,6 +2204,7 @@ def check_types(prog: Program):
 	env = TypeEnv()
 	crumb_map: Dict[str, Tuple[Optional[int], Optional[int], int, int]] = {}
 	funcs = {f.name: f for f in prog.funcs}
+	variant_map: Dict[str, Tuple[str, Optional[str]]] = {}
 	def _inc_read(name: str, node_desc: Optional[str] = None):
 		if name not in crumb_map:
 			return
@@ -2371,16 +2372,19 @@ def check_types(prog: Program):
 			vm = variant_map.get(expr.name)
 			if vm is not None:
 				enum_name, payload = vm
-			if payload is None:
-				if len(arg_types) != 0:
-					raise TypeError(f"Enum variant '{expr.name}' takes no arguments")
-				return enum_name
-			else:
-				if len(arg_types) != 1:
-					raise TypeError(f"Enum variant '{expr.name}' requires one payload of type '{payload}'")
-				if arg_types[0] != payload:
-					raise TypeError(f"Enum variant '{expr.name}' payload type mismatch: expected {payload}, got {arg_types[0]}")
-				return enum_name
+				if payload is None:
+					if len(arg_types) != 0:
+						raise TypeError(f"Enum variant '{expr.name}' takes no arguments")
+					return enum_name
+				else:
+					if len(arg_types) != 1:
+						raise TypeError(f"Enum variant '{expr.name}' requires one payload of type '{payload}'")
+					if arg_types[0] != payload:
+						raise TypeError(
+							f"Enum variant '{expr.name}' payload type mismatch: "
+							f"expected {payload}, got {arg_types[0]}"
+						)
+					return enum_name
 			fn = funcs.get(expr.name)
 			if fn is None:
 				raise TypeError(f"Call to undeclared function '{expr.name}'")
