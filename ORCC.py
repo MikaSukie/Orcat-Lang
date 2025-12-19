@@ -2211,14 +2211,12 @@ def check_types(prog: Program):
 		rmax, wmax, rc, wc = crumb_map[name]
 		rc += 1
 		crumb_map[name] = (rmax, wmax, rc, wc)
-		print(f"[Crawl-Checker] Var \"{name}\" read -> now {rc}/{rmax} {('('+node_desc+')' if node_desc else '')}")
 	def _inc_write(name: str, node_desc: Optional[str] = None):
 		if name not in crumb_map:
 			return
 		rmax, wmax, rc, wc = crumb_map[name]
 		wc += 1
 		crumb_map[name] = (rmax, wmax, rc, wc)
-		print(f"[Crawl-Checker] Var \"{name}\" write -> now {wc}/{wmax} {('('+node_desc+')' if node_desc else '')}")
 	def _subst_type(typ: str, subst: Dict[str, str]) -> str:
 		if typ in subst:
 			return subst[typ]
@@ -2532,7 +2530,6 @@ def check_types(prog: Program):
 			if stmt.name in crumb_map:
 				raise TypeError(f"Variable '{stmt.name}' already crumbled")
 			crumb_map[stmt.name] = (stmt.max_reads, stmt.max_writes, 0, 0)
-			print(f"[Crawl-Checker] registered crumble {stmt.name} r={stmt.max_reads} w={stmt.max_writes}")
 			return
 		if isinstance(stmt, IndexAssign):
 			arr_name = stmt.array
@@ -2628,18 +2625,12 @@ def check_types(prog: Program):
 		for s in (func.body or []):
 			check_stmt(s, func.ret_type, func)
 		env.pop()
-	summary_lines = []
 	over_errors = []
 	for name, (rmax, wmax, rc, wc) in list(crumb_map.items()):
 		over_r = (rc - rmax) if (rmax is not None and rc > rmax) else 0
 		over_w = (wc - wmax) if (wmax is not None and wc > wmax) else 0
-		summary_lines.append(f"  Var \"{name}\": reads={rc} (limit={rmax}, over={over_r}), writes={wc} (limit={wmax}, over={over_w})")
 		if over_r or over_w:
 			over_errors.append((name, rmax, wmax, rc, wc, over_r, over_w))
-	if summary_lines:
-		print("[Crawl-Checker]-Final Result:")
-		for line in summary_lines:
-			print(line)
 	if over_errors:
 		msgs = []
 		for (name, rmax, wmax, rc, wc, orr, ow) in over_errors:
