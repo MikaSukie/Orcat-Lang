@@ -10,10 +10,10 @@ pin int x = 2;
 nomd int y = 2;
 fn main() <int> {
     int variable = 0;
-    int64 extreme = 10000000000;
-    int32 extreme1 = 10000;
-    int16 extreme2 = 100;
-    int8 extreme3  = 10;
+    int64 extreme = int64(10000000000);
+    int32 extreme1 = int32(10000);
+    int16 extreme2 = int16(100);
+    int8 extreme3  = int8(10);
     nomd int f = 20;
     while (variable != 99) {
         variable = variable + 1;
