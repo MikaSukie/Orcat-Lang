@@ -2252,6 +2252,14 @@ def check_types(prog: Program):
 				if inner_t == 'float' or inner_t.startswith('int') or inner_t == 'int':
 					return inner_t
 				raise TypeError(f"Unary '{expr.op}' requires integer or float operand, got '{inner_t}'")
+			if expr.op == '!':
+				if inner_t != 'bool':
+					raise TypeError(f"Unary '!' requires bool operand, got '{inner_t}'")
+				return 'bool'
+			if expr.op == '~':
+				if inner_t.startswith('int') or inner_t == 'int':
+					return inner_t
+				raise TypeError(f"Unary '~' requires integer operand, got '{inner_t}'")
 			raise TypeError(f"Unsupported unary operator: {expr.op}")
 		if isinstance(expr, IntLit):
 			return 'int'
@@ -2322,6 +2330,18 @@ def check_types(prog: Program):
 			return common
 		if isinstance(expr, Call):
 			arg_types = [check_expr(a) for a in expr.args]
+			if expr.name == '!' and len(arg_types) == 1:
+				if arg_types[0] != 'bool':
+					raise TypeError(f"Unary '!' requires bool operand, got '{arg_types[0]}'")
+				return 'bool'
+			if expr.name == '~' and len(arg_types) == 1:
+				if arg_types[0].startswith('int') or arg_types[0] == 'int':
+					return arg_types[0]
+				raise TypeError(f"Unary '~' requires integer operand, got '{arg_types[0]}'")
+			if expr.name == 'not' and len(arg_types) == 1:
+				if arg_types[0] != 'bool':
+					raise TypeError(f"'not' requires bool operand, got '{arg_types[0]}'")
+				return 'bool'
 			if expr.name == "exit":
 				if len(arg_types) != 1:
 					raise TypeError("exit() takes exactly one int argument")
@@ -2349,14 +2369,11 @@ def check_types(prog: Program):
 			type_subst: Dict[str, str] = {}
 			if getattr(fn, "type_params", None):
 				for (param_type, _), actual in zip(fn.params, arg_types):
-					if param_type in getattr(fn, "type_params", []):
-						type_subst[param_type] = actual
-					else:
-						for tp in fn.type_params:
-							if param_type == tp:
-								type_subst[tp] = actual
-							elif param_type.startswith(tp) and param_type[len(tp):] in ('*', '[]'):
-								type_subst[tp] = actual
+					for tp in fn.type_params:
+						if param_type == tp:
+							type_subst[tp] = actual
+						elif param_type.startswith(tp) and param_type[len(tp):] in ('*', '[]'):
+							type_subst[tp] = actual
 				if fn.type_params and not any(tp in type_subst for tp in fn.type_params):
 					if arg_types:
 						type_subst[fn.type_params[0]] = arg_types[0]
@@ -2581,28 +2598,28 @@ def check_types(prog: Program):
 		for s in (func.body or []):
 			check_stmt(s, func.ret_type, func)
 		env.pop()
-		summary_lines = []
-		over_errors = []
-		for name, (rmax, wmax, rc, wc) in list(crumb_map.items()):
-			over_r = (rc - rmax) if (rmax is not None and rc > rmax) else 0
-			over_w = (wc - wmax) if (wmax is not None and wc > wmax) else 0
-			summary_lines.append(f"  Var \"{name}\": reads={rc} (limit={rmax}, over={over_r}), writes={wc} (limit={wmax}, over={over_w})")
-			if over_r or over_w:
-				over_errors.append((name, rmax, wmax, rc, wc, over_r, over_w))
-		if summary_lines:
-			print("[Crawl-Checker]-Result:")
-			for line in summary_lines:
-				print(line)
-		if over_errors:
-			msgs = []
-			for (name, rmax, wmax, rc, wc, orr, ow) in over_errors:
-				msgs.append(f"'Var \"{name}\"': reads {rc} (limit {rmax}, over {orr}), writes {wc} (limit {wmax}, over {ow})")
-			raise TypeError("[Crawl-Checker]-[ERR] Crumble limits exceeded: " + "; ".join(msgs))
-		for name, (rmax, wmax, rc, wc) in list(crumb_map.items()):
-			if rmax is not None and rc < rmax:
-				print(f"[Crawl-Checker]-[WARN]: unused read crumbs on '{name}': {rmax - rc} left. [This is not an error but a security warning!]")
-			if wmax is not None and wc < wmax:
-				print(f"[Crawl-Checker]-[WARN]: unused write crumbs on '{name}': {wmax - wc} left. [This is not an error but a security warning!]")
+	summary_lines = []
+	over_errors = []
+	for name, (rmax, wmax, rc, wc) in list(crumb_map.items()):
+		over_r = (rc - rmax) if (rmax is not None and rc > rmax) else 0
+		over_w = (wc - wmax) if (wmax is not None and wc > wmax) else 0
+		summary_lines.append(f"  Var \"{name}\": reads={rc} (limit={rmax}, over={over_r}), writes={wc} (limit={wmax}, over={over_w})")
+		if over_r or over_w:
+			over_errors.append((name, rmax, wmax, rc, wc, over_r, over_w))
+	if summary_lines:
+		print("[Crawl-Checker]-Final Result:")
+		for line in summary_lines:
+			print(line)
+	if over_errors:
+		msgs = []
+		for (name, rmax, wmax, rc, wc, orr, ow) in over_errors:
+			msgs.append(f"'Var \"{name}\"': reads {rc} (limit {rmax}, over {orr}), writes {wc} (limit {wmax}, over {ow})")
+		raise TypeError("[Crawl-Checker]-[ERR] Crumble limits exceeded: " + "; ".join(msgs))
+	for name, (rmax, wmax, rc, wc) in list(crumb_map.items()):
+		if rmax is not None and rc < rmax:
+			print(f"[Crawl-Checker]-[WARN]: unused read crumbs on '{name}': {rmax - rc} left. [This is not an error but a security warning!]")
+		if wmax is not None and wc < wmax:
+			print(f"[Crawl-Checker]-[WARN]: unused write crumbs on '{name}': {wmax - wc} left. [This is not an error but a security warning!]")
 		crumb_map.clear()
 class AsyncStateMachine:
 	def __init__(self, func: Func, codegen):
