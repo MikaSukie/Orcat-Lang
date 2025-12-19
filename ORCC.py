@@ -981,6 +981,28 @@ func_table: Dict[str, str] = {}
 def gen_expr(expr: Expr, out: List[str]) -> str:
 	def format_float(val: float) -> str:
 		return f"{val:.8e}"
+	def _maybe_flush_deferred(e: Expr, ssa_name: str) -> None:
+		if not isinstance(e, Var):
+			return
+		name = e.name
+		cr = crumb_runtime.get(name)
+		if not cr or '_deferred_frees' not in cr:
+			return
+		new_deferred = []
+		for (vn, ssa_tmp, llvm_typ) in cr['_deferred_frees']:
+			if ssa_tmp == ssa_name:
+				cast_tmp = new_tmp()
+				out.append(f"  {cast_tmp} = bitcast {llvm_typ} {ssa_tmp} to i8*")
+				out.append(f"  call void @free(i8* {cast_tmp})")
+				cr['owned'] = False
+				if vn in owned_vars:
+					owned_vars.discard(vn)
+			else:
+				new_deferred.append((vn, ssa_tmp, llvm_typ))
+		if new_deferred:
+			cr['_deferred_frees'] = new_deferred
+		else:
+			cr.pop('_deferred_frees', None)
 	global string_constants
 	if isinstance(expr, Cast):
 		dst_t = expr.typ
@@ -1138,6 +1160,7 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 				out.append(f"  {tmp} = fsub double 0.0, {val}")
 			else:
 				out.append(f"  {tmp} = sub {llvm_ty} 0, {val}")
+			_maybe_flush_deferred(expr.expr, val)
 			return tmp
 		elif expr.op == '+':
 			return val
@@ -1219,6 +1242,8 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 		out.append(f"{end_lbl}:")
 		phi_tmp = new_tmp()
 		out.append(f"  {phi_tmp} = phi {then_ty} [{then_tmp}, %{then_lbl}], [{else_tmp}, %{else_lbl}]")
+		_maybe_flush_deferred(expr.then_expr, then_val)
+		_maybe_flush_deferred(expr.else_expr, else_val)
 		return phi_tmp
 	if isinstance(expr, Index):
 		if not isinstance(expr.array, Var):
@@ -1261,6 +1286,7 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 		out.append(f"{ok_lbl}:")
 		out.append(f"  {tmp_ptr} = getelementptr inbounds {llvm_ty}, {llvm_ty}* {arr_addr_token}, i32 0, i32 {idx_cast}")
 		out.append(f"  {tmp_val} = load {base_ty}, {base_ty}* {tmp_ptr}")
+		_maybe_flush_deferred(expr.index, idx)
 		return tmp_val
 	if isinstance(expr, StrLit):
 		tmp = new_tmp()
@@ -1311,9 +1337,9 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 			cr['owned'] = cr.get('owned', False) or (vn in owned_vars)
 			rmax = cr.get('rmax')
 			if rmax is not None and cr['rc'] == rmax and cr['owned']:
-				cast_tmp = new_tmp()
-				out.append(f"  {cast_tmp} = bitcast {typ} {tmp} to i8*")
-				out.append(f"  call void @free(i8* {cast_tmp})")
+				if '_deferred_frees' not in cr:
+					cr['_deferred_frees'] = []
+				cr['_deferred_frees'].append((vn, tmp, typ))
 				cr['owned'] = False
 				if vn in owned_vars:
 					owned_vars.discard(vn)
@@ -1325,6 +1351,8 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 		if ty == "string" and expr.op == "+":
 			tmp = new_tmp()
 			out.append(f"  {tmp} = call i8* @sb_append_str(i8* {lhs}, i8* {rhs})")
+			_maybe_flush_deferred(expr.left, lhs)
+			_maybe_flush_deferred(expr.right, rhs)
 			return tmp
 		llvm_ty = type_map[ty]
 		tmp = new_tmp()
@@ -1333,10 +1361,14 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 			if llvm_ty == 'double':
 				op = 'frem'
 			out.append(f"  {tmp} = {op} {llvm_ty} {lhs}, {rhs}")
+			_maybe_flush_deferred(expr.left, lhs)
+			_maybe_flush_deferred(expr.right, rhs)
 			return tmp
 		if expr.op in {'&&', '||'}:
 			op = 'and' if expr.op == '&&' else 'or'
 			out.append(f"  {tmp} = {op} {llvm_ty} {lhs}, {rhs}")
+			_maybe_flush_deferred(expr.left, lhs)
+			_maybe_flush_deferred(expr.right, rhs)
 			return tmp
 		if llvm_ty == 'double':
 			op = {
@@ -1365,6 +1397,8 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 		if not op:
 			raise RuntimeError(f"Unsupported binary operator: {expr.op}")
 		out.append(f"  {tmp} = {op} {llvm_ty} {lhs}, {rhs}")
+		_maybe_flush_deferred(expr.left, lhs)
+		_maybe_flush_deferred(expr.right, rhs)
 		return tmp
 	if isinstance(expr, Call):
 		args_ir: List[str] = []
@@ -1513,15 +1547,39 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 			ret_ty = func_table[mononame]
 			tmp2 = new_tmp()
 			out.append(f"  {tmp2} = call {ret_ty} @{mononame}({', '.join(args_ir)})")
+			for arg_expr, arg_val in zip(expr.args, arg_vals):
+				if isinstance(arg_expr, Var):
+					name = arg_expr.name
+					cr = crumb_runtime.get(name)
+					if cr is not None and '_deferred_frees' in cr:
+						new_deferred = []
+						for (vn, ssa_tmp, llvm_typ) in cr['_deferred_frees']:
+							if ssa_tmp == arg_val:
+								cast_tmp = new_tmp()
+								out.append(f"  {cast_tmp} = bitcast {llvm_typ} {ssa_tmp} to i8*")
+								out.append(f"  call void @free(i8* {cast_tmp})")
+								cr['owned'] = False
+								if vn in owned_vars:
+									owned_vars.discard(vn)
+							else:
+								new_deferred.append((vn, ssa_tmp, llvm_typ))
+						if new_deferred:
+							cr['_deferred_frees'] = new_deferred
+						else:
+							cr.pop('_deferred_frees', None)
 			return tmp2
 		if expr.name in func_table:
 			ret_ty = func_table[expr.name]
 			if ret_ty == 'void':
 				out.append(f"  call void @{expr.name}({', '.join(args_ir)})")
+				for arg_expr, arg_val in zip(expr.args, arg_vals):
+					_maybe_flush_deferred(arg_expr, arg_val)
 				return ''
 			else:
 				tmp2 = new_tmp()
 				out.append(f"  {tmp2} = call {ret_ty} @{expr.name}({', '.join(args_ir)})")
+				for arg_expr, arg_val in zip(expr.args, arg_vals):
+					_maybe_flush_deferred(arg_expr, arg_val)
 				return tmp2
 		raise RuntimeError(f"Call to undefined function '{expr.name}'")
 	if isinstance(expr, FieldAccess):
@@ -1559,6 +1617,7 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 		out.append(f"  {ptr} = getelementptr inbounds %struct.{base_name}, %struct.{base_name}* {base_ptr}, i32 0, i32 {index}")
 		tmp = new_tmp()
 		out.append(f"  {tmp} = load {field_llvm}, {field_llvm}* {ptr}")
+		_maybe_flush_deferred(expr.base, base_ptr)
 		return tmp
 	if isinstance(expr, StructInit):
 		struct_name = expr.name
