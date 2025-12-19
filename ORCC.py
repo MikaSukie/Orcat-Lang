@@ -2241,8 +2241,13 @@ def check_types(prog: Program):
 			if getattr(v, "typ", None) is not None:
 				has_payload = True
 		enum_variant_map[ename] = variants
+		env.declare(ename, ename)
 		if not has_payload:
 			type_map[ename] = type_map.get('int', 'i64')
+		variant_map: Dict[str, Tuple[str, Optional[str]]] = {}
+	for ename, edef in enum_defs.items():
+		for v in edef.variants:
+			variant_map[v.name] = (ename, v.typ)
 	def check_expr(expr: Expr) -> str:
 		if isinstance(expr, AwaitExpr):
 			return check_expr(expr.expr)
@@ -2363,6 +2368,19 @@ def check_types(prog: Program):
 				if not arg_ty.endswith("*"):
 					raise TypeError("free() expects a pointer argument")
 				return "void"
+			vm = variant_map.get(expr.name)
+			if vm is not None:
+				enum_name, payload = vm
+			if payload is None:
+				if len(arg_types) != 0:
+					raise TypeError(f"Enum variant '{expr.name}' takes no arguments")
+				return enum_name
+			else:
+				if len(arg_types) != 1:
+					raise TypeError(f"Enum variant '{expr.name}' requires one payload of type '{payload}'")
+				if arg_types[0] != payload:
+					raise TypeError(f"Enum variant '{expr.name}' payload type mismatch: expected {payload}, got {arg_types[0]}")
+				return enum_name
 			fn = funcs.get(expr.name)
 			if fn is None:
 				raise TypeError(f"Call to undeclared function '{expr.name}'")
@@ -2406,13 +2424,21 @@ def check_types(prog: Program):
 			return base_type
 		if isinstance(expr, FieldAccess):
 			base_type = check_expr(expr.base).rstrip('*')
-			if base_type not in struct_defs:
-				raise TypeError(f"Attempting field access on non-struct type '{base_type}'")
-			fields = struct_field_map[base_type]
-			for (fname, ftyp) in fields:
-				if fname == expr.field:
-					return ftyp
-			raise TypeError(f"Struct '{base_type}' has no field '{expr.field}'")
+			if base_type in struct_defs:
+				fields = struct_field_map[base_type]
+				for (fname, ftyp) in fields:
+					if fname == expr.field:
+						return ftyp
+				raise TypeError(f"Struct '{base_type}' has no field '{expr.field}'")
+			if base_type in enum_defs:
+				vars = enum_variant_map[base_type]
+				for (vname, vtyp) in vars:
+					if vname == expr.field:
+						if vtyp is not None:
+							raise TypeError(f"Enum variant '{expr.field}' carries payload; use constructor call")
+						return base_type
+				raise TypeError(f"Enum '{base_type}' has no variant '{expr.field}'")
+			raise TypeError(f"Attempting field access on non-struct/enum type '{base_type}'")
 		if isinstance(expr, StructInit):
 			if expr.name not in struct_defs:
 				raise TypeError(f"Unknown struct type '{expr.name}' in initializer")
