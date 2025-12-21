@@ -2385,9 +2385,30 @@ def compile_program(prog: Program) -> str:
 		lines.append("  %argc64 = sext i32 %argc to i64")
 		lines.append("  store i64 %argc64, i64* @orcat_argc_global")
 		lines.append("  store i8** %argv, i8*** @orcat_argv_global")
-		lines.append("  %ret64 = call i64 @user_main()")
-		lines.append("  %ret32 = trunc i64 %ret64 to i32")
-		lines.append("  ret i32 %ret32")
+		user_ret = func_table.get("user_main", "i64")
+		if user_ret == "void":
+			lines.append("  call void @user_main()")
+			lines.append("  ret i32 0")
+		elif user_ret == "i64":
+			lines.append("  %ret64 = call i64 @user_main()")
+			lines.append("  %ret32 = trunc i64 %ret64 to i32")
+			lines.append("  ret i32 %ret32")
+		elif isinstance(user_ret, str) and user_ret.startswith('i') and user_ret[1:].isdigit():
+			bits = int(user_ret[1:])
+			lines.append(f"  %rettmp = call {user_ret} @user_main()")
+			if bits > 32:
+				lines.append(f"  %ret32 = trunc {user_ret} %rettmp to i32")
+			else:
+				lines.append(f"  %ret32 = sext {user_ret} %rettmp to i32")
+			lines.append("  ret i32 %ret32")
+		elif user_ret == "double":
+			lines.append("  %retf = call double @user_main()")
+			lines.append("  %ret32 = fptosi double %retf to i32")
+			lines.append("  ret i32 %ret32")
+		else:
+			lines.append("  %ret64 = call i64 @user_main()")
+			lines.append("  %ret32 = trunc i64 %ret64 to i32")
+			lines.append("  ret i32 %ret32")
 		lines.append("}")
 	return "\n".join(lines)
 def check_types(prog: Program):
