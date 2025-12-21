@@ -1,6 +1,6 @@
 '''
  * This file is licensed under the GPL-3 License (or AGPL-3 if applicable)
- * Copyright (C) 2025  MikaSukie (old user), MikaLorielle (alt user), EmikaMai (current user), JaydenFreeman (legal name)
+ * Copyright (C) 2025 MikaSukie
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
@@ -101,6 +101,30 @@ def llvm_ty_of(typ: str) -> str:
 	if typ in type_map:
 		return type_map[typ]
 	return f"%struct.{typ}"
+def _subst_type(typ: str, subst: Dict[str, str]) -> str:
+	if typ is None:
+		return typ
+	if typ in subst:
+		return subst[typ]
+	for param, concrete in subst.items():
+		if typ == param:
+			return concrete
+		if typ.startswith(param) and typ[len(param):] in ('*', '[]'):
+			return concrete + typ[len(param):]
+	return typ
+def mangle_type(typ: str) -> str:
+	if typ is None:
+		return "void"
+	t = typ
+	t = t.replace("%struct.", "struct_")
+	t = t.replace("%enum.", "enum_")
+	t = t.replace("*", "_ptr")
+	t = t.replace("[", "_").replace("]", "")
+	for ch in [' ', ',', '.', '<', '>', ':', '/','\\','%']:
+		t = t.replace(ch, '_')
+	while '__' in t:
+		t = t.replace('__', '_')
+	return t.strip('_')
 def clean_struct_name(name: str) -> str:
 	return name.rstrip("*").removeprefix("%struct.")
 def llvm_int_bitsize(ty: str) -> Optional[int]:
@@ -1349,11 +1373,17 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 		rhs = gen_expr(expr.right, out)
 		ty = infer_type(expr.left)
 		if ty == "string" and expr.op == "+":
-			tmp = new_tmp()
-			out.append(f"  {tmp} = call i8* @sb_append_str(i8* {lhs}, i8* {rhs})")
+			b = new_tmp()
+			out.append(f"  {b} = call i8* @sb_create()")
+			b1 = new_tmp()
+			out.append(f"  {b1} = call i8* @sb_append_str(i8* {b}, i8* {lhs})")
+			b2 = new_tmp()
+			out.append(f"  {b2} = call i8* @sb_append_str(i8* {b1}, i8* {rhs})")
+			res = new_tmp()
+			out.append(f"  {res} = call i8* @sb_finish(i8* {b2})")
 			_maybe_flush_deferred(expr.left, lhs)
 			_maybe_flush_deferred(expr.right, rhs)
-			return tmp
+			return res
 		llvm_ty = type_map[ty]
 		tmp = new_tmp()
 		if expr.op == '%':
@@ -1479,33 +1509,76 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 		if base_fn and base_fn.is_async:
 			raise RuntimeError(f"async function '{expr.name}' must be awaited")
 		if base_fn and base_fn.type_params:
-			actual = arg_types[0] if arg_types else None
-			if actual is None:
-				raise RuntimeError(f"Generic function '{expr.name}' called with no arguments")
-			mononame = f"{expr.name}_{actual}"
+			actuals: List[str] = []
+			if not arg_types:
+				raise RuntimeError(f"Generic function '{expr.name}' called with no arguments to infer type parameters")
+			for tp in base_fn.type_params:
+				found = None
+				for param_idx, (param_typ, _) in enumerate(base_fn.params):
+					if param_typ == tp or tp in param_typ:
+						if param_idx < len(arg_types):
+							found = arg_types[param_idx]
+							break
+				if found is None:
+					if base_fn.ret_type == tp and len(arg_types) > 0:
+						found = arg_types[0]
+				if found is None:
+					raise RuntimeError(f"Cannot infer type parameter '{tp}' for generic function '{expr.name}'")
+				actuals.append(found)
+			mangled_parts = [mangle_type(a) for a in actuals]
+			mononame = f"{expr.name}_" + "_".join(mangled_parts)
 			if mononame not in generated_mono:
-				subst_map = {base_fn.type_params[0]: actual}
+				subst_map = {tp: actual for tp, actual in zip(base_fn.type_params, actuals)}
 				new_params = [(subst_map.get(p[0], p[0]), p[1]) for p in base_fn.params]
 				new_ret = subst_map.get(base_fn.ret_type, base_fn.ret_type)
 				def replace_in_expr(e: Expr) -> Expr:
+					if e is None:
+						return None
 					if isinstance(e, Var):
-						if e.name in subst_map:
-							return Var(subst_map[e.name])
-						return e
+						return Var(e.name)
+					if isinstance(e, IntLit):
+						return IntLit(e.value)
+					if isinstance(e, FloatLit):
+						return FloatLit(e.value)
+					if isinstance(e, BoolLit):
+						return BoolLit(e.value)
+					if isinstance(e, CharLit):
+						return CharLit(e.value)
+					if isinstance(e, StrLit):
+						return StrLit(e.value)
+					if isinstance(e, NullLit):
+						return NullLit()
+					if isinstance(e, UnaryDeref):
+						return UnaryDeref(replace_in_expr(e.ptr))
+					if isinstance(e, UnaryOp):
+						return UnaryOp(e.op, replace_in_expr(e.expr))
 					if isinstance(e, BinOp):
 						return BinOp(e.op, replace_in_expr(e.left), replace_in_expr(e.right))
+					if isinstance(e, Ternary):
+						return Ternary(replace_in_expr(e.cond), replace_in_expr(e.then_expr), replace_in_expr(e.else_expr))
+					if isinstance(e, Cast):
+						return Cast(_subst_type(e.typ, subst_map), replace_in_expr(e.expr))
 					if isinstance(e, Call):
-						return Call(e.name, [replace_in_expr(a0) for a0 in e.args])
+						return Call(e.name, [replace_in_expr(a) for a in e.args])
 					if isinstance(e, FieldAccess):
 						return FieldAccess(replace_in_expr(e.base), e.field)
+					if isinstance(e, Index):
+						return Index(replace_in_expr(e.array), replace_in_expr(e.index))
+					if isinstance(e, StructInit):
+						return StructInit(e.name, [(fname, replace_in_expr(fexpr)) for fname, fexpr in e.fields])
+					if isinstance(e, AwaitExpr):
+						return AwaitExpr(replace_in_expr(e.expr))
 					return e
 				def replace_in_stmt(s: Stmt) -> Stmt:
+					if s is None:
+						return None
 					if isinstance(s, VarDecl):
-						typ = subst_map.get(s.typ, s.typ)
-						expr0 = replace_in_expr(s.expr) if s.expr else None
-						return VarDecl(s.access, typ, s.name, expr0)
+						new_typ = _subst_type(s.typ, subst_map)
+						new_expr = replace_in_expr(s.expr) if s.expr else None
+						return VarDecl(s.access, new_typ, s.name, new_expr, s.nomd)
 					if isinstance(s, Assign):
-						return Assign(s.name, replace_in_expr(s.expr))
+						lhs = s.name
+						return Assign(lhs, replace_in_expr(s.expr))
 					if isinstance(s, IndexAssign):
 						return IndexAssign(s.array, replace_in_expr(s.index), replace_in_expr(s.value))
 					if isinstance(s, IfStmt):
@@ -1516,15 +1589,10 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 							if isinstance(s.else_body, IfStmt):
 								else_body0 = replace_in_stmt(s.else_body)
 							else:
-								else_body_list: List[Stmt] = []
-								for ss in s.else_body:
-									else_body_list.append(replace_in_stmt(ss))
-								else_body0 = else_body_list
+								else_body0 = [replace_in_stmt(ss) for ss in s.else_body]
 						return IfStmt(cond0, then_body0, else_body0)
 					if isinstance(s, WhileStmt):
-						cond0 = replace_in_expr(s.cond)
-						body0 = [replace_in_stmt(ss) for ss in s.body]
-						return WhileStmt(cond0, body0)
+						return WhileStmt(replace_in_expr(s.cond), [replace_in_stmt(ss) for ss in s.body])
 					if isinstance(s, ReturnStmt):
 						return ReturnStmt(replace_in_expr(s.expr) if s.expr else None)
 					if isinstance(s, ExprStmt):
@@ -1536,38 +1604,64 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 							new_body0 = [replace_in_stmt(ss) for ss in case.body]
 							new_cases.append(MatchCase(case.variant, case.binding, new_body0))
 						return Match(new_expr0, new_cases)
-					raise RuntimeError(f"Unsupported Stmt in generic substitution: {s}")
+					return s
+				new_params = [(_subst_type(p[0], subst_map), p[1]) for p in base_fn.params]
+				new_ret = _subst_type(base_fn.ret_type, subst_map)
 				new_body = [replace_in_stmt(stmt) for stmt in base_fn.body] if base_fn.body else None
-				new_fn = Func(base_fn.access, mononame, [], new_params, new_ret, new_body, base_fn.is_extern)
+				new_fn = Func(base_fn.access, mononame, [], new_params, new_ret, new_body, base_fn.is_extern, base_fn.is_async)
 				all_funcs.append(new_fn)
 				func_table[mononame] = llvm_ty_of(new_ret)
 				llvm_lines = gen_func(new_fn)
 				out.insert(0, "\n".join(llvm_lines))
 				generated_mono[mononame] = True
-			ret_ty = func_table[mononame]
-			tmp2 = new_tmp()
-			out.append(f"  {tmp2} = call {ret_ty} @{mononame}({', '.join(args_ir)})")
-			for arg_expr, arg_val in zip(expr.args, arg_vals):
-				if isinstance(arg_expr, Var):
-					name = arg_expr.name
-					cr = crumb_runtime.get(name)
-					if cr is not None and '_deferred_frees' in cr:
-						new_deferred = []
-						for (vn, ssa_tmp, llvm_typ) in cr['_deferred_frees']:
-							if ssa_tmp == arg_val:
-								cast_tmp = new_tmp()
-								out.append(f"  {cast_tmp} = bitcast {llvm_typ} {ssa_tmp} to i8*")
-								out.append(f"  call void @free(i8* {cast_tmp})")
-								cr['owned'] = False
-								if vn in owned_vars:
-									owned_vars.discard(vn)
-							else:
-								new_deferred.append((vn, ssa_tmp, llvm_typ))
-						if new_deferred:
-							cr['_deferred_frees'] = new_deferred
-						else:
-							cr.pop('_deferred_frees', None)
-			return tmp2
+				ret_ty = func_table[mononame]
+				if ret_ty == 'void':
+					out.append(f"  call void @{mononame}({', '.join(args_ir)})")
+					for arg_expr, arg_val in zip(expr.args, arg_vals):
+						if isinstance(arg_expr, Var):
+							name = arg_expr.name
+							cr = crumb_runtime.get(name)
+							if cr is not None and '_deferred_frees' in cr:
+								new_deferred = []
+								for (vn, ssa_tmp, llvm_typ) in cr['_deferred_frees']:
+									if ssa_tmp == arg_val:
+										cast_tmp = new_tmp()
+										out.append(f"  {cast_tmp} = bitcast {llvm_typ} {ssa_tmp} to i8*")
+										out.append(f"  call void @free(i8* {cast_tmp})")
+										cr['owned'] = False
+										if vn in owned_vars:
+											owned_vars.discard(vn)
+									else:
+										new_deferred.append((vn, ssa_tmp, llvm_typ))
+								if new_deferred:
+									cr['_deferred_frees'] = new_deferred
+								else:
+									cr.pop('_deferred_frees', None)
+					return ''
+				else:
+					tmp2 = new_tmp()
+					out.append(f"  {tmp2} = call {ret_ty} @{mononame}({', '.join(args_ir)})")
+					for arg_expr, arg_val in zip(expr.args, arg_vals):
+						if isinstance(arg_expr, Var):
+							name = arg_expr.name
+							cr = crumb_runtime.get(name)
+							if cr is not None and '_deferred_frees' in cr:
+								new_deferred = []
+								for (vn, ssa_tmp, llvm_typ) in cr['_deferred_frees']:
+									if ssa_tmp == arg_val:
+										cast_tmp = new_tmp()
+										out.append(f"  {cast_tmp} = bitcast {llvm_typ} {ssa_tmp} to i8*")
+										out.append(f"  call void @free(i8* {cast_tmp})")
+										cr['owned'] = False
+										if vn in owned_vars:
+											owned_vars.discard(vn)
+									else:
+										new_deferred.append((vn, ssa_tmp, llvm_typ))
+								if new_deferred:
+									cr['_deferred_frees'] = new_deferred
+								else:
+									cr.pop('_deferred_frees', None)
+					return tmp2
 		if expr.name in func_table:
 			ret_ty = func_table[expr.name]
 			if ret_ty == 'void':
@@ -1739,18 +1833,34 @@ def infer_type(expr: Expr) -> str:
 			if fn.name == expr.name and fn.type_params:
 				if not expr.args:
 					raise RuntimeError(f"Generic function '{expr.name}' called with no arguments")
-				inferred_T = infer_type(expr.args[0])
-				mononame = f"{expr.name}_{inferred_T}"
+				arg_types = [infer_type(a) for a in expr.args]
+				actuals: List[str] = []
+				for tp in fn.type_params:
+					found = None
+					for param_idx, (param_typ, _) in enumerate(fn.params):
+						if param_typ == tp or tp in param_typ:
+							if param_idx < len(arg_types):
+								found = arg_types[param_idx]
+								break
+					if found is None:
+						if fn.ret_type == tp and len(arg_types) > 0:
+							found = arg_types[0]
+					if found is None:
+						raise RuntimeError(f"Cannot infer type parameter '{tp}' for generic function '{expr.name}'")
+					actuals.append(found)
+				mangled_parts = [mangle_type(a) for a in actuals]
+				mononame = f"{expr.name}_" + "_".join(mangled_parts)
 				if mononame not in func_table:
 					new_ret = fn.ret_type
-					if new_ret == fn.type_params[0]:
-						new_ret = inferred_T
+					if new_ret in fn.type_params:
+						idx = fn.type_params.index(new_ret)
+						new_ret = actuals[idx]
 					func_table[mononame] = type_map.get(new_ret, f"%struct.{new_ret}")
 				new_ret = fn.ret_type
-				if new_ret == fn.type_params[0]:
-					return inferred_T
+				if new_ret in fn.type_params:
+					idx = fn.type_params.index(new_ret)
+					return actuals[idx]
 				return new_ret
-		raise RuntimeError(f"Call to undefined function '{expr.name}'")
 	if isinstance(expr, Index):
 		if not isinstance(expr.array, Var):
 			raise RuntimeError(f"Only direct variable array indexing is supported, got: {expr.array}")
@@ -2101,6 +2211,21 @@ def gen_func(fn: Func) -> List[str]:
 		symbol_table.declare(name, llvm_ty, name)
 	has_return = False
 	for stmt in fn.body or []:
+		if isinstance(stmt, VarDecl):
+			if "[" in stmt.typ:
+				base, count = stmt.typ.split("[")
+				count = count[:-1]
+				llvm_ty = f"[{count} x {type_map[base]}]"
+				if not symbol_table.lookup(stmt.name):
+					out.append(f"  %{stmt.name}_addr = alloca {llvm_ty}")
+					out.append(f"  %{stmt.name}_len  = alloca i32")
+					out.append(f"  store i32 {count}, i32* %{stmt.name}_len")
+					symbol_table.declare(stmt.name, llvm_ty, stmt.name)
+			else:
+				llvm_ty = llvm_ty_of(stmt.typ)
+				if not symbol_table.lookup(stmt.name):
+					out.append(f"  %{stmt.name}_addr = alloca {llvm_ty}")
+					symbol_table.declare(stmt.name, llvm_ty, stmt.name)
 		if isinstance(stmt, ReturnStmt):
 			gen_stmt(stmt, out, ret_ty)
 			has_return = True
@@ -2283,6 +2408,8 @@ def check_types(prog: Program):
 		wc += 1
 		crumb_map[name] = (rmax, wmax, rc, wc)
 	def _subst_type(typ: str, subst: Dict[str, str]) -> str:
+		if typ is None:
+			return typ
 		if typ in subst:
 			return subst[typ]
 		for param, concrete in subst.items():
