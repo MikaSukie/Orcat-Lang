@@ -1,0 +1,14 @@
+/*
+ * Example file for ORCatLang
+ *
+ * This file is for demonstration purposes and is not licensed.
+ * Feel free to modify, share, or adapt this file as you like.
+ */
+pub fn <F, U> pair(F a, U b) <void> {
+  // do something
+  return;
+}
+
+fn main() <void> {
+  pair(1, 2.0);
+}
