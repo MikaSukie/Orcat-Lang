@@ -1,0 +1,16 @@
+/*
+ * Example file for ORCatLang
+ *
+ * This file is for demonstration purposes and is not licensed.
+ * Feel free to modify, share, or adapt this file as you like.
+ */
+import C_io;
+
+enum Option<T> {
+  None;
+  Some: T;
+}
+
+pub fn main() <int> {
+    return 0;
+}
