@@ -45,7 +45,8 @@ SINGLE_CHARS = {
 	',': 'COMMA',	';': 'SEMI',
 	'=': 'EQUAL',	'+': 'PLUS',	 '-': 'MINUS',	'*': 'STAR',
 	'/': 'SLASH',	'<': 'LT',	   '>': 'GT',	   '[': 'LBRACKET',
-	']': 'RBRACKET', '?': 'QUESTION', '.': 'DOT', ':': 'COLON', '%': 'PERCENT', '!': 'BANG'
+	']': 'RBRACKET', '?': 'QUESTION', '.': 'DOT', ':': 'COLON', '%': 'PERCENT', 
+	'!': 'BANG', '&': 'AMP'
 	}
 MULTI_CHARS = {
 	'==': 'EQEQ', '!=': 'NEQ', '<=': 'LE', '>=': 'GE', '->': 'ARROW', '&&': 'AND',  '||': 'OR',
@@ -327,6 +328,9 @@ class UnaryDeref(Expr):
 class BinOp(Expr): op: str; left: Expr; right: Expr
 @dataclass
 class Call(Expr): name: str; args: List[Expr]
+@dataclass
+class AddressOf(Expr):
+	expr: Expr
 @dataclass
 class EnumVariant:
 	name: str
@@ -885,6 +889,10 @@ class Parser:
 			self.bump()
 			inner = self.parse_primary()
 			return UnaryDeref(inner)
+		if self.peek().kind == 'AMP':
+			self.bump()
+			inner = self.parse_primary()
+			return AddressOf(inner)
 		if self.peek().kind == 'BANG':
 			self.bump()
 			inner = self.parse_primary()
@@ -1190,6 +1198,62 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 			return val
 		else:
 			raise RuntimeError(f"Unsupported unary operator: {expr.op}")
+	if isinstance(expr, AddressOf):
+		inner = expr.expr
+		if isinstance(inner, Var):
+			res = symbol_table.lookup(inner.name)
+			if res is None:
+				raise RuntimeError(f"Undefined variable: {inner.name}")
+			llvm_ty, ir_name = res
+			if ir_name.startswith('@'):
+				return ir_name
+			return f"%{ir_name}_addr"
+		if isinstance(inner, FieldAccess):
+			base_ptr = gen_expr(inner.base, out)
+			base_raw = infer_type(inner.base)
+			base_name = base_raw
+			if base_name.endswith("*"):
+				base_name = base_name[:-1]
+			if base_name.startswith("%struct."):
+				base_name = base_name[len("%struct."):]
+			if base_name not in struct_field_map:
+				raise RuntimeError(f"Struct type '{base_name}' not found")
+			fields = struct_field_map[base_name]
+			field_dict = dict(fields)
+			if inner.field not in field_dict:
+				raise RuntimeError(f"Field '{inner.field}' not in struct '{base_name}'")
+			index = list(field_dict.keys()).index(inner.field)
+			ptr = new_tmp()
+			out.append(f"  {ptr} = getelementptr inbounds %struct.{base_name}, %struct.{base_name}* {base_ptr}, i32 0, i32 {index}")
+			return ptr
+		if isinstance(inner, Index):
+			if not isinstance(inner.array, Var):
+				raise RuntimeError(f"Only direct variable array indexing is supported for address-of, got: {inner.array}")
+			var_name = inner.array.name
+			idx = gen_expr(inner.index, out)
+			arr_info = symbol_table.lookup(var_name)
+			if not arr_info:
+				raise RuntimeError(f"Undefined array: {var_name}")
+			llvm_ty, name = arr_info
+			base_ty = extract_array_base_type(llvm_ty)
+			idx_ty = infer_type(inner.index)
+			idx_llvm = type_map[idx_ty]
+			if idx_llvm != "i32":
+				idx_cast = new_tmp()
+				if idx_llvm.startswith("i") and int(idx_llvm[1:]) > 32:
+					out.append(f"  {idx_cast} = trunc {idx_llvm} {idx} to i32")
+				else:
+					out.append(f"  {idx_cast} = sext {idx_llvm} {idx} to i32")
+			else:
+				idx_cast = idx
+			if name.startswith('@'):
+				arr_addr_token = name
+			else:
+				arr_addr_token = f"%{name}_addr"
+			gep_tmp = new_tmp()
+			out.append(f"  {gep_tmp} = getelementptr inbounds {llvm_ty}, {llvm_ty}* {arr_addr_token}, i32 0, i32 {idx_cast}")
+			return gep_tmp
+		raise RuntimeError("Address-of not supported for this expression form")
 	if isinstance(expr, IntLit):
 		tmp = new_tmp()
 		inferred = infer_type(expr)
@@ -1814,6 +1878,9 @@ def infer_type(expr: Expr) -> str:
 		if expr.op in {'==', '!=', '<', '<=', '>', '>='}:
 			return 'bool'
 		return common
+	if isinstance(expr, AddressOf):
+		inner_ty = infer_type(expr.expr)
+		return inner_ty + "*"
 	if isinstance(expr, Call):
 		for ename, variants in enum_variant_map.items():
 			for vname, payload in variants:
@@ -2500,6 +2567,14 @@ def check_types(prog: Program):
 			if inner_type != expr.typ and (not common or common != expr.typ):
 				raise TypeError(f"Cannot cast {inner_type} to {expr.typ}")
 			return expr.typ
+		if isinstance(expr, AddressOf):
+			if isinstance(expr.expr, Var):
+				typ = env.lookup(expr.expr.name)
+				if not typ:
+					raise TypeError(f"Use of undeclared variable '{expr.expr.name}'")
+				return typ + '*'
+			inner_t = check_expr(expr.expr)
+			return inner_t + '*'
 		if isinstance(expr, Var):
 			typ = env.lookup(expr.name)
 			if not typ:
