@@ -2445,15 +2445,19 @@ def compile_program(prog: Program) -> str:
 			label = f"@.str{len(string_constants)}"
 			esc = ""
 			for ch in g.expr.value:
-				if ch == '\n': esc += r'\0A'
-				elif ch == '\t': esc += r'\09'
-				elif ch == '\\': esc += r'\\'
-				elif ch == '"': esc += r'\"'
-				else: esc += ch
+				if ch == '\n':
+					esc += r'\0A'
+				elif ch == '\t':
+					esc += r'\09'
+				elif ch == '\\':
+					esc += r'\\'
+				elif ch == '"':
+					esc += r'\"'
+				else:
+					esc += ch
 			length = len(g.expr.value) + 1
 			string_constants.append(
-				f'{label} = private unnamed_addr constant [{length} x i8] c"{esc}\\00"'
-			)
+				f'{label} = private unnamed_addr constant [{length} x i8] c"{esc}\\00"')
 			initializer = f"getelementptr inbounds ([{length} x i8], [{length} x i8]* {label}, i32 0, i32 0)"
 			llvm_ty = "i8*"
 		if getattr(g, "is_extern", False):
@@ -2463,16 +2467,11 @@ def compile_program(prog: Program) -> str:
 				symbol_table.declare(f"{g.name}_len", "i32", f"@{g.name}_len")
 			symbol_table.declare(g.name, llvm_ty, f"@{g.name}")
 			continue
-		else:
-			lines.append(f"@{g.name} = global {llvm_ty} {initializer}")
-			if is_array:
-				lines.append(f"@{g.name}_len = global i32 {arr_count}")
-				symbol_table.declare(f"{g.name}_len", "i32", f"@{g.name}_len")
-			symbol_table.declare(g.name, llvm_ty, f"@{g.name}")
+		lines.append(f"@{g.name} = global {llvm_ty} {initializer}")
+		symbol_table.declare(g.name, llvm_ty, f"@{g.name}")
 		if is_array:
 			lines.append(f"@{g.name}_len = global i32 {arr_count}")
 			symbol_table.declare(f"{g.name}_len", "i32", f"@{g.name}_len")
-		symbol_table.declare(g.name, llvm_ty, f"@{g.name}")
 	struct_llvm_defs: List[str] = []
 	for sdef in prog.structs:
 		field_tys: List[str] = []
