@@ -19,11 +19,12 @@ compiled=""
 builtins_emitted = False
 TYPE_TOKENS = {
 	'IDENT', 'INT', 'INT8', 'INT16', 'INT32', 'INT64',
-	'FLOAT', 'STRING', 'BOOL', 'CHAR', 'VOID'
+	'FLOAT', 'STRING', 'BOOL', 'CHAR', 'VOID', 'FLOAT32'
 	}
 CAST_TYPE_TOKENS = {
 	'INT', 'INT8', 'INT16', 'INT32', 'INT64',
-	'FLOAT', 'STRING', 'BOOL', 'CHAR', 'VOID'
+	'FLOAT', 'STRING', 'BOOL', 'CHAR', 'VOID',
+	'FLOAT32'
 }
 @dataclass
 class Token:
@@ -38,7 +39,7 @@ KEYWORDS = {
 	'float', 'bool', 'char', 'string', 'void',
 	'true', 'false', 'struct', 'enum', 'match', 'nomd',
 	'pin', 'crumble', 'null', 'continue', 'break',
-	'async', 'await'
+	'async', 'await', 'float32'
 	}
 SINGLE_CHARS = {
 	'(': 'LPAREN',   ')': 'RPAREN',   '{': 'LBRACE',   '}': 'RBRACE',
@@ -215,15 +216,20 @@ def lex(source: str) -> List[Token]:
 				while i < len(source) and source[i].isdigit():
 					i += 1
 				is_float = True
+			is_float32 = False
 			if i < len(source) and source[i] in {'f', 'F'}:
+				is_float32 = True
 				i += 1
 				is_float = True
-			val = source[start:i]
+			raw = source[start:i]
 			if is_float:
-				tokens.append(Token('FLOAT', val, line, col))
+				if is_float32:
+					tokens.append(Token('FLOAT32', raw[:-1], line, col))
+				else:
+					tokens.append(Token('FLOAT', raw, line, col))
 			else:
-				tokens.append(Token('INT', val, line, col))
-			col += len(val)
+				tokens.append(Token('INT', raw, line, col))
+			col += len(raw)
 			continue
 		if c == '"':
 			i += 1
@@ -300,7 +306,9 @@ class Stmt: pass
 @dataclass
 class IntLit(Expr): value: int
 @dataclass
-class FloatLit(Expr): value: float
+class FloatLit(Expr):
+	value: float
+	bits: int = 64
 @dataclass
 class BoolLit(Expr): value: bool
 @dataclass
@@ -918,8 +926,11 @@ class Parser:
 			if t.kind == 'INT':
 				return IntLit(int(t.value, 0))
 			if t.kind == 'FLOAT':
-				val = t.value.rstrip('fF')
-				return FloatLit(float(val))
+				val = t.value
+				return FloatLit(float(val), 64)
+			if t.kind == 'FLOAT32':
+				val = t.value
+				return FloatLit(float(val), 32)
 			if t.kind == 'STRING':
 				return StrLit(t.value)
 			if t.kind == 'CHAR':
@@ -1002,10 +1013,13 @@ def unify_types(t1: str, t2: str) -> Optional[str]:
 		return int_common
 	if (t1, t2) in {("float", "int"), ("int", "float")}:
 		return "float"
+	if (t1, t2) in {("float32", "int"), ("int", "float32")}:
+		return "float32"
 	return None
 type_map = {
 	'int': 'i64', 'int8': 'i8', 'int16': 'i16', 'int32': 'i32', 'void': 'void',
 	'int64': 'i64', 'float': 'double', 'bool': 'i1', 'char': 'i8', 'string': 'i8*', 'void*': 'i8*',
+	'float32': 'float',
 }
 struct_llvm_defs: List[str] = []
 symbol_table = SymbolTable()
@@ -1045,7 +1059,9 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 			if dst_t == 'string':
 				return gen_expr(StrLit(str(val)), out)
 			if dst_t == 'float':
-				return gen_expr(FloatLit(float(val)), out)
+				return gen_expr(FloatLit(float(val), 64), out)
+			if dst_t == 'float32':
+				return gen_expr(FloatLit(float(val), 32), out)
 			if dst_t == 'bool':
 				return gen_expr(BoolLit(bool(val)), out)
 			if dst_llvm.startswith('i'):
@@ -1067,6 +1083,10 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 			if dst_t == 'float':
 				tmp = new_tmp()
 				out.append(f"  {tmp} = fadd double 0.0, {inner.value:.8e}")
+				return tmp
+			if dst_t == 'float32':
+				tmp = new_tmp()
+				out.append(f"  {tmp} = fadd float 0.0, {inner.value:.8e}")
 				return tmp
 		if isinstance(inner, BoolLit):
 			if dst_t == 'string':
@@ -1102,6 +1122,15 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 					return tmp
 				except Exception:
 					raise RuntimeError(f"Cannot convert string '{inner.value}' to float")
+			if dst_t == 'float32':
+				try:
+					fval = float(inner.value)
+					tmp = new_tmp()
+					fstr = f"{fval:.8e}"
+					out.append(f"  {tmp} = fadd float 0.0, {fstr}")
+					return tmp
+				except Exception:
+					raise RuntimeError(f"Cannot convert string '{inner.value}' to float32")
 		val = gen_expr(inner, out)
 		src_t = infer_type(inner)
 		src_llvm = llvm_ty_of(src_t)
@@ -1116,13 +1145,22 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 			else:
 				out.append(f"  {cast_tmp} = sext {src_llvm} {val} to {dst_llvm}")
 			return cast_tmp
-		if src_llvm.startswith('i') and dst_llvm == 'double':
+		if src_llvm.startswith('i') and dst_llvm in ('double', 'float'):
 			cast_tmp = new_tmp()
-			out.append(f"  {cast_tmp} = sitofp {src_llvm} {val} to double")
+			out.append(f"  {cast_tmp} = sitofp {src_llvm} {val} to {dst_llvm}")
 			return cast_tmp
-		if src_llvm == 'double' and dst_llvm.startswith('i'):
+		if src_llvm in ('double', 'float') and dst_llvm.startswith('i'):
 			cast_tmp = new_tmp()
-			out.append(f"  {cast_tmp} = fptosi double {val} to {dst_llvm}")
+			out.append(f"  {cast_tmp} = fptosi {src_llvm} {val} to {dst_llvm}")
+			return cast_tmp
+		if src_llvm in ('double', 'float') and dst_llvm in ('double', 'float') and src_llvm != dst_llvm:
+			cast_tmp = new_tmp()
+			if src_llvm == 'double' and dst_llvm == 'float':
+				out.append(f"  {cast_tmp} = fptrunc double {val} to float")
+			elif src_llvm == 'float' and dst_llvm == 'double':
+				out.append(f"  {cast_tmp} = fpext float {val} to double")
+			else:
+				raise RuntimeError(f"Unhandled float conversion {src_llvm} -> {dst_llvm}")
 			return cast_tmp
 		if src_llvm.endswith('*') and dst_llvm.endswith('*'):
 			cast_tmp = new_tmp()
@@ -1188,8 +1226,8 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 		llvm_ty = llvm_ty_of(ty)
 		tmp = new_tmp()
 		if expr.op == '-':
-			if llvm_ty == 'double' or ty == 'float':
-				out.append(f"  {tmp} = fsub double 0.0, {val}")
+			if llvm_ty in ('double', 'float'):
+				out.append(f"  {tmp} = fsub {llvm_ty} 0.0, {val}")
 			else:
 				out.append(f"  {tmp} = sub {llvm_ty} 0, {val}")
 			_maybe_flush_deferred(expr.expr, val)
@@ -1302,7 +1340,8 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 	if isinstance(expr, FloatLit):
 		tmp = new_tmp()
 		float_val = format_float(expr.value)
-		out.append(f"  {tmp} = fadd double 0.0, {float_val}")
+		llvm_fp = 'double' if expr.bits == 64 else 'float'
+		out.append(f"  {tmp} = fadd {llvm_fp} 0.0, {float_val}")
 		return tmp
 	if isinstance(expr, BoolLit):
 		tmp = new_tmp()
@@ -1452,7 +1491,7 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 		tmp = new_tmp()
 		if expr.op == '%':
 			op = 'srem'
-			if llvm_ty == 'double':
+			if llvm_ty in ('double', 'float'):
 				op = 'frem'
 			out.append(f"  {tmp} = {op} {llvm_ty} {lhs}, {rhs}")
 			_maybe_flush_deferred(expr.left, lhs)
@@ -1464,7 +1503,7 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 			_maybe_flush_deferred(expr.left, lhs)
 			_maybe_flush_deferred(expr.right, rhs)
 			return tmp
-		if llvm_ty == 'double':
+		if llvm_ty in ('double', 'float'):
 			op = {
 				'+': 'fadd', '-': 'fsub', '*': 'fmul', '/': 'fdiv', '==': 'fcmp oeq', '!=': 'fcmp one',
 				'<': 'fcmp olt', '<=': 'fcmp ole', '>': 'fcmp ogt', '>=': 'fcmp oge'
@@ -1806,7 +1845,7 @@ def infer_type(expr: Expr) -> str:
 	if isinstance(expr, IntLit):
 		return 'int'
 	if isinstance(expr, FloatLit):
-		return 'float'
+		return 'float32' if getattr(expr, 'bits', 64) == 32 else 'float'
 	if isinstance(expr, BoolLit):
 		return 'bool'
 	if isinstance(expr, CharLit):
@@ -2548,7 +2587,7 @@ def check_types(prog: Program):
 		if isinstance(expr, IntLit):
 			return 'int'
 		if isinstance(expr, FloatLit):
-			return 'float'
+			return 'float32' if getattr(expr, 'bits', 64) == 32 else 'float'
 		if isinstance(expr, BoolLit):
 			return 'bool'
 		if isinstance(expr, CharLit):
@@ -3200,3 +3239,4 @@ def main():
 		f.write(llvm)
 if __name__ == "__main__":
 	main()
+	
