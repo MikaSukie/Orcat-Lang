@@ -1487,66 +1487,71 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 			_maybe_flush_deferred(expr.left, lhs)
 			_maybe_flush_deferred(expr.right, rhs)
 			return res
-		llvm_ty = type_map[ty]
+		common_t = unify_types(infer_type(expr.left), infer_type(expr.right))
+		if common_t is None:
+			lt = infer_type(expr.left)
+			rt = infer_type(expr.right)
+			raise RuntimeError(f"Cannot unify operand types for '{expr.op}': left={lt}, right={rt}")
+		llvm_ty = llvm_ty_of(common_t)
 		tmp = new_tmp()
 		if expr.op == '%':
-			op = 'srem'
-			if llvm_ty == 'double':
+			if llvm_ty in ('double', 'float'):
 				op = 'frem'
+			else:
+				op = 'urem' if is_unsigned_int_type(common_t) else 'srem'
 			out.append(f"  {tmp} = {op} {llvm_ty} {lhs}, {rhs}")
 			_maybe_flush_deferred(expr.left, lhs)
 			_maybe_flush_deferred(expr.right, rhs)
 			return tmp
 		if expr.op in {'&&', '||'}:
-			op = 'and' if expr.op == '&&' else 'or'
+			out.append(f"  {tmp} = {'and' if expr.op == '&&' else 'or'} {llvm_ty} {lhs}, {rhs}")
+			_maybe_flush_deferred(expr.left, lhs)
+			_maybe_flush_deferred(expr.right, rhs)
+			return tmp
+		if llvm_ty in ('double', 'float'):
+			op_map = {
+				'+': 'fadd', '-': 'fsub', '*': 'fmul', '/': 'fdiv',
+				'==': 'fcmp oeq', '!=': 'fcmp one',
+				'<': 'fcmp olt', '<=': 'fcmp ole', '>': 'fcmp ogt', '>=': 'fcmp oge'
+			}
+			op = op_map.get(expr.op)
+			if not op:
+				raise RuntimeError(f"Unsupported float operator '{expr.op}' for type {common_t}")
 			out.append(f"  {tmp} = {op} {llvm_ty} {lhs}, {rhs}")
 			_maybe_flush_deferred(expr.left, lhs)
 			_maybe_flush_deferred(expr.right, rhs)
 			return tmp
-		if llvm_ty == 'double':
-			op = {
-				'+': 'fadd', '-': 'fsub', '*': 'fmul', '/': 'fdiv', '==': 'fcmp oeq', '!=': 'fcmp one',
-				'<': 'fcmp olt', '<=': 'fcmp ole', '>': 'fcmp ogt', '>=': 'fcmp oge'
-			}.get(expr.op)
-		else:
-			is_int = llvm_ty.startswith('i')
-			is_unsigned = False
-			left_t = infer_type(expr.left)
-			right_t = infer_type(expr.right)
-			common_t = unify_types(left_t, right_t)
-			is_unsigned = is_unsigned_int_type(common_t) if common_t else False
-			arith_map = {
-				'+': 'add', '-': 'sub', '*': 'mul',
-			}
-			if expr.op == '/':
-				op = 'udiv' if is_unsigned else 'sdiv'
+		if llvm_ty.startswith('i'):
+			unsigned = is_unsigned_int_type(common_t)
+			if expr.op in {'+', '-', '*'}:
+				op = {'+': 'add', '-': 'sub', '*': 'mul'}[expr.op]
+			elif expr.op == '/':
+				op = 'udiv' if unsigned else 'sdiv'
 			elif expr.op == '%':
-				op = 'urem' if is_unsigned else 'srem'
+				op = 'urem' if unsigned else 'srem'
 			elif expr.op in {'==', '!='}:
-				op = 'icmp eq' if expr.op == '==' else 'icmp ne'
+				op = 'icmp ' + ('eq' if expr.op == '==' else 'ne')
 			elif expr.op in {'<', '<=', '>', '>='}:
-				if is_unsigned:
-					op = {
-						'<': 'icmp ult', '<=': 'icmp ule',
-						'>': 'icmp ugt', '>=': 'icmp uge'
-					}.get(expr.op)
-				else:
-					op = {
-						'<': 'icmp slt', '<=': 'icmp sle',
-						'>': 'icmp sgt', '>=': 'icmp sge'
-					}.get(expr.op)
+				op = {
+					'<': 'icmp ult' if unsigned else 'icmp slt',
+					'<=': 'icmp ule' if unsigned else 'icmp sle',
+					'>': 'icmp ugt' if unsigned else 'icmp sgt',
+					'>=': 'icmp uge' if unsigned else 'icmp sge',
+				}[expr.op]
 			elif expr.op in {'&', '|', '^', '<<'}:
-				op = {'&': 'and', '|': 'or', '^': 'xor', '<<': 'shl'}.get(expr.op)
+				op = {'&': 'and', '|': 'or', '^': 'xor', '<<': 'shl'}[expr.op]
 			elif expr.op == '>>':
-				op = 'lshr' if is_unsigned else 'ashr'
+				op = 'lshr' if unsigned else 'ashr'
 			else:
-				op = None
-		if not op:
-			raise RuntimeError(f"Unsupported binary operator: {expr.op}")
-		out.append(f"  {tmp} = {op} {llvm_ty} {lhs}, {rhs}")
-		_maybe_flush_deferred(expr.left, lhs)
-		_maybe_flush_deferred(expr.right, rhs)
-		return tmp
+				raise RuntimeError(f"Unsupported integer operator '{expr.op}' for type {common_t}")
+			out.append(f"  {tmp} = {op} {llvm_ty} {lhs}, {rhs}")
+			_maybe_flush_deferred(expr.left, lhs)
+			_maybe_flush_deferred(expr.right, rhs)
+			return tmp
+		lt = infer_type(expr.left)
+		rt = infer_type(expr.right)
+		raise RuntimeError(
+			f"Unsupported binary operator '{expr.op}' for operand types: left={lt}, right={rt}, common={common_t}")
 	if isinstance(expr, Call):
 		args_ir: List[str] = []
 		arg_types: List[str] = []
@@ -3253,4 +3258,3 @@ def main():
 		f.write(llvm)
 if __name__ == "__main__":
 	main()
-	
