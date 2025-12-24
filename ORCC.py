@@ -338,6 +338,7 @@ class GlobalVar:
 	expr: Optional[Expr]
 	nomd: bool = False
 	pinned: bool = False
+	is_extern: bool = False
 @dataclass
 class DerefStmt(Stmt):
 	varname: str
@@ -509,7 +510,8 @@ class Parser:
 					elif self.peek().kind == 'IDENT':
 						raw = self.bump().value
 					else:
-						raise SyntaxError(f"Expected import path, got {self.peek().kind} at {self.peek().line}:{self.peek().col}")
+						raise SyntaxError(
+							f"Expected import path, got {self.peek().kind} at {self.peek().line}:{self.peek().col}")
 					imports.append(raw)
 					if self.peek().kind == 'SEMI':
 						self.bump()
@@ -518,17 +520,23 @@ class Parser:
 						self.bump()
 						continue
 					else:
-						raise SyntaxError(f"Expected ',' or ';' in import list, got {self.peek().kind} at {self.peek().line}:{self.peek().col}")
-			elif self.peek().kind in {'NOMD', 'PIN'}:
+						raise SyntaxError(
+							f"Expected ',' or ';' in import list, got {self.peek().kind} at {self.peek().line}:{self.peek().col}")
+			elif self.peek().kind in {'EXTERN', 'NOMD', 'PIN'}:
+				is_extern = False
 				nomd = False
 				pinned = False
-				while self.peek().kind in {'NOMD', 'PIN'}:
-					if self.match('NOMD'):
+				while self.peek().kind in {'EXTERN', 'NOMD', 'PIN'}:
+					if self.match('EXTERN'):
+						is_extern = True
+					elif self.match('NOMD'):
 						nomd = True
 					elif self.match('PIN'):
 						pinned = True
 				decl = self.parse_var_decl()
-				globals.append(GlobalVar(decl.typ, decl.name, decl.expr, nomd=nomd, pinned=pinned))
+				if is_extern and decl.expr is not None:
+					raise SyntaxError("extern globals cannot have initializers")
+				globals.append(GlobalVar(decl.typ, decl.name, decl.expr, nomd=nomd, pinned=pinned, is_extern=is_extern))
 			elif self.peek().kind == 'STRUCT':
 				structs.append(self.parse_struct_def())
 			elif self.peek().kind == 'ENUM':
@@ -2448,7 +2456,19 @@ def compile_program(prog: Program) -> str:
 			)
 			initializer = f"getelementptr inbounds ([{length} x i8], [{length} x i8]* {label}, i32 0, i32 0)"
 			llvm_ty = "i8*"
-		lines.append(f"@{g.name} = global {llvm_ty} {initializer}")
+		if getattr(g, "is_extern", False):
+			lines.append(f"@{g.name} = external global {llvm_ty}")
+			if is_array:
+				lines.append(f"@{g.name}_len = external global i32")
+				symbol_table.declare(f"{g.name}_len", "i32", f"@{g.name}_len")
+			symbol_table.declare(g.name, llvm_ty, f"@{g.name}")
+			continue
+		else:
+			lines.append(f"@{g.name} = global {llvm_ty} {initializer}")
+			if is_array:
+				lines.append(f"@{g.name}_len = global i32 {arr_count}")
+				symbol_table.declare(f"{g.name}_len", "i32", f"@{g.name}_len")
+			symbol_table.declare(g.name, llvm_ty, f"@{g.name}")
 		if is_array:
 			lines.append(f"@{g.name}_len = global i32 {arr_count}")
 			symbol_table.declare(f"{g.name}_len", "i32", f"@{g.name}_len")
@@ -3258,3 +3278,4 @@ def main():
 		f.write(llvm)
 if __name__ == "__main__":
 	main()
+	
