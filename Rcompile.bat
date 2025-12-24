@@ -1,17 +1,30 @@
 @echo off
 cls
 
-set start=%TIME%
 echo ================================
 echo Building with ORCC...
 echo ================================
 echo.
 
-REM Run ORCC.exe and show its output live
-REM python ORCC.py main.orcat -o out.ll
+set start=%TIME%
+
+REM Run ORCC.exe to generate LLVM IR
 ORCC.exe main.orcat -o out.ll
 if errorlevel 1 (
     echo ORCC failed with exit code %ERRORLEVEL%.
+    goto end
+)
+
+echo.
+echo ================================
+echo Optimizing LLVM IR...
+echo ================================
+echo.
+
+REM Optimize IR and produce readable text IR
+opt -O2 -S out.ll -o out.opt.ll
+if errorlevel 1 (
+    echo LLVM optimization failed with exit code %ERRORLEVEL%.
     goto end
 )
 
@@ -21,9 +34,8 @@ echo Compiling with Clang...
 echo ================================
 echo.
 
-REM Run Clang and show its output
-clang -Wno-override-module out.ll stdlib.c -o main.exe
-REM clang -v -Wno-override-module out.ll stdlib.c -o main.exe
+REM Compile optimized IR with Clang
+clang -O2 -Wno-override-module out.opt.ll stdlib.c -o main.exe
 if errorlevel 1 (
     echo Clang failed with exit code %ERRORLEVEL%.
     goto end
@@ -35,7 +47,6 @@ echo Running main.exe...
 echo ================================
 echo.
 
-REM Run main.exe and show its output
 .\main.exe
 set exe_exit=%ERRORLEVEL%
 
@@ -46,25 +57,24 @@ echo ================================
 
 set end=%TIME%
 
+REM Calculate elapsed time in seconds.centiseconds
 call :CalcElapsedTime %start% %end%
 goto end
 
 :CalcElapsedTime
 setlocal
-
 set start=%1
 set end=%2
 
 for /F "tokens=1-4 delims=:.," %%a in ("%start%") do (
-  set /A start_h=%%a, start_m=%%b, start_s=%%c, start_cs=%%d
+    set /A sh=%%a, sm=%%b, ss=%%c, sc=%%d
 )
-
 for /F "tokens=1-4 delims=:.," %%a in ("%end%") do (
-  set /A end_h=%%a, end_m=%%b, end_s=%%c, end_cs=%%d
+    set /A eh=%%a, em=%%b, es=%%c, ec=%%d
 )
 
-set /A start_total=((start_h*3600)+(start_m*60)+start_s)*100+start_cs
-set /A end_total=((end_h*3600)+(end_m*60)+end_s)*100+end_cs
+set /A start_total=((sh*3600 + sm*60 + ss)*100 + sc)
+set /A end_total=((eh*3600 + em*60 + es)*100 + ec)
 set /A elapsed=end_total-start_total
 
 if %elapsed% LSS 0 set /A elapsed=8640000+elapsed
@@ -78,4 +88,3 @@ goto :eof
 
 :end
 pause
-
