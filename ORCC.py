@@ -2342,23 +2342,47 @@ def gen_func(fn: Func) -> List[str]:
 		out.append(f"  %{name}_addr = alloca {llvm_ty}")
 		out.append(f"  store {llvm_ty} %{name}, {llvm_ty}* %{name}_addr")
 		symbol_table.declare(name, llvm_ty, name)
+	decls = []
+	def walk(node):
+		if node is None:
+			return
+		if isinstance(node, list):
+			for n in node:
+				walk(n)
+			return
+		if type(node).__name__ == "VarDecl":
+			decls.append(node)
+			return
+		for attr in getattr(node, '__dict__', {}):
+			val = getattr(node, attr)
+			if isinstance(val, list):
+				for v in val:
+					walk(v)
+			elif hasattr(val, '__dict__'):
+				walk(val)
+	for s in fn.body or []:
+		walk(s)
+	seen = set()
+	for stmt in decls:
+		if stmt.name in seen:
+			continue
+		seen.add(stmt.name)
+		if "[" in stmt.typ:
+			base, count = stmt.typ.split("[")
+			count = count[:-1]
+			llvm_ty = f"[{count} x {type_map[base]}]"
+			if not symbol_table.lookup(stmt.name):
+				out.append(f"  %{stmt.name}_addr = alloca {llvm_ty}")
+				out.append(f"  %{stmt.name}_len  = alloca i32")
+				out.append(f"  store i32 {count}, i32* %{stmt.name}_len")
+				symbol_table.declare(stmt.name, llvm_ty, stmt.name)
+		else:
+			llvm_ty = llvm_ty_of(stmt.typ)
+			if not symbol_table.lookup(stmt.name):
+				out.append(f"  %{stmt.name}_addr = alloca {llvm_ty}")
+				symbol_table.declare(stmt.name, llvm_ty, stmt.name)
 	has_return = False
 	for stmt in fn.body or []:
-		if isinstance(stmt, VarDecl):
-			if "[" in stmt.typ:
-				base, count = stmt.typ.split("[")
-				count = count[:-1]
-				llvm_ty = f"[{count} x {type_map[base]}]"
-				if not symbol_table.lookup(stmt.name):
-					out.append(f"  %{stmt.name}_addr = alloca {llvm_ty}")
-					out.append(f"  %{stmt.name}_len  = alloca i32")
-					out.append(f"  store i32 {count}, i32* %{stmt.name}_len")
-					symbol_table.declare(stmt.name, llvm_ty, stmt.name)
-			else:
-				llvm_ty = llvm_ty_of(stmt.typ)
-				if not symbol_table.lookup(stmt.name):
-					out.append(f"  %{stmt.name}_addr = alloca {llvm_ty}")
-					symbol_table.declare(stmt.name, llvm_ty, stmt.name)
 		if isinstance(stmt, ReturnStmt):
 			gen_stmt(stmt, out, ret_ty)
 			has_return = True
@@ -2421,6 +2445,26 @@ def compile_program(prog: Program) -> str:
 	}
 	"""
 	]
+	struct_llvm_defs: List[str] = []
+	for sdef in prog.structs:
+		field_tys: List[str] = []
+		struct_field_map[sdef.name] = [(f.name, f.typ) for f in sdef.fields]
+		for fld in sdef.fields:
+			if fld.typ in type_map:
+				field_tys.append(type_map[fld.typ])
+			else:
+				field_tys.append(f"%struct.{fld.typ}")
+		llvm_line = f"%struct.{sdef.name} = type {{ {', '.join(field_tys)} }}"
+		struct_llvm_defs.append(llvm_line)
+	if struct_llvm_defs:
+		lines.extend(struct_llvm_defs)
+		lines.append("")
+	for ename, variants in enum_variant_map.items():
+		if any(payload is not None for (_, payload) in variants):
+			llvm_line = f"%enum.{ename} = type {{ i32, [8 x i8] }}"
+			lines.append(llvm_line)
+	if any(any(p is not None for (_, p) in v) for v in enum_variant_map.values()):
+		lines.append("")
 	for g in prog.globals:
 		is_array = False
 		arr_count = None
@@ -2472,26 +2516,6 @@ def compile_program(prog: Program) -> str:
 		if is_array:
 			lines.append(f"@{g.name}_len = global i32 {arr_count}")
 			symbol_table.declare(f"{g.name}_len", "i32", f"@{g.name}_len")
-	struct_llvm_defs: List[str] = []
-	for sdef in prog.structs:
-		field_tys: List[str] = []
-		struct_field_map[sdef.name] = [(f.name, f.typ) for f in sdef.fields]
-		for fld in sdef.fields:
-			if fld.typ in type_map:
-				field_tys.append(type_map[fld.typ])
-			else:
-				field_tys.append(f"%struct.{fld.typ}")
-		llvm_line = f"%struct.{sdef.name} = type {{ {', '.join(field_tys)} }}"
-		struct_llvm_defs.append(llvm_line)
-	if struct_llvm_defs:
-		lines.extend(struct_llvm_defs)
-		lines.append("")
-	for ename, variants in enum_variant_map.items():
-		if any(payload is not None for (_, payload) in variants):
-			llvm_line = f"%enum.{ename} = type {{ i32, [8 x i8] }}"
-			lines.append(llvm_line)
-	if any(any(p is not None for (_, p) in v) for v in enum_variant_map.values()):
-		lines.append("")
 	existing_globals = set()
 	existing_funcs = set()
 	for line in lines:
