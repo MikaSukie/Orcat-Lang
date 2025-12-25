@@ -2531,7 +2531,6 @@ def compile_program(prog: Program) -> str:
 		lines.append("@orcat_argc_global = global i64 0")
 		lines.append("@orcat_argv_global = global i8** null")
 		lines.append("")
-		lines.append("")
 		builtins_emitted = True
 	async_defs: List[str] = []
 	for fn in prog.funcs:
