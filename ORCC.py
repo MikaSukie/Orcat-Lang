@@ -522,6 +522,8 @@ class Parser:
 					else:
 						raise SyntaxError(
 							f"Expected ',' or ';' in import list, got {self.peek().kind} at {self.peek().line}:{self.peek().col}")
+			elif self.peek().kind == 'EXTERN' and self.tokens[self.pos + 1].kind == 'FN':
+				funcs.append(self.parse_func())
 			elif self.peek().kind in {'EXTERN', 'NOMD', 'PIN'}:
 				is_extern = False
 				nomd = False
