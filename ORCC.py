@@ -2418,6 +2418,7 @@ def compile_program(prog: Program) -> str:
 	func_table["exit"] = "void"
 	func_table["malloc"] = "i8*"
 	func_table["free"] = "void"
+	func_table["puts"] = "void"
 	has_user_main = False
 	for fn in prog.funcs:
 		if fn.name == "main":
@@ -2756,6 +2757,13 @@ def check_types(prog: Program):
 				arg_ty = arg_types[0]
 				if not arg_ty.endswith("*"):
 					raise TypeError("free() expects a pointer argument")
+				return "void"
+			if expr.name == "puts":
+				if len(arg_types) != 1:
+					raise TypeError("puts() takes exactly one string argument")
+				arg_ty = arg_types[0]
+				if arg_ty != "string" and not arg_ty.endswith("*"):
+					raise TypeError("puts() expects a string (or pointer) argument")
 				return "void"
 			vm = variant_map.get(expr.name)
 			if vm is not None:
