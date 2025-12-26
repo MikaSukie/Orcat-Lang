@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 '''
  * This file is licensed under the GPL-3 License (or AGPL-3 if applicable)
  * Copyright (C) 2025 MikaSukie
@@ -1687,7 +1688,8 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 					if isinstance(e, BinOp):
 						return BinOp(e.op, replace_in_expr(e.left), replace_in_expr(e.right))
 					if isinstance(e, Ternary):
-						return Ternary(replace_in_expr(e.cond), replace_in_expr(e.then_expr), replace_in_expr(e.else_expr))
+						return Ternary(replace_in_expr(e.cond), replace_in_expr(e.then_expr),
+									   replace_in_expr(e.else_expr))
 					if isinstance(e, Cast):
 						return Cast(_subst_type(e.typ, subst_map), replace_in_expr(e.expr))
 					if isinstance(e, Call):
@@ -1740,15 +1742,29 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 				new_params = [(_subst_type(p[0], subst_map), p[1]) for p in base_fn.params]
 				new_ret = _subst_type(base_fn.ret_type, subst_map)
 				new_body = [replace_in_stmt(stmt) for stmt in base_fn.body] if base_fn.body else None
-				new_fn = Func(base_fn.access, mononame, [], new_params, new_ret, new_body, base_fn.is_extern, base_fn.is_async)
+				new_fn = Func(base_fn.access, mononame, [], new_params, new_ret, new_body, base_fn.is_extern,
+							  base_fn.is_async)
 				all_funcs.append(new_fn)
 				func_table[mononame] = llvm_ty_of(new_ret)
-				llvm_lines = gen_func(new_fn)
-				out.insert(0, "\n".join(llvm_lines))
+				func_table.setdefault(expr.name, func_table[mononame])
 				generated_mono[mononame] = True
-				ret_ty = func_table[mononame]
+				try:
+					llvm_lines = gen_func(new_fn)
+				except Exception:
+					generated_mono.pop(mononame, None)
+					func_table.pop(mononame, None)
+					if func_table.get(expr.name) == func_table.get(mononame):
+						func_table.pop(expr.name, None)
+					try:
+						all_funcs.remove(new_fn)
+					except ValueError:
+						pass
+					raise
+				out.insert(0, "\n".join(llvm_lines))
+				call_target = mononame if mononame in func_table else expr.name
+				ret_ty = func_table.get(call_target, 'void')
 				if ret_ty == 'void':
-					out.append(f"  call void @{mononame}({', '.join(args_ir)})")
+					out.append(f"  call void @{call_target}({', '.join(args_ir)})")
 					for arg_expr, arg_val in zip(expr.args, arg_vals):
 						if isinstance(arg_expr, Var):
 							name = arg_expr.name
@@ -1772,7 +1788,57 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 					return ''
 				else:
 					tmp2 = new_tmp()
-					out.append(f"  {tmp2} = call {ret_ty} @{mononame}({', '.join(args_ir)})")
+					out.append(f"  {tmp2} = call {ret_ty} @{call_target}({', '.join(args_ir)})")
+					for arg_expr, arg_val in zip(expr.args, arg_vals):
+						if isinstance(arg_expr, Var):
+							name = arg_expr.name
+							cr = crumb_runtime.get(name)
+							if cr is not None and '_deferred_frees' in cr:
+								new_deferred = []
+								for (vn, ssa_tmp, llvm_typ) in cr['_deferred_frees']:
+									if ssa_tmp == arg_val:
+										cast_tmp = new_tmp()
+										out.append(f"  {cast_tmp} = bitcast {llvm_typ} {ssa_tmp} to i8*")
+										out.append(f"  call void @free(i8* {cast_tmp})")
+										cr['owned'] = False
+										if vn in owned_vars:
+											owned_vars.discard(vn)
+									else:
+										new_deferred.append((vn, ssa_tmp, llvm_typ))
+								if new_deferred:
+									cr['_deferred_frees'] = new_deferred
+								else:
+									cr.pop('_deferred_frees', None)
+					return tmp2
+			else:
+				call_target = mononame if mononame in func_table else expr.name
+				ret_ty = func_table.get(call_target, 'void')
+				if ret_ty == 'void':
+					out.append(f"  call void @{call_target}({', '.join(args_ir)})")
+					for arg_expr, arg_val in zip(expr.args, arg_vals):
+						if isinstance(arg_expr, Var):
+							name = arg_expr.name
+							cr = crumb_runtime.get(name)
+							if cr is not None and '_deferred_frees' in cr:
+								new_deferred = []
+								for (vn, ssa_tmp, llvm_typ) in cr['_deferred_frees']:
+									if ssa_tmp == arg_val:
+										cast_tmp = new_tmp()
+										out.append(f"  {cast_tmp} = bitcast {llvm_typ} {ssa_tmp} to i8*")
+										out.append(f"  call void @free(i8* {cast_tmp})")
+										cr['owned'] = False
+										if vn in owned_vars:
+											owned_vars.discard(vn)
+									else:
+										new_deferred.append((vn, ssa_tmp, llvm_typ))
+								if new_deferred:
+									cr['_deferred_frees'] = new_deferred
+								else:
+									cr.pop('_deferred_frees', None)
+					return ''
+				else:
+					tmp2 = new_tmp()
+					out.append(f"  {tmp2} = call {ret_ty} @{call_target}({', '.join(args_ir)})")
 					for arg_expr, arg_val in zip(expr.args, arg_vals):
 						if isinstance(arg_expr, Var):
 							name = arg_expr.name
@@ -2411,10 +2477,9 @@ def compile_program(prog: Program) -> str:
 	string_constants.clear()
 	func_table.clear()
 	for fn in prog.funcs:
-		try:
-			llvm_ret_ty = llvm_ty_of(fn.ret_type)
-		except Exception:
-			llvm_ret_ty = "i64"
+		if fn.type_params:
+			continue
+		llvm_ret_ty = llvm_ty_of(fn.ret_type)
 		func_table[fn.name] = llvm_ret_ty
 	func_table["exit"] = "void"
 	func_table["malloc"] = "i8*"
@@ -2691,8 +2756,6 @@ def check_types(prog: Program):
 			inner_type = check_expr(expr.expr)
 			if expr.kind in {"typeof", "etypeof"}:
 				return "string"
-			elif expr.kind in {"kwtypeof", "kwetypeof"}:
-				return inner_type
 		if isinstance(expr, Ternary):
 			cond_type = check_expr(expr.cond)
 			if cond_type != 'bool':
