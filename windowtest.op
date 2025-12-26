@@ -1,0 +1,5 @@
+package_name = main
+c_sources = C_window_fb.c, stdlib.c
+orcc_sources = main.orcat
+pkg_libs = glfw3
+manual_libs = GL
