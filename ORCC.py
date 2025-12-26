@@ -2411,9 +2411,10 @@ def compile_program(prog: Program) -> str:
 	string_constants.clear()
 	func_table.clear()
 	for fn in prog.funcs:
-		if fn.type_params:
-			continue
-		llvm_ret_ty = llvm_ty_of(fn.ret_type)
+		try:
+			llvm_ret_ty = llvm_ty_of(fn.ret_type)
+		except Exception:
+			llvm_ret_ty = "i64"
 		func_table[fn.name] = llvm_ret_ty
 	func_table["exit"] = "void"
 	func_table["malloc"] = "i8*"
