@@ -2001,6 +2001,11 @@ def infer_type(expr: Expr) -> str:
 		return field_dict[expr.field]
 	if isinstance(expr, StructInit):
 		return expr.name + "*"
+	if isinstance(expr, Call) and expr.name == "!" and len(expr.args) == 1:
+		arg_t = infer_type(expr.args[0])
+		if arg_t != "bool":
+			raise RuntimeError(f"Unary ! requires bool, got {arg_t}")
+		return "bool"
 	if isinstance(expr, BinOp):
 		left_type = infer_type(expr.left)
 		right_type = infer_type(expr.right)
