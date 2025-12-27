@@ -1487,17 +1487,26 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 		rhs = gen_expr(expr.right, out)
 		ty = infer_type(expr.left)
 		if ty == "string" and expr.op == "+":
-			b = new_tmp()
-			out.append(f"  {b} = call i8* @sb_create()")
-			b1 = new_tmp()
-			out.append(f"  {b1} = call i8* @sb_append_str(i8* {b}, i8* {lhs})")
-			b2 = new_tmp()
-			out.append(f"  {b2} = call i8* @sb_append_str(i8* {b1}, i8* {rhs})")
-			res = new_tmp()
-			out.append(f"  {res} = call i8* @sb_finish(i8* {b2})")
+			len_l = new_tmp()
+			out.append(f"  {len_l} = call i64 @strlen(i8* {lhs})")
+			len_r = new_tmp()
+			out.append(f"  {len_r} = call i64 @strlen(i8* {rhs})")
+			total = new_tmp()
+			out.append(f"  {total} = add i64 {len_l}, {len_r}")
+			alloc_size = new_tmp()
+			out.append(f"  {alloc_size} = add i64 {total}, 1")
+			raw = new_tmp()
+			out.append(f"  {raw} = call i8* @malloc(i64 {alloc_size})")
+			out.append(f"  call void @llvm.memcpy.p0i8.p0i8.i64(i8* {raw}, i8* {lhs}, i64 {len_l}, i32 1, i1 false)")
+			dest_rhs = new_tmp()
+			out.append(f"  {dest_rhs} = getelementptr inbounds i8, i8* {raw}, i64 {len_l}")
+			out.append(f"  call void @llvm.memcpy.p0i8.p0i8.i64(i8* {dest_rhs}, i8* {rhs}, i64 {len_r}, i32 1, i1 false)")
+			term_ptr = new_tmp()
+			out.append(f"  {term_ptr} = getelementptr inbounds i8, i8* {raw}, i64 {total}")
+			out.append(f"  store i8 0, i8* {term_ptr}")
 			_maybe_flush_deferred(expr.left, lhs)
 			_maybe_flush_deferred(expr.right, rhs)
-			return res
+			return raw
 		common_t = unify_types(infer_type(expr.left), infer_type(expr.right))
 		if common_t is None:
 			lt = infer_type(expr.left)
@@ -2490,6 +2499,7 @@ def compile_program(prog: Program) -> str:
 	func_table["malloc"] = "i8*"
 	func_table["free"] = "void"
 	func_table["puts"] = "void"
+	func_table["strlen"] = "i64"
 	has_user_main = False
 	for fn in prog.funcs:
 		if fn.name == "main":
@@ -2507,6 +2517,7 @@ def compile_program(prog: Program) -> str:
 		"declare i8* @malloc(i64)",
 		"declare void @free(i8*)",
 		"",
+		"declare i64 @strlen(i8*)",
 		"declare void @puts(i8*)",
 		"declare void @exit(i64)",
 		"""
