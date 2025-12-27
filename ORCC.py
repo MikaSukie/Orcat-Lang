@@ -3349,11 +3349,23 @@ def main():
 				candidates += [imp + ".orcat", imp + ".sorcat"]
 			resolved_path = None
 			for path in candidates:
-				if os.path.exists(path):
+				if os.path.isfile(path):
 					resolved_path = os.path.abspath(path)
 					break
+			if not resolved_path and os.path.isdir(imp):
+				for base in ("index", "main"):
+					for ext in (".orcat", ".sorcat"):
+						candidate = os.path.join(imp, base + ext)
+						if os.path.isfile(candidate):
+							resolved_path = os.path.abspath(candidate)
+							break
+					if resolved_path:
+						break
 			if not resolved_path:
-				raise RuntimeError(f"Import '{imp}' not found. Tried: {candidates}")
+				raise RuntimeError(
+					f"Import '{imp}' not found. Tried: {candidates} "
+					f"+ {[os.path.join(imp, b + e) for b in ('index', 'main') for e in ('.orcat', '.sorcat')]}"
+				)
 			if resolved_path in seen_imports:
 				continue
 			seen_imports.add(resolved_path)
