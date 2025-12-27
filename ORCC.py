@@ -1497,10 +1497,16 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 			out.append(f"  {alloc_size} = add i64 {total}, 1")
 			raw = new_tmp()
 			out.append(f"  {raw} = call i8* @malloc(i64 {alloc_size})")
-			out.append(f"  call void @llvm.memcpy.p0i8.p0i8.i64(i8* {raw}, i8* {lhs}, i64 {len_l}, i32 1, i1 false)")
+			out.append(
+				f"  call void @llvm.memcpy.p0i8.p0i8.i64("
+				f"i8* {raw}, i8* {lhs}, i64 {len_l}, i1 false)"
+			)
 			dest_rhs = new_tmp()
 			out.append(f"  {dest_rhs} = getelementptr inbounds i8, i8* {raw}, i64 {len_l}")
-			out.append(f"  call void @llvm.memcpy.p0i8.p0i8.i64(i8* {dest_rhs}, i8* {rhs}, i64 {len_r}, i32 1, i1 false)")
+			out.append(
+				f"  call void @llvm.memcpy.p0i8.p0i8.i64("
+				f"i8* {dest_rhs}, i8* {rhs}, i64 {len_r}, i1 false)"
+			)
 			term_ptr = new_tmp()
 			out.append(f"  {term_ptr} = getelementptr inbounds i8, i8* {raw}, i64 {total}")
 			out.append(f"  store i8 0, i8* {term_ptr}")
