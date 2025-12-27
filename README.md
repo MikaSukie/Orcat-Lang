@@ -11,7 +11,7 @@
 
 On Windows IMPORTANT you need the CLANG compiler. <br>
 windows https://github.com/llvm/llvm-project/releases <br>
-- and https://visualstudio.microsoft.com/visual-cpp-build-tools/ <br>
+-and https://visualstudio.microsoft.com/visual-cpp-build-tools/ <br>
 MacOS xcode-select --install <br>
 Or use homebrew <br>
 </div>
@@ -27,8 +27,8 @@ While the compiler core is functional, work is ongoing on:
 - 🧬 Language feature polish  
 - ⚙️ Runtime and performance enhancements
 
-The syntax has been fully built and is being iterated on.  
-Want to be part of this?
+The syntax has been fully built and is being improved upon.  
+Want to join the community? (Please do 🙏)
 
 👉 **[Join the Discord!](https://discord.gg/zmnuz4h88x)**
 
@@ -38,15 +38,16 @@ Want to be part of this?
 - Many stdlib functions return heap-allocated C strings (e.g. `read_file`, `input`, `tostring`, `sb_*`, `i64tostr`, `ftostr`). These are owned by the caller and **must** be freed via `free_str()` in Orcat.
 - Some helpers (like `get_os()` / `get_os_max_bits()` in older versions) returned static pointers. After the 2025-10-31 patch, all string-returning functions used by Orcat return allocated strings to avoid undefined behavior,  callers can `free_str()` safely.
 - Also IMPORTANT. If you are going to append string literals into a print or any C externed functions, note that string literals are stored in static memory.
-- Basically either use in this format print(empty() + whatever_else); or assign the string like string s = safestring("test"); which will auto allocate and copy into the heap (modifiable).
+~~- Basically either use in this format print(empty() + whatever_else); or assign the string like string s = safestring("test"); which will auto allocate and copy into the heap (modifiable).~~
+This has been patched for string appending in the newest compiler update (python file and the linux x86_64 bin which completely removes the C-lib as a dependency so the owner is the compiler and should have no issues segfaulting.)
 ---
 
 ## 📌 Notes
 
 - This is a “small” but VERY ambitious compiler project.
 - *(because I do not like compiled languages that slap the dev for doing something risky),
-- safety, and simplicity in a language.
-- Somehow I added Async 💀
+- safety, and simplicity in a language, but unsafe if you need it to be.
+- Safe by default, unsafe and/or full control when needed.
 ---
 
 Stay tuned for more updates! 🌟  
