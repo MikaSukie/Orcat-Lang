@@ -21,12 +21,13 @@ builtins_emitted = False
 TYPE_TOKENS = {
 	'IDENT', 'INT', 'INT8', 'INT16', 'INT32', 'INT64',
 	'FLOAT', 'STRING', 'BOOL', 'CHAR', 'VOID', 'UINT',
-	'UINT8', 'UINT16', 'UINT32', 'UINT64'
+	'UINT8', 'UINT16', 'UINT32', 'UINT64', 'FLOAT32'
 	}
 CAST_TYPE_TOKENS = {
 	'INT', 'INT8', 'INT16', 'INT32', 'INT64',
 	'FLOAT', 'STRING', 'BOOL', 'CHAR', 'VOID',
-	'UINT', 'UINT8', 'UINT16', 'UINT32', 'UINT64'
+	'UINT', 'UINT8', 'UINT16', 'UINT32', 'UINT64',
+	'FLOAT32'
 }
 @dataclass
 class Token:
@@ -42,6 +43,7 @@ KEYWORDS = {
 	'true', 'false', 'struct', 'enum', 'match', 'nomd',
 	'pin', 'crumble', 'null', 'continue', 'break',
 	'async', 'await', 'uint', 'uint8', 'uint16', 'uint32', 'uint64',
+	'float32',
 	}
 SINGLE_CHARS = {
 	'(': 'LPAREN',   ')': 'RPAREN',   '{': 'LBRACE',   '}': 'RBRACE',
@@ -217,9 +219,9 @@ def lex(source: str) -> List[Token]:
 				i += 2
 				while i < len(source) and re.match(r'[0-9a-fA-F]', source[i]):
 					i += 1
-				val = source[start:i]
-				tokens.append(Token('INT', val, line, col))
-				col += len(val)
+				raw = source[start:i]
+				tokens.append(Token('INT', raw, line, col))
+				col += len(raw)
 				continue
 			while i < len(source) and source[i].isdigit():
 				i += 1
@@ -236,15 +238,20 @@ def lex(source: str) -> List[Token]:
 				while i < len(source) and source[i].isdigit():
 					i += 1
 				is_float = True
+			is_float32 = False
 			if i < len(source) and source[i] in {'f', 'F'}:
+				is_float32 = True
 				i += 1
 				is_float = True
-			val = source[start:i]
+			raw = source[start:i]
 			if is_float:
-				tokens.append(Token('FLOAT', val, line, col))
+				if is_float32:
+					tokens.append(Token('FLOAT32', raw[:-1], line, col))
+				else:
+					tokens.append(Token('FLOAT', raw, line, col))
 			else:
-				tokens.append(Token('INT', val, line, col))
-			col += len(val)
+				tokens.append(Token('INT', raw, line, col))
+			col += len(raw)
 			continue
 		if c == '"':
 			i += 1
@@ -321,7 +328,9 @@ class Stmt: pass
 @dataclass
 class IntLit(Expr): value: int
 @dataclass
-class FloatLit(Expr): value: float
+class FloatLit(Expr):
+	value: float
+	bits: int = 64
 @dataclass
 class BoolLit(Expr): value: bool
 @dataclass
@@ -949,8 +958,9 @@ class Parser:
 			if t.kind == 'INT':
 				return IntLit(int(t.value, 0))
 			if t.kind == 'FLOAT':
-				val = t.value.rstrip('fF')
-				return FloatLit(float(val))
+				return FloatLit(float(t.value), bits=64)
+			if t.kind == 'FLOAT32':
+				return FloatLit(float(t.value), bits=32)
 			if t.kind == 'STRING':
 				return StrLit(t.value)
 			if t.kind == 'CHAR':
@@ -1046,12 +1056,15 @@ def unify_types(t1: str, t2: str) -> Optional[str]:
 		return int_common
 	if (t1, t2) in {("float", "int"), ("int", "float")}:
 		return "float"
+	if (t1, t2) in {("float", "float32"), ("float32", "float"),
+					("float32", "int"), ("int", "float32")}:
+		return "float32"
 	return None
 type_map = {
 	'int': 'i64', 'int8': 'i8', 'int16': 'i16', 'int32': 'i32', 'void': 'void',
 	'int64': 'i64', 'float': 'double', 'bool': 'i1', 'char': 'i8', 'string': 'i8*', 'void*': 'i8*',
 	'uint': 'i64', 'uint8': 'i8', 'uint16': 'i16', 'uint32': 'i32', 'uint64': 'i64',
-	'int1': 'i1', 'uint1': 'i1',
+	'int1': 'i1', 'uint1': 'i1', 'float32': 'float',
 }
 struct_llvm_defs: List[str] = []
 symbol_table = SymbolTable()
@@ -1173,6 +1186,14 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 		if src_llvm == 'double' and dst_llvm.startswith('i'):
 			cast_tmp = new_tmp()
 			out.append(f"  {cast_tmp} = fptosi double {val} to {dst_llvm}")
+			return cast_tmp
+		if src_llvm == 'double' and dst_llvm == 'float':
+			cast_tmp = new_tmp()
+			out.append(f"  {cast_tmp} = fptrunc double {val} to float")
+			return cast_tmp
+		if src_llvm == 'float' and dst_llvm == 'double':
+			cast_tmp = new_tmp()
+			out.append(f"  {cast_tmp} = fpext float {val} to double")
 			return cast_tmp
 		if src_llvm.endswith('*') and dst_llvm.endswith('*'):
 			cast_tmp = new_tmp()
@@ -1955,7 +1976,7 @@ def infer_type(expr: Expr) -> str:
 	if isinstance(expr, IntLit):
 		return 'int'
 	if isinstance(expr, FloatLit):
-		return 'float'
+		return 'float32' if getattr(expr, 'bits', 64) == 32 else 'float'
 	if isinstance(expr, BoolLit):
 		return 'bool'
 	if isinstance(expr, CharLit):
@@ -2777,7 +2798,7 @@ def check_types(prog: Program):
 		if isinstance(expr, IntLit):
 			return 'int'
 		if isinstance(expr, FloatLit):
-			return 'float'
+			return 'float32' if getattr(expr, 'bits', 64) == 32 else 'float'
 		if isinstance(expr, BoolLit):
 			return 'bool'
 		if isinstance(expr, CharLit):
@@ -2792,6 +2813,10 @@ def check_types(prog: Program):
 				return expr.typ
 			if inner_type in {"null", "void*"} and (expr.typ.endswith("*") or expr.typ == "string"):
 				return expr.typ
+			if inner_type == "float" and expr.typ == "float32":
+				return "float32"
+			if inner_type == "float32" and expr.typ == "float":
+				return "float"
 			common = unify_types(inner_type, expr.typ)
 			if inner_type != expr.typ and (not common or common != expr.typ):
 				raise TypeError(f"Cannot cast {inner_type} to {expr.typ}")
@@ -3007,6 +3032,12 @@ def check_types(prog: Program):
 			if stmt.expr:
 				expr_type = check_expr(stmt.expr)
 				_inc_write(stmt.name, node_desc=f"VarInit@{getattr(stmt,'lineno','?')}")
+				if expr_type == 'float' and raw_typ == 'float32':
+					stmt.expr = Cast('float32', stmt.expr)
+					expr_type = 'float32'
+				elif expr_type == 'float32' and raw_typ == 'float':
+					stmt.expr = Cast('float', stmt.expr)
+					expr_type = 'float'
 				common = unify_types(expr_type, raw_typ)
 				if expr_type != raw_typ and (not common or common != raw_typ):
 					raise TypeError(f"Type mismatch in variable init '{stmt.name}': expected {raw_typ}, got {expr_type}")
@@ -3044,6 +3075,12 @@ def check_types(prog: Program):
 				_inc_read(stmt.name, node_desc=f"CompoundAssignRead@{getattr(stmt,'lineno','?')}")
 			else:
 				expr_type = check_expr(stmt.expr)
+			if expr_type == 'float' and var_type == 'float32':
+				stmt.expr = Cast('float32', stmt.expr)
+				expr_type = 'float32'
+			elif expr_type == 'float32' and var_type == 'float':
+				stmt.expr = Cast('float', stmt.expr)
+				expr_type = 'float'
 			if expr_type != var_type:
 				raise TypeError(f"Assign type mismatch: {var_type} = {expr_type}")
 			_inc_write(stmt.name, node_desc=f"AssignWrite@{getattr(stmt,'lineno','?')}")
@@ -3108,6 +3145,12 @@ def check_types(prog: Program):
 		if isinstance(stmt, ReturnStmt):
 			if stmt.expr:
 				actual = check_expr(stmt.expr)
+				if actual == 'float' and expected_ret == 'float32':
+					stmt.expr = Cast('float32', stmt.expr)
+					actual = 'float32'
+				elif actual == 'float32' and expected_ret == 'float':
+					stmt.expr = Cast('float', stmt.expr)
+					actual = 'float'
 				common = unify_int_types(actual, expected_ret)
 				if actual != expected_ret and (not common or common != expected_ret):
 					raise TypeError(f"Return type mismatch: expected {expected_ret}, got {actual}")
