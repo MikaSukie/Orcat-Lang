@@ -16,6 +16,7 @@
 import re, os, argparse
 from typing import List, Optional, Tuple, Union, Dict
 from dataclasses import dataclass
+from collections import Counter
 compiled=""
 builtins_emitted = False
 TYPE_TOKENS = {
@@ -2506,7 +2507,13 @@ def compile_program(prog: Program) -> str:
 	func_table["free"] = "void"
 	func_table["puts"] = "void"
 	func_table["strlen"] = "i64"
+	func_table["orcat_argc"] = "i64"
+	func_table["orcat_argv"] = "i8*"
 	has_user_main = False
+	name_counts = Counter(fn.name for fn in final_prog.funcs)
+	for name, cnt in name_counts.items():
+		if cnt > 1:
+			sys.stderr.write(f"[WARN]: function '{name}' defined {cnt} times (multiple definitions)\n")
 	for fn in prog.funcs:
 		if fn.name == "main":
 			has_user_main = True
@@ -2617,10 +2624,22 @@ def compile_program(prog: Program) -> str:
 		if m_f:
 			existing_funcs.add(m_f.group(1))
 	if not builtins_emitted and "orcat_argc_global" not in existing_globals:
-		func_table["orcat_argc"] = "i64"
-		func_table["orcat_argv_i"] = "i8*"
 		lines.append("@orcat_argc_global = global i64 0")
 		lines.append("@orcat_argv_global = global i8** null")
+		lines.append("")
+		lines.append("define i64 @orcat_argc() {")
+		lines.append("entry:")
+		lines.append("  %t0 = load i64, i64* @orcat_argc_global")
+		lines.append("  ret i64 %t0")
+		lines.append("}")
+		lines.append("")
+		lines.append("define i8* @orcat_argv(i64 %idx) {")
+		lines.append("entry:")
+		lines.append("  %argvp = load i8**, i8*** @orcat_argv_global")
+		lines.append("  %gep = getelementptr inbounds i8*, i8** %argvp, i64 %idx")
+		lines.append("  %val = load i8*, i8** %gep")
+		lines.append("  ret i8* %val")
+		lines.append("}")
 		lines.append("")
 		builtins_emitted = True
 	async_defs: List[str] = []
@@ -2851,6 +2870,16 @@ def check_types(prog: Program):
 				if arg_ty != "string" and not arg_ty.endswith("*"):
 					raise TypeError("puts() expects a string (or pointer) argument")
 				return "void"
+			if expr.name == "orcat_argc":
+				if len(arg_types) != 0:
+					raise TypeError("orcat_argc() takes no arguments")
+				return "int"
+			if expr.name == "orcat_argv":
+				if len(arg_types) != 1:
+					raise TypeError("orcat_argv() takes exactly one int argument")
+				if not arg_types[0].startswith("int"):
+					raise TypeError("orcat_argv() expects an int index")
+				return "string"
 			vm = variant_map.get(expr.name)
 			if vm is not None:
 				enum_name, payload = vm
