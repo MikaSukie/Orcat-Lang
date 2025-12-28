@@ -16,7 +16,6 @@
 import re, os, argparse
 from typing import List, Optional, Tuple, Union, Dict
 from dataclasses import dataclass
-from collections import Counter
 compiled=""
 builtins_emitted = False
 TYPE_TOKENS = {
@@ -2510,10 +2509,6 @@ def compile_program(prog: Program) -> str:
 	func_table["orcat_argc"] = "i64"
 	func_table["orcat_argv"] = "i8*"
 	has_user_main = False
-	name_counts = Counter(fn.name for fn in final_prog.funcs)
-	for name, cnt in name_counts.items():
-		if cnt > 1:
-			sys.stderr.write(f"[WARN]: function '{name}' defined {cnt} times (multiple definitions)\n")
 	for fn in prog.funcs:
 		if fn.name == "main":
 			has_user_main = True
@@ -2633,12 +2628,36 @@ def compile_program(prog: Program) -> str:
 		lines.append("  ret i64 %t0")
 		lines.append("}")
 		lines.append("")
+		string_constants.append('@.str_null = private unnamed_addr constant [5 x i8] c"null\\00"')
 		lines.append("define i8* @orcat_argv(i64 %idx) {")
 		lines.append("entry:")
 		lines.append("  %argvp = load i8**, i8*** @orcat_argv_global")
+		lines.append("  %isnull = icmp eq i8** %argvp, null")
+		lines.append("  br i1 %isnull, label %null_case, label %check_bounds")
+		lines.append("null_case:")
+		lines.append("  %src = getelementptr inbounds [5 x i8], [5 x i8]* @.str_null, i32 0, i32 0")
+		lines.append("  %alloc0 = call i8* @malloc(i64 5)")
+		lines.append("  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %alloc0, i8* %src, i64 5, i1 false)")
+		lines.append("  ret i8* %alloc0")
+		lines.append("check_bounds:")
+		lines.append("  %argc = load i64, i64* @orcat_argc_global")
+		lines.append("  %neg = icmp slt i64 %idx, 0")
+		lines.append("  %uge = icmp uge i64 %idx, %argc")
+		lines.append("  %oob = or i1 %neg, %uge")
+		lines.append("  br i1 %oob, label %null_case2, label %in_bounds")
+		lines.append("null_case2:")
+		lines.append("  %src2 = getelementptr inbounds [5 x i8], [5 x i8]* @.str_null, i32 0, i32 0")
+		lines.append("  %alloc1 = call i8* @malloc(i64 5)")
+		lines.append("  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %alloc1, i8* %src2, i64 5, i1 false)")
+		lines.append("  ret i8* %alloc1")
+		lines.append("in_bounds:")
 		lines.append("  %gep = getelementptr inbounds i8*, i8** %argvp, i64 %idx")
 		lines.append("  %val = load i8*, i8** %gep")
-		lines.append("  ret i8* %val")
+		lines.append("  %len = call i64 @strlen(i8* %val)")
+		lines.append("  %allocsz = add i64 %len, 1")
+		lines.append("  %alloc2 = call i8* @malloc(i64 %allocsz)")
+		lines.append("  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %alloc2, i8* %val, i64 %allocsz, i1 false)")
+		lines.append("  ret i8* %alloc2")
 		lines.append("}")
 		lines.append("")
 		builtins_emitted = True
@@ -3425,6 +3444,13 @@ def main():
 		enums=all_enums,
 		globals=all_globals
 	)
+	seen_names = {}
+	for idx, fn in enumerate(final_prog.funcs):
+		if fn.name in seen_names:
+			prev_idx = seen_names[fn.name]
+			raise RuntimeError(
+				f"Duplicate function definition: '{fn.name}', Remove or rename the duplicate.")
+		seen_names[fn.name] = idx
 	has_main = any(fn.name == "main" for fn in final_prog.funcs)
 	if not has_main:
 		raise RuntimeError("No startpoint: no main function found. Add a 'fn main(...) <...>' function.")
