@@ -1269,18 +1269,41 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 			return val
 		else:
 			raise RuntimeError(f"Unsupported unary operator: {expr.op}")
+	if isinstance(expr, UnaryDeref):
+		ptr_val = gen_expr(expr.ptr, out)
+		ptr_type = infer_type(expr.ptr)
+		if not ptr_type.endswith("*"):
+			raise RuntimeError(f"Dereferencing non-pointer type '{ptr_type}'")
+		pointee_lang = ptr_type[:-1]
+		llvm_pointee = llvm_ty_of(pointee_lang)
+		tmp = new_tmp()
+		out.append(f"  {tmp} = load {llvm_pointee}, {llvm_pointee}* {ptr_val}")
+		_maybe_flush_deferred(expr.ptr, ptr_val)
+		return tmp
 	if isinstance(expr, AddressOf):
 		inner = expr.expr
+		if isinstance(inner, UnaryDeref):
+			return gen_expr(inner.ptr, out)
 		if isinstance(inner, Var):
 			res = symbol_table.lookup(inner.name)
 			if res is None:
 				raise RuntimeError(f"Undefined variable: {inner.name}")
-			llvm_ty, ir_name = res
+			_, ir_name = res
 			if ir_name.startswith('@'):
 				return ir_name
 			return f"%{ir_name}_addr"
 		if isinstance(inner, FieldAccess):
-			base_ptr = gen_expr(inner.base, out)
+			if isinstance(inner.base, Var):
+				res = symbol_table.lookup(inner.base.name)
+				if res is None:
+					raise RuntimeError(f"Undefined variable: {inner.base.name}")
+				_, base_name = res
+				if base_name.startswith('@'):
+					base_ptr = base_name
+				else:
+					base_ptr = f"%{base_name}_addr"
+			else:
+				base_ptr = gen_expr(inner.base, out)
 			base_raw = infer_type(inner.base)
 			base_name = base_raw
 			if base_name.endswith("*"):
@@ -1295,20 +1318,23 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 				raise RuntimeError(f"Field '{inner.field}' not in struct '{base_name}'")
 			index = list(field_dict.keys()).index(inner.field)
 			ptr = new_tmp()
-			out.append(f"  {ptr} = getelementptr inbounds %struct.{base_name}, %struct.{base_name}* {base_ptr}, i32 0, i32 {index}")
+			out.append(
+				f"  {ptr} = getelementptr inbounds %struct.{base_name}, "
+				f"%struct.{base_name}* {base_ptr}, i32 0, i32 {index}"
+			)
 			return ptr
 		if isinstance(inner, Index):
 			if not isinstance(inner.array, Var):
-				raise RuntimeError(f"Only direct variable array indexing is supported for address-of, got: {inner.array}")
+				raise RuntimeError(
+					f"Only direct variable array indexing is supported for address-of, got: {inner.array}")
 			var_name = inner.array.name
 			idx = gen_expr(inner.index, out)
 			arr_info = symbol_table.lookup(var_name)
 			if not arr_info:
 				raise RuntimeError(f"Undefined array: {var_name}")
 			llvm_ty, name = arr_info
-			base_ty = extract_array_base_type(llvm_ty)
 			idx_ty = infer_type(inner.index)
-			idx_llvm = type_map[idx_ty]
+			idx_llvm = llvm_ty_of(idx_ty)
 			if idx_llvm != "i32":
 				idx_cast = new_tmp()
 				if idx_llvm.startswith("i") and int(idx_llvm[1:]) > 32:
@@ -1322,7 +1348,10 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 			else:
 				arr_addr_token = f"%{name}_addr"
 			gep_tmp = new_tmp()
-			out.append(f"  {gep_tmp} = getelementptr inbounds {llvm_ty}, {llvm_ty}* {arr_addr_token}, i32 0, i32 {idx_cast}")
+			out.append(
+				f"  {gep_tmp} = getelementptr inbounds {llvm_ty}, "
+				f"{llvm_ty}* {arr_addr_token}, i32 0, i32 {idx_cast}"
+			)
 			return gep_tmp
 		raise RuntimeError("Address-of not supported for this expression form")
 	if isinstance(expr, IntLit):
