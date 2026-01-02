@@ -94,7 +94,7 @@ def llvm_ty_of(typ: str) -> str:
 	if typ.endswith('*'):
 		base = typ[:-1]
 		if base in enum_variant_map and any(p is not None for _, p in enum_variant_map[base]):
-			return f"%enum.{base}**"
+			return f"%enum.{base}*"
 		if base in enum_variant_map:
 			return type_map.get(base, type_map.get("int", "i64")) + "*"
 		if base in type_map:
@@ -1275,10 +1275,13 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 		if not ptr_type.endswith("*"):
 			raise RuntimeError(f"Dereferencing non-pointer type '{ptr_type}'")
 		pointee_lang = ptr_type[:-1]
+		if pointee_lang == "void":
+			raise RuntimeError(
+				"Cannot generate code to dereference 'void*' without an explicit cast to a concrete pointer type")
 		llvm_pointee = llvm_ty_of(pointee_lang)
 		tmp = new_tmp()
 		out.append(f"  {tmp} = load {llvm_pointee}, {llvm_pointee}* {ptr_val}")
-		_maybe_flush_deferred(expr.ptr, ptr_val)
+		_maybe_flush_deferred(expr.ptr, tmp)
 		return tmp
 	if isinstance(expr, AddressOf):
 		inner = expr.expr
@@ -1999,7 +2002,10 @@ def infer_type(expr: Expr) -> str:
 		ptr_type = infer_type(expr.ptr)
 		if not ptr_type.endswith("*"):
 			raise RuntimeError(f"Dereferencing non-pointer type '{ptr_type}'")
-		return ptr_type[:-1]
+		pointee = ptr_type[:-1]
+		if pointee == "void":
+			raise TypeError("Cannot dereference 'void*' without an explicit cast to a concrete pointer type")
+		return pointee
 	if isinstance(expr, UnaryOp):
 		return infer_type(expr.expr)
 	if isinstance(expr, IntLit):
