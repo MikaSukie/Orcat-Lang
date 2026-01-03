@@ -43,7 +43,7 @@ KEYWORDS = {
 	'true', 'false', 'struct', 'enum', 'match', 'nomd',
 	'pin', 'crumble', 'null', 'continue', 'break',
 	'async', 'await', 'uint', 'uint8', 'uint16', 'uint32', 'uint64',
-	'float32',
+	'float32', 'autoregion', 'except'
 	}
 SINGLE_CHARS = {
 	'(': 'LPAREN',   ')': 'RPAREN',   '{': 'LBRACE',   '}': 'RBRACE',
@@ -56,7 +56,7 @@ SINGLE_CHARS = {
 MULTI_CHARS = {
 	'==': 'EQEQ', '!=': 'NEQ', '<=': 'LE', '>=': 'GE', '->': 'ARROW', '&&': 'AND',  '||': 'OR',
 	'+=': 'PLUSEQ', '-=': 'MINUSEQ', '*=': 'STAREQ', '/=': 'SLASHEQ', '%=': 'PERCENTEQ',
-	'&=': 'ANDEQ', '|=': 'OREQ', '^=': 'XOREQ', '<<=': 'LSHIFTEQ', '>>=': 'RSHIFTEQ',
+	'&=': 'ANDEQ', '|=': 'OREQ', '^=': 'XOREQ', '<<=': 'LSHIFTEQ', '>>=': 'RSHIFTEQ'
 	}
 class SymbolTable:
 	def __init__(self):
@@ -467,6 +467,10 @@ class Cast(Expr):
 class AwaitExpr(Expr):
 	expr: Expr
 @dataclass
+class AutoRegion(Stmt):
+	except_vars: List[str]
+	body: List[Stmt]
+@dataclass
 class Func:
 	access: str
 	name: str
@@ -491,6 +495,7 @@ enum_variant_map: Dict[str, List[Tuple[str, Optional[str]]]] = {}
 loop_stack: List[Dict[str, str]] = []
 crumb_runtime: Dict[str, Dict[str, Optional[int]]] = {}
 owned_vars: set = set()
+autoregion_stack: List[Dict[str, object]] = []
 class Parser:
 	def __init__(self, tokens: List[Token]):
 		self.declared_vars: Dict[str, VarDecl] = {}
@@ -705,6 +710,8 @@ class Parser:
 			return self.parse_expr_stmt()
 		if t.kind in {'PUB', 'PRIV', 'PROT', 'NOMD'} or t.kind in TYPE_TOKENS or t.kind == 'IDENT':
 			return self.parse_var_decl()
+		if t.kind == 'AUTOREGION':
+			return self.parse_autoregion()
 		if t.kind == 'IF':
 			return self.parse_if()
 		if t.kind == 'WHILE':
@@ -747,6 +754,23 @@ class Parser:
 		lhs_var = Var(name)
 		binop = BinOp(op, lhs_var, expr)
 		return Assign(name, binop)
+	def parse_autoregion(self) -> AutoRegion:
+		self.expect('AUTOREGION')
+		except_list: List[str] = []
+		if self.peek().kind == 'EXCEPT':
+			self.bump()  # consume EXCEPT
+			self.expect('LPAREN')
+			while True:
+				if self.peek().kind != 'IDENT':
+					raise SyntaxError(f"Expected identifier in except(...) at {self.peek().line}:{self.peek().col}")
+				except_list.append(self.bump().value)
+				if not self.match('COMMA'):
+					break
+			self.expect('RPAREN')
+		self.expect('LBRACE')
+		body = self.parse_block()
+		self.expect('RBRACE')
+		return AutoRegion(except_vars=except_list, body=body)
 	def parse_crumble(self) -> CrumbleStmt:
 		self.expect('LPAREN')
 		var_name = self.expect('IDENT').value
@@ -2395,6 +2419,39 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 		ptr_tmp = new_tmp()
 		out.append(f"  {ptr_tmp} = getelementptr inbounds {llvm_ty}, {llvm_ty}* {arr_addr_token}, i32 0, i32 {idx_cast}")
 		out.append(f"  store {base_ty} {val}, {base_ty}* {ptr_tmp}")
+	elif isinstance(stmt, AutoRegion):
+		symbol_table.push()
+		ctx = {
+			'scope_index': len(symbol_table.scopes) - 1,
+			'except': set(stmt.except_vars)
+		}
+		autoregion_stack.append(ctx)
+		for s in stmt.body:
+			gen_stmt(s, out, ret_ty)
+		names_in_scope = list(symbol_table.scopes[ctx['scope_index']].keys())
+		for nm in names_in_scope:
+			if nm in ctx['except']:
+				continue
+			cr = crumb_runtime.get(nm)
+			owned_here = (nm in owned_vars) or (cr is not None and cr.get('owned'))
+			if not owned_here:
+				continue
+			llvm_ty, llvm_name = symbol_table.lookup(nm)
+			if not llvm_ty.endswith('*'):
+				continue
+			ptr_tmp = new_tmp()
+			out.append(f"  {ptr_tmp} = load {llvm_ty}, {llvm_ty}* %{llvm_name}_addr")
+			cast_tmp = new_tmp()
+			out.append(f"  {cast_tmp} = bitcast {llvm_ty} {ptr_tmp} to i8*")
+			out.append(f"  call void @free(i8* {cast_tmp})")
+			out.append(f"  store {llvm_ty} null, {llvm_ty}* %{llvm_name}_addr")
+			if nm in crumb_runtime:
+				crumb_runtime[nm]['owned'] = False
+			if nm in owned_vars:
+				owned_vars.discard(nm)
+		autoregion_stack.pop()
+		symbol_table.pop()
+		return
 	elif isinstance(stmt, IfStmt):
 		cond = gen_expr(stmt.cond, out)
 		then_lbl = new_label('then')
@@ -2443,6 +2500,31 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 		loop_stack.pop()
 	elif isinstance(stmt, ReturnStmt):
 		val = gen_expr(stmt.expr, out) if stmt.expr else None
+		if autoregion_stack:
+			for ctx in reversed(autoregion_stack):
+				scope_idx = ctx['scope_index']
+				exset = ctx['except']
+				names_in_scope = list(symbol_table.scopes[scope_idx].keys())
+				for nm in names_in_scope:
+					if nm in exset:
+						continue
+					cr = crumb_runtime.get(nm)
+					owned_here = (nm in owned_vars) or (cr is not None and cr.get('owned'))
+					if not owned_here:
+						continue
+					llvm_ty, llvm_name = symbol_table.lookup(nm)
+					if not llvm_ty.endswith('*'):
+						continue
+					ptr_tmp = new_tmp()
+					out.append(f"  {ptr_tmp} = load {llvm_ty}, {llvm_ty}* %{llvm_name}_addr")
+					cast_tmp = new_tmp()
+					out.append(f"  {cast_tmp} = bitcast {llvm_ty} {ptr_tmp} to i8*")
+					out.append(f"  call void @free(i8* {cast_tmp})")
+					out.append(f"  store {llvm_ty} null, {llvm_ty}* %{llvm_name}_addr")
+					if nm in crumb_runtime:
+						crumb_runtime[nm]['owned'] = False
+					if nm in owned_vars:
+						owned_vars.discard(nm)
 		if val:
 			ret_type = infer_type(stmt.expr)
 			llvm_ty = llvm_ty_of(ret_type)
@@ -3399,6 +3481,12 @@ def check_types(prog: Program):
 			return
 		if isinstance(stmt, ExprStmt):
 			check_expr(stmt.expr)
+			return
+		if isinstance(stmt, AutoRegion):
+			env.push()
+			for s in stmt.body:
+				check_stmt(s, expected_ret, func)
+			env.pop()
 			return
 		if isinstance(stmt, Match):
 			enum_typ = check_expr(stmt.expr)
