@@ -350,15 +350,20 @@ class GlobalVar:
 	pinned: bool = False
 	is_extern: bool = False
 @dataclass
-class DerefStmt(Stmt):
+class ForgetStmt(Stmt):
 	varname: str
 @dataclass
 class UnaryDeref(Expr):
 	ptr: Expr
 @dataclass
-class BinOp(Expr): op: str; left: Expr; right: Expr
+class BinOp(Expr):
+	op: str
+	left: Expr
+	right: Expr
 @dataclass
-class Call(Expr): name: str; args: List[Expr]
+class Call(Expr):
+	name: str
+	args: List[Expr]
 @dataclass
 class AddressOf(Expr):
 	expr: Expr
@@ -694,8 +699,8 @@ class Parser:
 				return self.parse_compound_assign()
 		if t.kind == 'IDENT' and self.tokens[self.pos + 1].kind == 'LBRACKET':
 			return self.parse_index_assign()
-		if t.kind == 'IDENT' and t.value == 'deref' and self.tokens[self.pos + 1].kind == 'LPAREN':
-			return self.parse_deref()
+		if t.kind == 'IDENT' and t.value == 'forget' and self.tokens[self.pos + 1].kind == 'LPAREN':
+			return self.parse_forget()
 		if (t.kind in CAST_TYPE_TOKENS or t.kind == 'IDENT') and self.tokens[self.pos + 1].kind == 'LPAREN':
 			return self.parse_expr_stmt()
 		if t.kind in {'PUB', 'PRIV', 'PROT', 'NOMD'} or t.kind in TYPE_TOKENS or t.kind == 'IDENT':
@@ -766,13 +771,13 @@ class Parser:
 		val_expr = self.parse_expr()
 		self.expect('SEMI')
 		return Assign(UnaryDeref(ptr_expr), val_expr)
-	def parse_deref(self) -> DerefStmt:
+	def parse_forget(self) -> ForgetStmt:
 		self.expect('IDENT')
 		self.expect('LPAREN')
 		varname = self.expect('IDENT').value
 		self.expect('RPAREN')
 		self.expect('SEMI')
-		return DerefStmt(varname)
+		return ForgetStmt(varname)
 	def parse_match(self) -> Match:
 		self.expect('MATCH')
 		self.expect('LPAREN')
@@ -1276,9 +1281,17 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 			raise RuntimeError(f"Dereferencing non-pointer type '{ptr_type}'")
 		pointee_lang = ptr_type[:-1]
 		if pointee_lang == "void":
-			raise RuntimeError(
-				"Cannot generate code to dereference 'void*' without an explicit cast to a concrete pointer type")
+			raise RuntimeError("Cannot generate code to dereference 'void*' without an explicit cast ...")
 		llvm_pointee = llvm_ty_of(pointee_lang)
+		null_cmp = new_tmp()
+		fail_lbl = new_label("null_fail")
+		ok_lbl = new_label("null_ok")
+		out.append(f"  {null_cmp} = icmp eq {llvm_pointee}* {ptr_val}, null")
+		out.append(f"  br i1 {null_cmp}, label %{fail_lbl}, label %{ok_lbl}")
+		out.append(f"{fail_lbl}:")
+		out.append(f"  call void @orcc_null_abort()")
+		out.append(f"  unreachable")
+		out.append(f"{ok_lbl}:")
 		tmp = new_tmp()
 		out.append(f"  {tmp} = load {llvm_pointee}, {llvm_pointee}* {ptr_val}")
 		_maybe_flush_deferred(expr.ptr, tmp)
@@ -1458,24 +1471,74 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 				out.append(f"  {idx_cast} = sext {idx_llvm} {idx} to i32")
 		else:
 			idx_cast = idx
-		if name.startswith('@'):
-			len_addr = f"@{var_name}_len"
-			arr_addr_token = name
+		if llvm_ty.startswith('['):
+			if name.startswith('@'):
+				len_addr = f"@{var_name}_len"
+				arr_addr_token = name
+			else:
+				len_addr = f"%{var_name}_len"
+				arr_addr_token = f"%{name}_addr"
+			len_val = new_tmp()
+			out.append(f"  {len_val} = load i32, i32* {len_addr}")
+			ok = new_tmp()
+			out.append(f"  {ok} = icmp ult i32 {idx_cast}, {len_val}")
+			fail_lbl = new_label("oob_fail")
+			ok_lbl = new_label("oob_ok")
+			out.append(f"  br i1 {ok}, label %{ok_lbl}, label %{fail_lbl}")
+			out.append(f"{fail_lbl}:")
+			out.append(f"  call void @orcc_oob_abort()")
+			out.append(f"  unreachable")
+			out.append(f"{ok_lbl}:")
+			out.append(
+				f"  {tmp_ptr} = getelementptr inbounds {llvm_ty}, {llvm_ty}* {arr_addr_token}, i32 0, i32 {idx_cast}")
+		elif llvm_ty.endswith('*'):
+			if name.startswith('@'):
+				ptr_load = new_tmp()
+				out.append(f"  {ptr_load} = load {llvm_ty}, {llvm_ty}* {name}")
+			else:
+				ptr_load = new_tmp()
+				out.append(f"  {ptr_load} = load {llvm_ty}, {llvm_ty}* %{name}_addr")
+			is_null_tmp = new_tmp()
+			out.append(f"  {is_null_tmp} = icmp eq {llvm_ty} {ptr_load}, null")
+			null_fail = new_label("null_ptr_fail")
+			null_ok = new_label("null_ptr_ok")
+			out.append(f"  br i1 {is_null_tmp}, label %{null_fail}, label %{null_ok}")
+			out.append(f"{null_fail}:")
+			out.append(f"  call void @orcc_null_abort()")
+			out.append(f"  unreachable")
+			out.append(f"{null_ok}:")
+			bit_tmp = new_tmp()
+			out.append(f"  {bit_tmp} = bitcast {llvm_ty} {ptr_load} to i8*")
+			size_i64 = new_tmp()
+			out.append(f"  {size_i64} = call i64 @orcc_alloc_size(i8* {bit_tmp})")
+			if idx_llvm != "i64":
+				idx_i64 = new_tmp()
+				if idx_llvm.startswith("i"):
+					bits = int(idx_llvm[1:]) if idx_llvm[1:].isdigit() else 32
+					if bits < 64:
+						if is_unsigned_int_type(idx_ty):
+							out.append(f"  {idx_i64} = zext {idx_llvm} {idx} to i64")
+						else:
+							out.append(f"  {idx_i64} = sext {idx_llvm} {idx} to i64")
+					else:
+						out.append(f"  {idx_i64} = trunc {idx_llvm} {idx} to i64")
+				else:
+					out.append(f"  {idx_i64} = zext i32 {idx} to i64")
+			else:
+				idx_i64 = idx
+			ok64 = new_tmp()
+			out.append(f"  {ok64} = icmp ult i64 {idx_i64}, {size_i64}")
+			fail_lbl = new_label("oob_fail")
+			ok_lbl = new_label("oob_ok")
+			out.append(f"  br i1 {ok64}, label %{ok_lbl}, label %{fail_lbl}")
+			out.append(f"{fail_lbl}:")
+			out.append(f"  call void @orcc_oob_abort()")
+			out.append(f"  unreachable")
+			out.append(f"{ok_lbl}:")
+			out.append(f"  {tmp_ptr} = getelementptr inbounds {base_ty}, {base_ty}* {ptr_load}, i32 {idx_cast}")
 		else:
-			len_addr = f"%{var_name}_len"
-			arr_addr_token = f"%{name}_addr"
-		len_val = new_tmp()
-		out.append(f"  {len_val} = load i32, i32* {len_addr}")
-		ok = new_tmp()
-		out.append(f"  {ok} = icmp ult i32 {idx_cast}, {len_val}")
-		fail_lbl = new_label("oob_fail")
-		ok_lbl = new_label("oob_ok")
-		out.append(f"  br i1 {ok}, label %{ok_lbl}, label %{fail_lbl}")
-		out.append(f"{fail_lbl}:")
-		out.append(f"  call void @orcc_oob_abort()")
-		out.append(f"  unreachable")
-		out.append(f"{ok_lbl}:")
-		out.append(f"  {tmp_ptr} = getelementptr inbounds {llvm_ty}, {llvm_ty}* {arr_addr_token}, i32 0, i32 {idx_cast}")
+			out.append(f"  call void @orcc_oob_abort()")
+			out.append(f"  unreachable")
 		out.append(f"  {tmp_val} = load {base_ty}, {base_ty}* {tmp_ptr}")
 		_maybe_flush_deferred(expr.index, idx)
 		return tmp_val
@@ -2173,6 +2236,7 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 			llvm_ty = f"[{count} x {type_map[base]}]"
 			if not symbol_table.lookup(stmt.name):
 				out.append(f"  %{stmt.name}_addr = alloca {llvm_ty}")
+				out.append(f"  store {llvm_ty} zeroinitializer, {llvm_ty}* %{stmt.name}_addr")
 				out.append(f"  %{stmt.name}_len  = alloca i32")
 				out.append(f"  store i32 {count}, i32* %{stmt.name}_len")
 				symbol_table.declare(stmt.name, llvm_ty, stmt.name)
@@ -2180,6 +2244,14 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 			llvm_ty = llvm_ty_of(stmt.typ)
 			if not symbol_table.lookup(stmt.name):
 				out.append(f"  %{stmt.name}_addr = alloca {llvm_ty}")
+				if llvm_ty.endswith('*'):
+					out.append(f"  store {llvm_ty} null, {llvm_ty}* %{stmt.name}_addr")
+				elif llvm_ty == 'double' or llvm_ty == 'float':
+					out.append(f"  store {llvm_ty} 0.0, {llvm_ty}* %{stmt.name}_addr")
+				elif llvm_ty.startswith('i'):
+					out.append(f"  store {llvm_ty} 0, {llvm_ty}* %{stmt.name}_addr")
+				else:
+					out.append(f"  store {llvm_ty} zeroinitializer, {llvm_ty}* %{stmt.name}_addr")
 				symbol_table.declare(stmt.name, llvm_ty, stmt.name)
 		if stmt.expr:
 			val = gen_expr(stmt.expr, out)
@@ -2356,15 +2428,20 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 			out.append(f"  ret void")
 	elif isinstance(stmt, ExprStmt):
 		gen_expr(stmt.expr, out)
-	elif isinstance(stmt, DerefStmt):
+	elif isinstance(stmt, ForgetStmt):
 		llvm_ty, llvm_name = symbol_table.lookup(stmt.varname)
 		ptr_tmp = new_tmp()
 		out.append(f"  {ptr_tmp} = load {llvm_ty}, {llvm_ty}* %{llvm_name}_addr")
 		if not llvm_ty.endswith("*"):
-			raise RuntimeError(f"Cannot deref non-pointer type '{llvm_ty}'")
+			raise RuntimeError(f"Cannot forget non-pointer type '{llvm_ty}'")
 		cast_tmp = new_tmp()
 		out.append(f"  {cast_tmp} = bitcast {llvm_ty} {ptr_tmp} to i8*")
 		out.append(f"  call void @free(i8* {cast_tmp})")
+		out.append(f"  store {llvm_ty} null, {llvm_ty}* %{llvm_name}_addr")
+		if stmt.varname in crumb_runtime:
+			crumb_runtime[stmt.varname]['owned'] = False
+		if stmt.varname in owned_vars:
+			owned_vars.discard(stmt.varname)
 	elif isinstance(stmt, Match):
 		raw_ty = infer_type(stmt.expr)
 		enum_name = None
@@ -2517,6 +2594,7 @@ def gen_func(fn: Func) -> List[str]:
 			llvm_ty = f"[{count} x {type_map[base]}]"
 			if not symbol_table.lookup(stmt.name):
 				out.append(f"  %{stmt.name}_addr = alloca {llvm_ty}")
+				out.append(f"  store {llvm_ty} zeroinitializer, {llvm_ty}* %{stmt.name}_addr")
 				out.append(f"  %{stmt.name}_len  = alloca i32")
 				out.append(f"  store i32 {count}, i32* %{stmt.name}_len")
 				symbol_table.declare(stmt.name, llvm_ty, stmt.name)
@@ -2524,6 +2602,14 @@ def gen_func(fn: Func) -> List[str]:
 			llvm_ty = llvm_ty_of(stmt.typ)
 			if not symbol_table.lookup(stmt.name):
 				out.append(f"  %{stmt.name}_addr = alloca {llvm_ty}")
+				if llvm_ty.endswith('*'):
+					out.append(f"  store {llvm_ty} null, {llvm_ty}* %{stmt.name}_addr")
+				elif llvm_ty == 'double' or llvm_ty == 'float':
+					out.append(f"  store {llvm_ty} 0.0, {llvm_ty}* %{stmt.name}_addr")
+				elif llvm_ty.startswith('i'):
+					out.append(f"  store {llvm_ty} 0, {llvm_ty}* %{stmt.name}_addr")
+				else:
+					out.append(f"  store {llvm_ty} zeroinitializer, {llvm_ty}* %{stmt.name}_addr")
 				symbol_table.declare(stmt.name, llvm_ty, stmt.name)
 	has_return = False
 	for stmt in fn.body or []:
@@ -2573,8 +2659,7 @@ def compile_program(prog: Program) -> str:
 			func_table.pop("main", None)
 			func_table["user_main"] = llvm_ret_ty
 			break
-	lines: List[str] = \
-		[
+	lines: List[str] = [
 		"; ModuleID = 'orcat'",
 		f"source_filename = \"{compiled}\"",
 		"@__argv_ptr = global i8** null",
@@ -2584,7 +2669,8 @@ def compile_program(prog: Program) -> str:
 		"declare i64 @strlen(i8*)",
 		"declare void @puts(i8*)",
 		"declare void @exit(i64)",
-		"""
+	]
+	runtime_block = """
 	@.oob_msg = private unnamed_addr constant [52 x i8] c"[ORCatCompiler-RT-CHCK]: Index out of bounds error.\\00"
 	define void @orcc_oob_abort() {
 	entry:
@@ -2592,8 +2678,74 @@ def compile_program(prog: Program) -> str:
 	  call void @exit(i64 1)
 	  unreachable
 	}
+	@.null_msg = private unnamed_addr constant [45 x i8] c"[ORCatCompiler-RT-CHCK]: Null pointer deref.\\00"
+	define void @orcc_null_abort() {
+	entry:
+	  call void @puts(i8* getelementptr inbounds ([48 x i8], [48 x i8]* @.null_msg, i32 0, i32 0))
+	  call void @exit(i64 1)
+	  unreachable
+	}
+	@.heap_msg = private unnamed_addr constant [67 x i8] c"[ORCatCompiler-RT-HEAP]: Invalid free or heap corruption detected.\\00"
+	@.alloc_magic = global i64 0
+	declare i64 @time(i64*)
+	declare void @srand(i32)
+	declare i32 @rand()
+	define i8* @orcc_malloc(i64 %usize) {
+	entry:
+	  %hdr_sz = add i64 %usize, 24
+	  %raw = call i8* @malloc(i64 %hdr_sz)
+	  %hdr_ptr = bitcast i8* %raw to i64*
+	  %global_magic = load i64, i64* @.alloc_magic
+	  store i64 %global_magic, i64* %hdr_ptr
+	  %size_slot = getelementptr i8, i8* %raw, i64 8
+	  %size_slot_i64 = bitcast i8* %size_slot to i64*
+	  store i64 %usize, i64* %size_slot_i64
+	  %user_ptr = getelementptr i8, i8* %raw, i64 16
+	  %footer_ptr = getelementptr i8, i8* %user_ptr, i64 %usize
+	  %footer_ptr_i64 = bitcast i8* %footer_ptr to i64*
+	  store i64 %global_magic, i64* %footer_ptr_i64
+	  ret i8* %user_ptr
+	}
+	define void @orcc_free(i8* %userptr) {
+	entry:
+	  %raw_hdr = getelementptr i8, i8* %userptr, i64 -16
+	  %hdr_i64 = bitcast i8* %raw_hdr to i64*
+	  %magic = load i64, i64* %hdr_i64
+	  %global_magic_cmp = load i64, i64* @.alloc_magic
+	  %ok = icmp eq i64 %magic, %global_magic_cmp
+	  br i1 %ok, label %free_ok, label %free_fail
+	free_fail:
+	  call void @puts(i8* getelementptr inbounds ([64 x i8], [64 x i8]* @.heap_msg, i32 0, i32 0))
+	  call void @exit(i64 1)
+	  unreachable
+	free_ok:
+	  %size_slot = getelementptr i8, i8* %raw_hdr, i64 8
+	  %size_i64 = bitcast i8* %size_slot to i64*
+	  %sz = load i64, i64* %size_i64
+	  %footer_loc = getelementptr i8, i8* %userptr, i64 %sz
+	  %footer_i64 = bitcast i8* %footer_loc to i64*
+	  %footer_val = load i64, i64* %footer_i64
+	  %ok2 = icmp eq i64 %footer_val, %global_magic_cmp
+	  br i1 %ok2, label %free_ok2, label %free_fail2
+	free_fail2:
+	  call void @puts(i8* getelementptr inbounds ([64 x i8], [64 x i8]* @.heap_msg, i32 0, i32 0))
+	  call void @exit(i64 1)
+	  unreachable
+	free_ok2:
+	  store i64 0, i64* %hdr_i64
+	  %rawptr = bitcast i8* %raw_hdr to i8*
+	  call void @free(i8* %rawptr)
+	  ret void
+	}
+	define i64 @orcc_alloc_size(i8* %userptr) {
+	entry:
+	  %raw_hdr = getelementptr i8, i8* %userptr, i64 -16
+	  %size_slot = getelementptr i8, i8* %raw_hdr, i64 8
+	  %size_i64 = bitcast i8* %size_slot to i64*
+	  %sz = load i64, i64* %size_i64
+	  ret i64 %sz
+	}
 	"""
-	]
 	struct_llvm_defs: List[str] = []
 	for sdef in prog.structs:
 		field_tys: List[str] = []
@@ -2737,6 +2889,13 @@ def compile_program(prog: Program) -> str:
 		lines.append("  %argc64 = sext i32 %argc to i64")
 		lines.append("  store i64 %argc64, i64* @orcat_argc_global")
 		lines.append("  store i8** %argv, i8*** @orcat_argv_global")
+		lines.append("  %time64 = call i64 @time(i64* null)")
+		lines.append("  %time32 = trunc i64 %time64 to i32")
+		lines.append("  call void @srand(i32 %time32)")
+		lines.append("  %rnd = call i32 @rand()")
+		lines.append("  %rnd64 = zext i32 %rnd to i64")
+		lines.append("  %xor_magic = xor i64 %rnd64, 16045690984833335023")
+		lines.append("  store i64 %xor_magic, i64* @.alloc_magic")
 		user_ret = func_table.get("user_main", "i64")
 		if user_ret == "void":
 			lines.append("  call void @user_main()")
@@ -2762,7 +2921,17 @@ def compile_program(prog: Program) -> str:
 			lines.append("  %ret32 = trunc i64 %ret64 to i32")
 			lines.append("  ret i32 %ret32")
 		lines.append("}")
-	return "\n".join(lines)
+	module_text = "\n".join(lines)
+	def _replace_call_malloc(m):
+		s = m.group(0)
+		return s.replace('@malloc(', '@orcc_malloc(')
+	def _replace_call_free(m):
+		s = m.group(0)
+		return s.replace('@free(', '@orcc_free(')
+	module_text = re.sub(r'\bcall\b[^\n]*@malloc\(', _replace_call_malloc, module_text)
+	module_text = re.sub(r'\bcall\b[^\n]*@free\(', _replace_call_free, module_text)
+	module_text = module_text + "\n" + runtime_block
+	return module_text
 def check_types(prog: Program):
 	env = TypeEnv()
 	crumb_map: Dict[str, Tuple[Optional[int], Optional[int], int, int]] = {}
@@ -3120,12 +3289,12 @@ def check_types(prog: Program):
 				raise TypeError(f"Assign type mismatch: {var_type} = {expr_type}")
 			_inc_write(stmt.name, node_desc=f"AssignWrite@{getattr(stmt,'lineno','?')}")
 			return
-		if isinstance(stmt, DerefStmt):
+		if isinstance(stmt, ForgetStmt):
 			ptr_typ = env.lookup(stmt.varname)
 			if ptr_typ is None:
-				raise TypeError(f"Cannot deref undeclared variable '{stmt.varname}'")
+				raise TypeError(f"Cannot forget undeclared variable '{stmt.varname}'")
 			if not ptr_typ.endswith('*'):
-				raise TypeError(f"Dereferencing non-pointer variable '{stmt.varname}' of type '{ptr_typ}'")
+				raise TypeError(f"Cannot forget non-pointer variable '{stmt.varname}' of type '{ptr_typ}'")
 			env.declare(stmt.varname, "undefined")
 			return
 		if isinstance(stmt, CrumbleStmt):
