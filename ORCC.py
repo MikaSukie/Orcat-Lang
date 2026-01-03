@@ -2229,11 +2229,19 @@ def infer_type(expr: Expr) -> str:
 			return possible
 	raise RuntimeError(f"Cannot infer type for expression: {expr}")
 def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
+	promoted = globals().get('current_async_promoted', None)
 	if isinstance(stmt, VarDecl):
 		if "[" in stmt.typ:
 			base, count = stmt.typ.split("[")
 			count = count[:-1]
 			llvm_ty = f"[{count} x {type_map[base]}]"
+			if promoted is not None and stmt.name in promoted:
+				if stmt.expr:
+					val = gen_expr(stmt.expr, out)
+					out.append(f"  store {llvm_ty} {val}, {llvm_ty}* %{stmt.name}_addr")
+				if not symbol_table.lookup(stmt.name):
+					symbol_table.declare(stmt.name, llvm_ty, stmt.name)
+				return
 			if not symbol_table.lookup(stmt.name):
 				out.append(f"  %{stmt.name}_addr = alloca {llvm_ty}")
 				out.append(f"  store {llvm_ty} zeroinitializer, {llvm_ty}* %{stmt.name}_addr")
@@ -2242,6 +2250,33 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 				symbol_table.declare(stmt.name, llvm_ty, stmt.name)
 		else:
 			llvm_ty = llvm_ty_of(stmt.typ)
+			if promoted is not None and stmt.name in promoted:
+				try:
+					if not symbol_table.lookup(stmt.name):
+						symbol_table.declare(stmt.name, llvm_ty, stmt.name)
+				except Exception:
+					pass
+				if stmt.expr:
+					val = gen_expr(stmt.expr, out)
+					src_llvm = llvm_ty_of(infer_type(stmt.expr))
+					if src_llvm != llvm_ty:
+						cast_tmp = new_tmp()
+						bits_src = llvm_int_bitsize(src_llvm)
+						bits_dst = llvm_int_bitsize(llvm_ty)
+						if bits_src and bits_dst:
+							if bits_src > bits_dst:
+								out.append(f"  {cast_tmp} = trunc {src_llvm} {val} to {llvm_ty}")
+							else:
+								out.append(f"  {cast_tmp} = sext {src_llvm} {val} to {llvm_ty}")
+							val = cast_tmp
+					out.append(f"  store {llvm_ty} {val}, {llvm_ty}* %{stmt.name}_addr")
+					if isinstance(stmt.expr, Call):
+						ret_t = infer_type(stmt.expr)
+						if ret_t is not None and (ret_t.endswith('*') or ret_t == 'string'):
+							owned_vars.add(stmt.name)
+							if stmt.name in crumb_runtime:
+								crumb_runtime[stmt.name]['owned'] = True
+				return
 			if not symbol_table.lookup(stmt.name):
 				out.append(f"  %{stmt.name}_addr = alloca {llvm_ty}")
 				if llvm_ty.endswith('*'):
@@ -3421,6 +3456,7 @@ def check_types(prog: Program):
 		if wmax is not None and wc < wmax:
 			print(f"[Crawl-Checker]-[WARN]: unused write crumbs on '{name}': {wmax - wc} left. [This is not an error but a security warning!]")
 		crumb_map.clear()
+current_async_promoted = None
 class AsyncStateMachine:
 	def __init__(self, func: Func, codegen):
 		self.func = func
@@ -3428,74 +3464,149 @@ class AsyncStateMachine:
 		self.states: List[List[str]] = []
 		self.current_state = 0
 		self.allocas: List[Tuple[str, str]] = []
-	def generate(self) -> List[str]:
-		name = self.func.name
-		st_ty = f"%async.{name}"
-		lines: List[str] = []
-		param_types = [llvm_ty_of(t) for t, n in self.func.params]
-		ret_ty = llvm_ty_of(self.func.ret_type)
-		local_types = [llvm_ty_of(t) for (t, n) in getattr(self, 'local_decls', [])]
-		fields = ["i32", ret_ty] + param_types + local_types
-		lines.append(f"{st_ty} = type {{ {', '.join(fields)} }}")
-		params = ", ".join(f"{llvm_ty_of(t)} %{n}" for t, n in self.func.params)
-		lines.append(f"define {st_ty}* @{name}_init({params}) {{")
-		lines.append("entry:")
-		lines.append(f"  %szptr = getelementptr inbounds {st_ty}, {st_ty}* null, i32 1")
-		lines.append(f"  %sz = ptrtoint {st_ty}* %szptr to i64")
-		lines.append(f"  %raw = call i8* @malloc(i64 %sz)")
-		lines.append(f"  %s = bitcast i8* %raw to {st_ty}*")
-		lines.append(f"  %st0 = getelementptr inbounds {st_ty}, {st_ty}* %s, i32 0, i32 0")
-		lines.append(f"  store i32 0, i32* %st0")
-		for i, (typ, namep) in enumerate(self.func.params):
-			idx = 2 + i
-			lines.append(f"  %p{i}_ptr = getelementptr inbounds {st_ty}, {st_ty}* %s, i32 0, i32 {idx}")
-			lines.append(f"  store {llvm_ty_of(typ)} %{namep}, {llvm_ty_of(typ)}* %p{i}_ptr")
-		lines.append(f"  ret {st_ty}* %s")
-		lines.append("}")
-		lines.append(f"define i1 @{name}_resume({st_ty}* %sm) {{")
-		lines.append("entry:")
-		self._build_states()
-		for idx, (nm, ty) in enumerate(self.allocas):
-			field_index = 2 + len(self.func.params) + idx
-			lines.append(f"  %{nm}_addr = getelementptr inbounds {st_ty}, {st_ty}* %sm, i32 0, i32 {field_index}")
-		lines.append(f"  %stptr = getelementptr inbounds {st_ty}, {st_ty}* %sm, i32 0, i32 0")
-		lines.append(f"  %st = load i32, i32* %stptr")
-		if self.states:
-			lines.append(f"  switch i32 %st, label %state0 [")
-			for i in range(len(self.states)):
-				lines.append(f"	i32 {i}, label %state{i}")
-			lines.append("  ]")
-		for i, st in enumerate(self.states):
-			lines.append(f"state{i}:")
-			for l in st:
-				lines.append(l)
-			last = st[-1].strip() if st else ""
-			if not (last.startswith("ret") or last == "unreachable" or last.startswith("br ")):
-				if i + 1 < len(self.states):
-					lines.append(f"  br label %state{i+1}")
+		self.local_decls: List[Tuple[str, str]] = []
+		self.promoted: set = set()
+	def _expr_uses_name(self, e: Expr, name: str) -> bool:
+		if e is None:
+			return False
+		if getattr(e, 'name', None) == name and type(e).__name__ == 'Var':
+			return True
+		if isinstance(e, Call):
+			return any(self._expr_uses_name(a, name) for a in e.args)
+		if isinstance(e, BinOp):
+			return self._expr_uses_name(e.left, name) or self._expr_uses_name(e.right, name)
+		if isinstance(e, UnaryOp):
+			return self._expr_uses_name(e.expr, name)
+		if hasattr(e, '__dict__'):
+			for v in e.__dict__.values():
+				if isinstance(v, list):
+					for item in v:
+						if isinstance(item, Expr) and self._expr_uses_name(item, name):
+							return True
+				elif isinstance(v, Expr):
+					if self._expr_uses_name(v, name):
+						return True
+		return False
+	def _stmt_uses_name(self, st: Stmt, name: str) -> bool:
+		if st is None:
+			return False
+		if isinstance(st, ExprStmt):
+			return self._expr_uses_name(st.expr, name)
+		if isinstance(st, VarDecl):
+			if getattr(st, 'expr', None):
+				return self._expr_uses_name(st.expr, name)
+			return False
+		if isinstance(st, Assign):
+			if not isinstance(st.name, str) and hasattr(st.name, '__dict__'):
+				try:
+					if self._expr_uses_name(st.name, name):
+						return True
+				except Exception:
+					pass
+			return self._expr_uses_name(st.expr, name)
+		if isinstance(st, IfStmt):
+			if self._expr_uses_name(st.cond, name):
+				return True
+			for s in st.then_body:
+				if self._stmt_uses_name(s, name):
+					return True
+			if st.else_body:
+				if isinstance(st.else_body, list):
+					for s in st.else_body:
+						if self._stmt_uses_name(s, name):
+							return True
 				else:
-					if ret_ty != 'void':
-						lines.append(f"  %ret_ptr = getelementptr inbounds {st_ty}, {st_ty}* %sm, i32 0, i32 1")
-						if ret_ty == 'double':
-							lines.append(f"  store {ret_ty} 0.0, {ret_ty}* %ret_ptr")
-						elif ret_ty.startswith('i'):
-							lines.append(f"  store {ret_ty} 0, {ret_ty}* %ret_ptr")
-						else:
-							lines.append(f"  store {ret_ty} null, {ret_ty}* %ret_ptr")
-					lines.append("  ret i1 1")
-		if not self.states:
-			lines.append("state0:")
-			if ret_ty != 'void':
-				lines.append(f"  %ret_ptr = getelementptr inbounds {st_ty}, {st_ty}* %sm, i32 0, i32 1")
-				if ret_ty == 'double':
-					lines.append(f"  store {ret_ty} 0.0, {ret_ty}* %ret_ptr")
-				elif ret_ty.startswith('i'):
-					lines.append(f"  store {ret_ty} 0, {ret_ty}* %ret_ptr")
-				else:
-					lines.append(f"  store {ret_ty} null, {ret_ty}* %ret_ptr")
-			lines.append("  ret i1 1")
-		lines.append("}")
-		return lines
+					if self._stmt_uses_name(st.else_body, name):
+						return True
+			return False
+		if isinstance(st, WhileStmt):
+			if self._expr_uses_name(st.cond, name):
+				return True
+			for s in st.body:
+				if self._stmt_uses_name(s, name):
+					return True
+			return False
+		if isinstance(st, ReturnStmt):
+			if getattr(st, 'expr', None):
+				return self._expr_uses_name(st.expr, name)
+			return False
+		if hasattr(st, '__dict__'):
+			for v in st.__dict__.values():
+				if isinstance(v, list):
+					for item in v:
+						if isinstance(item, Stmt) and self._stmt_uses_name(item, name):
+							return True
+						if isinstance(item, Expr) and self._expr_uses_name(item, name):
+							return True
+				elif isinstance(v, Expr):
+					if self._expr_uses_name(v, name):
+						return True
+				elif isinstance(v, Stmt):
+					if self._stmt_uses_name(v, name):
+						return True
+		return False
+	def _contains_await(self, stmt: Stmt) -> bool:
+		if isinstance(stmt, ExprStmt):
+			return self._expr_contains_await(stmt.expr)
+		if isinstance(stmt, VarDecl):
+			return stmt.expr is not None and self._expr_contains_await(stmt.expr)
+		if isinstance(stmt, Assign):
+			return self._expr_contains_await(stmt.expr)
+		if isinstance(stmt, ReturnStmt):
+			return stmt.expr is not None and self._expr_contains_await(stmt.expr)
+		if hasattr(stmt, '__dict__'):
+			for v in stmt.__dict__.values():
+				if isinstance(v, list):
+					for item in v:
+						if isinstance(item, Stmt) and self._contains_await(item):
+							return True
+						if isinstance(item, Expr) and self._expr_contains_await(item):
+							return True
+				elif isinstance(v, Expr):
+					if self._expr_contains_await(v):
+						return True
+				elif isinstance(v, Stmt):
+					if self._contains_await(v):
+						return True
+		return False
+	def _expr_contains_await(self, e: Expr) -> bool:
+		if e is None:
+			return False
+		if isinstance(e, AwaitExpr):
+			return True
+		if isinstance(e, BinOp):
+			return self._expr_contains_await(e.left) or self._expr_contains_await(e.right)
+		if isinstance(e, UnaryOp):
+			return self._expr_contains_await(e.expr)
+		if isinstance(e, Call):
+			return any(self._expr_contains_await(a) for a in e.args)
+		if hasattr(e, '__dict__'):
+			for v in e.__dict__.values():
+				if isinstance(v, list):
+					for item in v:
+						if isinstance(item, Expr) and self._expr_contains_await(item):
+							return True
+				elif isinstance(v, Expr):
+					if self._expr_contains_await(v):
+						return True
+		return False
+	def _compute_promoted_locals(self):
+		await_positions = [i for i, st in enumerate(self.func.body) if self._contains_await(st)]
+		decl_positions = {}
+		for i, st in enumerate(self.func.body):
+			if isinstance(st, VarDecl):
+				decl_positions[st.name] = i
+		promoted = set()
+		for name, decl_i in decl_positions.items():
+			for ai in await_positions:
+				if decl_i < ai:
+					for later in self.func.body[ai+1:]:
+						if self._stmt_uses_name(later, name):
+							promoted.add(name)
+							break
+					if name in promoted:
+						break
+		self.promoted = promoted
 	def _build_states(self):
 		if not self.func.body:
 			self.states = []
@@ -3504,9 +3615,9 @@ class AsyncStateMachine:
 			self.local_decls = []
 			return
 		self.states = []
-		self.allocas = []
+		self.allocas = list(self.allocas)
 		self.current_state = 0
-		self.local_decls = []
+		self.local_decls = list(self.local_decls)
 		accum: List[str] = []
 		for st in self.func.body:
 			if self._contains_await(st):
@@ -3572,26 +3683,6 @@ class AsyncStateMachine:
 					self.codegen._gen_stmt(st, accum, llvm_ty_of(self.func.ret_type))
 		if accum:
 			self.states.append(list(accum))
-	def _contains_await(self, stmt: Stmt) -> bool:
-		if isinstance(stmt, ExprStmt):
-			return self._expr_contains_await(stmt.expr)
-		if isinstance(stmt, VarDecl):
-			return stmt.expr is not None and self._expr_contains_await(stmt.expr)
-		if isinstance(stmt, Assign):
-			return self._expr_contains_await(stmt.expr)
-		if isinstance(stmt, ReturnStmt):
-			return stmt.expr is not None and self._expr_contains_await(stmt.expr)
-		return False
-	def _expr_contains_await(self, e: Expr) -> bool:
-		if isinstance(e, AwaitExpr):
-			return True
-		if isinstance(e, BinOp):
-			return self._expr_contains_await(e.left) or self._expr_contains_await(e.right)
-		if isinstance(e, UnaryOp):
-			return self._expr_contains_await(e.expr)
-		if isinstance(e, Call):
-			return any(self._expr_contains_await(a) for a in e.args)
-		return False
 	def _split_at_await(self, stmt: Stmt) -> Tuple[List[str], Optional[AwaitExpr], List[str]]:
 		if isinstance(stmt, ExprStmt) and isinstance(stmt.expr, AwaitExpr):
 			return ([], stmt.expr, [])
@@ -3604,6 +3695,105 @@ class AsyncStateMachine:
 		if isinstance(stmt, ReturnStmt) and isinstance(stmt.expr, AwaitExpr):
 			return ([], stmt.expr, [])
 		return ([], None, [])
+	def generate(self) -> List[str]:
+		name = self.func.name
+		st_ty = f"%async.{name}"
+		lines: List[str] = []
+		param_types = [llvm_ty_of(t) for t, n in self.func.params]
+		ret_ty = llvm_ty_of(self.func.ret_type)
+		self._compute_promoted_locals()
+		for pname in self.promoted:
+			decl_typ = None
+			for st in self.func.body:
+				if isinstance(st, VarDecl) and st.name == pname:
+					decl_typ = st.typ
+					break
+			if decl_typ is None:
+				continue
+			llvm_ty = llvm_ty_of(decl_typ)
+			if not any(nm == pname for nm, _ in self.allocas):
+				self.allocas.append((pname, llvm_ty))
+				self.local_decls.append((decl_typ, pname))
+			try:
+				if not symbol_table.lookup(pname):
+					symbol_table.declare(pname, llvm_ty, pname)
+			except Exception:
+				pass
+		local_types = [llvm_ty_of(t) for (t, n) in getattr(self, 'local_decls', [])]
+		fields = ["i32", ret_ty] + param_types + local_types
+		lines.append(f"{st_ty} = type {{ {', '.join(fields)} }}")
+		params = ", ".join(f"{llvm_ty_of(t)} %{n}" for t, n in self.func.params)
+		lines.append(f"define {st_ty}* @{name}_init({params}) {{")
+		lines.append("entry:")
+		lines.append(f"  %szptr = getelementptr inbounds {st_ty}, {st_ty}* null, i32 1")
+		lines.append(f"  %sz = ptrtoint {st_ty}* %szptr to i64")
+		lines.append(f"  %raw = call i8* @malloc(i64 %sz)")
+		lines.append(f"  %s = bitcast i8* %raw to {st_ty}*")
+		lines.append(f"  %st0 = getelementptr inbounds {st_ty}, {st_ty}* %s, i32 0, i32 0")
+		lines.append(f"  store i32 0, i32* %st0")
+		for i, (typ, namep) in enumerate(self.func.params):
+			idx = 2 + i
+			lines.append(f"  %p{i}_ptr = getelementptr inbounds {st_ty}, {st_ty}* %s, i32 0, i32 {idx}")
+			lines.append(f"  store {llvm_ty_of(typ)} %{namep}, {llvm_ty_of(typ)}* %p{i}_ptr")
+		for idx, (nm, ty) in enumerate(self.allocas):
+			field_index = 2 + len(self.func.params) + idx
+			lines.append(f"  %{nm}_init_addr = getelementptr inbounds {st_ty}, {st_ty}* %s, i32 0, i32 {field_index}")
+			if ty.endswith('*'):
+				lines.append(f"  store {ty} null, {ty}* %{nm}_init_addr")
+			elif ty == 'double' or ty == 'float':
+				lines.append(f"  store {ty} 0.0, {ty}* %{nm}_init_addr")
+			elif ty.startswith('i'):
+				lines.append(f"  store {ty} 0, {ty}* %{nm}_init_addr")
+			else:
+				lines.append(f"  store {ty} zeroinitializer, {ty}* %{nm}_init_addr")
+		lines.append(f"  ret {st_ty}* %s")
+		lines.append("}")
+		lines.append(f"define i1 @{name}_resume({st_ty}* %sm) {{")
+		lines.append("entry:")
+		self._build_states()
+		for idx, (nm, ty) in enumerate(self.allocas):
+			field_index = 2 + len(self.func.params) + idx
+			lines.append(f"  %{nm}_addr = getelementptr inbounds {st_ty}, {st_ty}* %sm, i32 0, i32 {field_index}")
+		lines.append(f"  %stptr = getelementptr inbounds {st_ty}, {st_ty}* %sm, i32 0, i32 0")
+		lines.append(f"  %st = load i32, i32* %stptr")
+		if self.states:
+			lines.append(f"  switch i32 %st, label %state0 [")
+			for i in range(len(self.states)):
+				lines.append(f"	i32 {i}, label %state{i}")
+			lines.append("  ]")
+		for i, st in enumerate(self.states):
+			lines.append(f"state{i}:")
+			for l in st:
+				lines.append(l)
+			last = st[-1].strip() if st else ""
+			if not (last.startswith("ret") or last == "unreachable" or last.startswith("br ")):
+				if i + 1 < len(self.states):
+					lines.append(f"  br label %state{i+1}")
+				else:
+					if ret_ty != 'void':
+						lines.append(f"  %ret_ptr = getelementptr inbounds {st_ty}, {st_ty}* %sm, i32 0, i32 1")
+						if ret_ty == 'double':
+							lines.append(f"  store {ret_ty} 0.0, {ret_ty}* %ret_ptr")
+						elif ret_ty.startswith('i'):
+							lines.append(f"  store {ret_ty} 0, {ret_ty}* %ret_ptr")
+						else:
+							lines.append(f"  store {ret_ty} null, {ret_ty}* %ret_ptr")
+					lines.append("  ret i1 1")
+		if not self.states:
+			lines.append("state0:")
+			if ret_ty != 'void':
+				lines.append(f"  %ret_ptr = getelementptr inbounds {st_ty}, {st_ty}* %sm, i32 0, i32 1")
+				if ret_ty == 'double':
+					lines.append(f"  store {ret_ty} 0.0, {ret_ty}* %ret_ptr")
+				elif ret_ty.startswith('i'):
+					lines.append(f"  store {ret_ty} 0, {ret_ty}* %ret_ptr")
+				else:
+					lines.append(f"  store {ret_ty} null, {ret_ty}* %ret_ptr")
+			lines.append("  ret i1 1")
+		lines.append("}")
+		global current_async_promoted
+		current_async_promoted = None
+		return lines
 def main():
 	global all_funcs, func_table, builtins_emitted
 	all_funcs = []
@@ -3614,7 +3804,7 @@ def main():
 	struct_field_map.clear()
 	string_constants.clear()
 	generated_mono.clear()
-	parser = argparse.ArgumentParser(description="Orcat Compiler")
+	parser = argparse.ArgumentParser(description="ORCat Compiler")
 	parser.add_argument("input", help="Input source file (.orcat or .sorcat)")
 	parser.add_argument("-o", "--output", required=True, help="Output LLVM IR file (.ll)")
 	args = parser.parse_args()
@@ -3674,11 +3864,10 @@ def main():
 			all_enums.extend(sub_prog.enums)
 			all_globals.extend(sub_prog.globals)
 			for func in sub_prog.funcs:
-				if func.access == 'pub':
-					sig = (func.name, len(func.params), func.is_extern)
-					if sig not in seen_func_signatures:
-						all_funcs.append(func)
-						seen_func_signatures.add(sig)
+				sig = (func.name, len(func.params), func.is_extern)
+				if sig not in seen_func_signatures:
+					all_funcs.append(func)
+					seen_func_signatures.add(sig)
 	load_imports_recursively(main_prog, all_funcs, all_structs, all_enums, all_globals)
 	all_funcs.extend(main_prog.funcs)
 	all_structs.extend(main_prog.structs)
