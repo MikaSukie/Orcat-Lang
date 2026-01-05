@@ -274,6 +274,82 @@ pub fn test_C_RuntimeUnionTest() <int> {
     return 0;
 }
 
+// ----------------- NEW STRESS TESTS (merged) -----------------
+
+// async testing
+async fn test_async_inner() <int> {
+    int f = 25;
+    f += 50;
+    return f;
+}
+pub fn test_async() <int> {
+    return await test_async_inner();
+}
+
+// cast testing
+pub fn test_cast() <int> {
+    print(etypeof(int8(0)));
+    newline();
+    return 0;
+}
+
+// enum1
+enum Color { Red; Green; Blue; }
+pub fn test_enum1() <int> {
+  Color c = Color.Green;
+  match (c) {
+    Red:  { return 0; }
+    Green:{ return 1; }
+    Blue: { return 2; }
+  }
+  return 0;
+}
+
+// enum2
+enum Opt { None; Some: int; }
+pub fn test_enum2() <int> {
+  Opt o = Some(42);
+  match (o) {
+    None:     { return 0; }
+    Some(x):  { return x; }
+  }
+  return 0;
+}
+
+// generic enum
+enum Option<T> {
+  None;
+  Some: T;
+}
+pub fn test_generic_enum() <int> {
+    return 0;
+}
+
+// get address
+pub fn test_get_address() <int> {
+    int x;
+    x = 42;
+    int* p;
+    p = &x;
+    *p = 100;
+    print("0");
+    return 0;
+}
+
+// multigenerics test
+pub fn <F, U> pair(F a, U b) <void> {
+  return;
+}
+pub fn test_multigeneric() <int> {
+  pair(1, 2.0);
+  return 0;
+}
+
+// enums with space definitions.
+enum Opt { None; Some int; }
+
+// ----------------- END NEW STRESS TESTS -----------------
+
 pub fn main() <int> {
     print("=== TEST: nottest ===\n"); test_nottest(); newline();
     print("=== TEST: args ===\n"); test_args(); newline();
@@ -287,6 +363,15 @@ pub fn main() <int> {
     print("=== TEST: mathoptest ===\n"); test_mathoptest(); newline();
     print("=== TEST: memtest ===\n"); test_memtest(); newline();
     print("=== TEST: C_RuntimeUnionTest ===\n"); test_C_RuntimeUnionTest(); newline();
+
+    // run merged new tests
+    print("=== TEST: async ===\n"); print(itostr(test_async())); newline();
+    print("=== TEST: cast ===\n"); test_cast(); newline();
+    print("=== TEST: enum1 ===\n"); print(itostr(test_enum1())); newline();
+    print("=== TEST: enum2 ===\n"); print(itostr(test_enum2())); newline();
+    print("=== TEST: generic_enum ===\n"); print(itostr(test_generic_enum())); newline();
+    print("=== TEST: get_address ===\n"); test_get_address(); newline();
+    print("=== TEST: multigeneric ===\n"); print(itostr(test_multigeneric())); newline();
 
     print("=== ALL TESTS FINISHED ===\n");
     return 0;
