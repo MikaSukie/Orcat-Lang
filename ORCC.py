@@ -14,7 +14,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 '''
 import re, os, argparse
-from typing import List, Optional, Tuple, Union, Dict
+from typing import List, Optional, Tuple, Union, Dict, Any
 from dataclasses import dataclass
 compiled=""
 builtins_emitted = False
@@ -107,7 +107,166 @@ def llvm_ty_of(typ: str) -> str:
 	if typ in type_map:
 		return type_map[typ]
 	return f"%struct.{typ}"
-def _subst_type(typ: str, subst: Dict[str, str]) -> str:
+def zero_const_for_llvm(llvm_t: str) -> str:
+	if '*' in llvm_t or llvm_t.strip().startswith('%'):
+		return 'null'
+	return '0'
+def ensure_monomorph_for_call(base_name: str, actual_types: List[str]) -> str:
+	mangled_parts = [mangle_type(a) for a in actual_types]
+	mononame = f"{base_name}_" + "_".join(mangled_parts)
+	if mononame not in func_table:
+		base_fn = next((f for f in all_funcs if f.name == base_name and f.type_params), None)
+		if base_fn is None:
+			return mononame
+		new_ret = base_fn.ret_type
+		if getattr(base_fn, "type_params", None) and new_ret in base_fn.type_params:
+			idx = base_fn.type_params.index(new_ret)
+			new_ret = actual_types[idx]
+		func_table[mononame] = type_map.get(new_ret, f"%struct.{new_ret}")
+		if getattr(base_fn, "is_async", False):
+			struct_ty = f"%async.{mononame}"
+			func_table[f"{mononame}_init"] = f"{struct_ty}*"
+			func_table[f"{mononame}_resume"] = "i1"
+			func_table.setdefault(f"{base_name}_init", func_table[f"{mononame}_init"])
+			func_table.setdefault(f"{base_name}_resume", func_table[f"{mononame}_resume"])
+	return mononame
+def ensure_monomorph_call(call_expr: 'Call', out: List[str]) -> str:
+	base_fn = next((f for f in all_funcs if f.name == call_expr.name), None)
+	if not base_fn or not getattr(base_fn, "type_params", None):
+		return call_expr.name
+	if not call_expr.args:
+		raise RuntimeError(f"Generic function '{call_expr.name}' called with no arguments to infer type parameters")
+	arg_types = [infer_type(a) for a in call_expr.args]
+	actuals = []
+	for tp in base_fn.type_params:
+		found = None
+		for param_idx, (param_typ, _) in enumerate(base_fn.params):
+			if param_typ == tp or tp in param_typ:
+				if param_idx < len(arg_types):
+					found = arg_types[param_idx]
+					break
+		if found is None:
+			if base_fn.ret_type == tp and len(arg_types) > 0:
+				found = arg_types[0]
+		if found is None:
+			raise RuntimeError(f"Cannot infer type parameter '{tp}' for generic function '{call_expr.name}'")
+		actuals.append(found)
+	mangled_parts = [mangle_type(a) for a in actuals]
+	mononame = f"{call_expr.name}_" + "_".join(mangled_parts)
+	if mononame in func_table:
+		return mononame
+	def _subst_type_local(typ: str, subst: dict) -> str | None | Any:
+		if typ is None:
+			return typ
+		if typ in subst:
+			return subst[typ]
+		for param, concrete in subst.items():
+			if typ == param:
+				return concrete
+			if typ.startswith(param) and typ[len(param):] in ('*', '[]'):
+				return concrete + typ[len(param):]
+		return typ
+	subst_map = {}
+	for (param_type, _), actual in zip(base_fn.params, arg_types):
+		for tp in base_fn.type_params:
+			if param_type == tp:
+				subst_map[tp] = actual
+			elif param_type.startswith(tp) and param_type[len(tp):] in ('*', '[]'):
+				subst_map[tp] = actual
+	if base_fn.type_params and not any(tp in subst_map for tp in base_fn.type_params):
+		subst_map[base_fn.type_params[0]] = arg_types[0]
+	def replace_in_expr(e: Expr):
+		if e is None:
+			return None
+		if isinstance(e, Var):
+			return Var(e.name)
+		if isinstance(e, IntLit) or isinstance(e, FloatLit) or isinstance(e, BoolLit) or isinstance(e, StrLit) or isinstance(e, CharLit) or isinstance(e, NullLit):
+			return e
+		if isinstance(e, Call):
+			return Call(e.name, [replace_in_expr(a) for a in e.args])
+		if isinstance(e, UnaryOp):
+			return UnaryOp(e.op, replace_in_expr(e.expr))
+		if isinstance(e, BinOp):
+			return BinOp(e.op, replace_in_expr(e.left), replace_in_expr(e.right))
+		if isinstance(e, FieldAccess):
+			return FieldAccess(replace_in_expr(e.base), e.field)
+		if isinstance(e, Index):
+			return Index(replace_in_expr(e.array), replace_in_expr(e.index))
+		if isinstance(e, StructInit):
+			return StructInit(e.name, [(fname, replace_in_expr(fexpr)) for fname, fexpr in e.fields])
+		if isinstance(e, AwaitExpr):
+			return AwaitExpr(replace_in_expr(e.expr))
+		if isinstance(e, UnaryDeref):
+			return UnaryDeref(replace_in_expr(e.ptr))
+		if isinstance(e, AddressOf):
+			return AddressOf(replace_in_expr(e.expr))
+		if isinstance(e, Cast):
+			new_typ = _subst_type_local(e.typ, subst_map)
+			return Cast(new_typ, replace_in_expr(e.expr))
+		if isinstance(e, Ternary):
+			return Ternary(replace_in_expr(e.cond), replace_in_expr(e.then_expr), replace_in_expr(e.else_expr))
+		if isinstance(e, TypeofExpr):
+			return TypeofExpr(e.kind, replace_in_expr(e.expr))
+		return e
+	def replace_in_stmt(s: Stmt):
+		if s is None:
+			return None
+		if isinstance(s, VarDecl):
+			new_typ = _subst_type_local(s.typ, subst_map)
+			new_expr = replace_in_expr(s.expr) if s.expr else None
+			return VarDecl(s.access, new_typ, s.name, new_expr, s.nomd)
+		if isinstance(s, Assign):
+			lhs = s.name
+			return Assign(lhs, replace_in_expr(s.expr))
+		if isinstance(s, IndexAssign):
+			return IndexAssign(s.array, replace_in_expr(s.index), replace_in_expr(s.value))
+		if isinstance(s, IfStmt):
+			cond0 = replace_in_expr(s.cond)
+			then_body0 = [replace_in_stmt(ss) for ss in s.then_body]
+			else_body0 = None
+			if s.else_body:
+				if isinstance(s.else_body, IfStmt):
+					else_body0 = replace_in_stmt(s.else_body)
+				else:
+					else_body0 = [replace_in_stmt(ss) for ss in s.else_body]
+			return IfStmt(cond0, then_body0, else_body0)
+		if isinstance(s, WhileStmt):
+			return WhileStmt(replace_in_expr(s.cond), [replace_in_stmt(ss) for ss in s.body])
+		if isinstance(s, ReturnStmt):
+			return ReturnStmt(replace_in_expr(s.expr) if s.expr else None)
+		if isinstance(s, ExprStmt):
+			return ExprStmt(replace_in_expr(s.expr))
+		if isinstance(s, Match):
+			new_expr0 = replace_in_expr(s.expr)
+			new_cases = []
+			for case in s.cases:
+				new_body0 = [replace_in_stmt(ss) for ss in case.body]
+				new_cases.append(MatchCase(case.variant, case.binding, new_body0))
+			return Match(new_expr0, new_cases)
+		return s
+	new_params = [(_subst_type_local(p[0], subst_map), p[1]) for p in base_fn.params]
+	new_ret = _subst_type_local(base_fn.ret_type, subst_map)
+	new_body = [replace_in_stmt(stmt) for stmt in base_fn.body] if base_fn.body else None
+	new_fn = Func(base_fn.access, mononame, [], new_params, new_ret, new_body, base_fn.is_extern, base_fn.is_async)
+	all_funcs.append(new_fn)
+	func_table[mononame] = llvm_ty_of(new_ret)
+	func_table.setdefault(call_expr.name, func_table[mononame])
+	generated_mono[mononame] = True
+	try:
+		llvm_lines = gen_func(new_fn)
+	except Exception:
+		generated_mono.pop(mononame, None)
+		func_table.pop(mononame, None)
+		if func_table.get(call_expr.name) == func_table.get(mononame):
+			func_table.pop(call_expr.name, None)
+		try:
+			all_funcs.remove(new_fn)
+		except ValueError:
+			pass
+		raise
+	out.insert(0, "\n".join(llvm_lines))
+	return mononame if mononame in func_table else call_expr.name
+def _subst_type(typ: str, subst: Dict[str, str]) -> str | None:
 	if typ is None:
 		return typ
 	if typ in subst:
@@ -157,7 +316,7 @@ def int_type_info(typ: str) -> Tuple[int, bool]:
 		return int(llvm_name[1:]), False
 	return 64, False
 def extract_array_base_type(llvm_ty: str) -> str:
-	match = re.match(r'\[\d+\s*x\s+(.+)\]', llvm_ty)
+	match = re.match(r'\[\d+\s*x\s+(.+)]', llvm_ty)
 	if not match:
 		raise RuntimeError(f"Cannot extract element type from: {llvm_ty}")
 	return match.group(1)
@@ -493,7 +652,7 @@ generated_mono: Dict[str, bool] = {}
 all_funcs: List[Func] = []
 enum_variant_map: Dict[str, List[Tuple[str, Optional[str]]]] = {}
 loop_stack: List[Dict[str, str]] = []
-crumb_runtime: Dict[str, Dict[str, Optional[int]]] = {}
+crumb_runtime: Dict[str, Dict[str, Any]] = {}
 owned_vars: set = set()
 autoregion_stack: List[Dict[str, object]] = []
 class Parser:
@@ -577,6 +736,7 @@ class Parser:
 			expr = self.parse_expr()
 		self.expect('SEMI')
 		return GlobalVar(typ, name, expr)
+
 	def parse_enum_def(self) -> EnumDef:
 		self.expect('ENUM')
 		name = self.expect('IDENT').value
@@ -589,17 +749,22 @@ class Parser:
 		while self.peek().kind != 'RBRACE':
 			variant_name = self.expect('IDENT').value
 			variant_type: Optional[str] = None
-			if self.match('COLON'):
+			if self.peek().kind in TYPE_TOKENS or self.peek().kind == 'IDENT':
+				variant_type = self.bump().value
+				self.expect('SEMI')
+			elif self.match('COLON'):
 				if self.peek().kind in TYPE_TOKENS or self.peek().kind == 'IDENT':
 					variant_type = self.bump().value
 				else:
-					raise SyntaxError(f"Expected type after ':', got {self.peek().kind} at {self.peek().line}:{self.peek().col}")
+					raise SyntaxError(
+						f"Expected type after ':', got {self.peek().kind} at {self.peek().line}:{self.peek().col}")
 				self.expect('SEMI')
 			elif self.match('LPAREN'):
 				if self.peek().kind in TYPE_TOKENS or self.peek().kind == 'IDENT':
 					variant_type = self.bump().value
 				else:
-					raise SyntaxError(f"Expected type inside variant parentheses, got {self.peek().kind} at {self.peek().line}:{self.peek().col}")
+					raise SyntaxError(
+						f"Expected type inside variant parentheses, got {self.peek().kind} at {self.peek().line}:{self.peek().col}")
 				self.expect('RPAREN')
 				self.expect('SEMI')
 			else:
@@ -1098,7 +1263,7 @@ type_map = {
 struct_llvm_defs: List[str] = []
 symbol_table = SymbolTable()
 func_table: Dict[str, str] = {}
-def gen_expr(expr: Expr, out: List[str]) -> str:
+def gen_expr(expr: Expr, out: List[str]) -> str | None:
 	def format_float(val: float) -> str:
 		return f"{val:.8e}"
 	def _maybe_flush_deferred(e: Expr, ssa_name: str) -> None:
@@ -1106,10 +1271,13 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 			return
 		name = e.name
 		cr = crumb_runtime.get(name)
-		if not cr or '_deferred_frees' not in cr:
+		if not cr:
+			return
+		deferred = cr.get('_deferred_frees')
+		if not deferred:
 			return
 		new_deferred = []
-		for (vn, ssa_tmp, llvm_typ) in cr['_deferred_frees']:
+		for (vn, ssa_tmp, llvm_typ) in list(deferred):
 			if ssa_tmp == ssa_name:
 				cast_tmp = new_tmp()
 				out.append(f"  {cast_tmp} = bitcast {llvm_typ} {ssa_tmp} to i8*")
@@ -1252,36 +1420,57 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 	if isinstance(expr, AwaitExpr):
 		inner = expr.expr
 		if isinstance(inner, Call):
+			call_target = ensure_monomorph_call(inner, out)
 			args_ir: List[str] = []
-			for a in inner.args:
-				tmpa = gen_expr(a, out)
-				ty_a = infer_type(a)
-				args_ir.append(f"{llvm_ty_of(ty_a)} {tmpa}")
+			concrete_fn = next((f for f in all_funcs if f.name == call_target), None)
+			if concrete_fn:
+				for a, (param_typ, _) in zip(inner.args, concrete_fn.params):
+					tmpa = gen_expr(a, out)
+					llvm_param_ty = llvm_ty_of(param_typ)
+					if tmpa is None:
+						args_ir.append(f"{llvm_param_ty} {zero_const_for_llvm(llvm_param_ty)}")
+					else:
+						args_ir.append(f"{llvm_param_ty} {tmpa}")
+			else:
+				for a in inner.args:
+					tmpa = gen_expr(a, out)
+					ty_a = infer_type(a)
+					llvm_ty = llvm_ty_of(ty_a)
+					if tmpa is None:
+						args_ir.append(f"{llvm_ty} {zero_const_for_llvm(llvm_ty)}")
+					else:
+						args_ir.append(f"{llvm_ty} {tmpa}")
 			args_sig = ", ".join(args_ir)
 			handle_tmp = new_tmp()
+			struct_name = f"%async.{call_target}"
 			if args_sig:
-				out.append(f"  {handle_tmp} = call %async.{inner.name}* @{inner.name}_init({args_sig})")
+				out.append(f"  {handle_tmp} = call {struct_name}* @{call_target}_init({args_sig})")
 			else:
-				out.append(f"  {handle_tmp} = call %async.{inner.name}* @{inner.name}_init()")
-			loop_lbl = new_label("await_loop")
-			done_lbl = new_label("await_done")
-			out.append(f"  br label %{loop_lbl}")
-			out.append(f"{loop_lbl}:")
+				out.append(f"  {handle_tmp} = call {struct_name}* @{call_target}_init()")
 			done_tmp = new_tmp()
-			out.append(f"  {done_tmp} = call i1 @{inner.name}_resume(%async.{inner.name}* {handle_tmp})")
-			cmp_tmp = new_tmp()
-			out.append(f"  {cmp_tmp} = icmp eq i1 {done_tmp}, 0")
-			out.append(f"  br i1 {cmp_tmp}, label %{loop_lbl}, label %{done_lbl}")
-			out.append(f"{done_lbl}:")
-			base_fn = next((f for f in all_funcs if f.name == inner.name), None)
-			ret_llvm = llvm_ty_of(base_fn.ret_type) if base_fn else "i64"
-			ret_ptr_tmp = new_tmp()
-			out.append(f"  {ret_ptr_tmp} = getelementptr inbounds %async.{inner.name}, %async.{inner.name}* {handle_tmp}, i32 0, i32 1")
-			ret_val_tmp = new_tmp()
-			out.append(f"  {ret_val_tmp} = load {ret_llvm}, {ret_llvm}* {ret_ptr_tmp}")
-			return ret_val_tmp
+			out.append(f"  {done_tmp} = call i1 @{call_target}_resume({struct_name}* {handle_tmp})")
+			cont_lbl = new_label("await_cont")
+			suspend_lbl = new_label("await_suspend")
+			out.append(f"  br i1 {done_tmp}, label %{cont_lbl}, label %{suspend_lbl}")
+			out.append(f"{suspend_lbl}:")
+			resume_ptr_tmp = new_tmp()
+			out.append(f"  {resume_ptr_tmp} = bitcast i1 ({struct_name}*)* @{call_target}_resume to i8*")
+			handle_b_tmp = new_tmp()
+			out.append(f"  {handle_b_tmp} = bitcast {struct_name}* {handle_tmp} to i8*")
+			out.append(f"  call void @orcc_register_async(i8* {resume_ptr_tmp}, i8* {handle_b_tmp})")
+			out.append(f"  call void @orcc_block_until_complete(i8* {handle_b_tmp})")
+			out.append(f"  br label %{cont_lbl}")
+			out.append(f"{cont_lbl}:")
+			base_fn = next((f for f in all_funcs if f.name == call_target), None)
+			ret_llvm = llvm_ty_of(base_fn.ret_type) if base_fn else 'i64'
+			res_ptr = new_tmp()
+			out.append(f"  {res_ptr} = getelementptr inbounds {struct_name}, {struct_name}* {handle_tmp}, i32 0, i32 1")
+			await_ret = new_tmp()
+			out.append(f"  {await_ret} = load {ret_llvm}, {ret_llvm}* {res_ptr}")
+			return await_ret
 		else:
-			raise RuntimeError("Await supports only direct Call(.) expressions for now")
+			out.append("  ; await of non-call expression is not supported here")
+			return None
 	if isinstance(expr, UnaryOp):
 		val = gen_expr(expr.expr, out)
 		ty = infer_type(expr.expr)
@@ -1611,16 +1800,13 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 		vn = expr.name
 		cr = crumb_runtime.get(vn)
 		if cr is not None:
-			cr['rc'] = (cr.get('rc', 0) or 0) + 1
-			cr['owned'] = cr.get('owned', False) or (vn in owned_vars)
+			cr['rc'] = int(cr.get('rc', 0) or 0) + 1
+			cr['owned'] = bool(cr.get('owned', False)) or (vn in owned_vars)
 			rmax = cr.get('rmax')
-			if rmax is not None and cr['rc'] == rmax and cr['owned']:
-				if '_deferred_frees' not in cr:
-					cr['_deferred_frees'] = []
-				cr['_deferred_frees'].append((vn, tmp, typ))
+			if rmax is not None and cr['rc'] == rmax and cr.get('owned'):
+				cr.setdefault('_deferred_frees', []).append((vn, tmp, typ))
 				cr['owned'] = False
-				if vn in owned_vars:
-					owned_vars.discard(vn)
+				owned_vars.discard(vn)
 		return tmp
 	if isinstance(expr, BinOp):
 		lhs = gen_expr(expr.left, out)
@@ -1793,242 +1979,39 @@ def gen_expr(expr: Expr, out: List[str]) -> str:
 			tmp = new_tmp()
 			out.append(f"  {tmp} = xor i1 {arg}, true")
 			return tmp
-		base_fn = next((f for f in all_funcs if f.name == expr.name), None)
-		if base_fn and base_fn.is_async:
+		call_target = ensure_monomorph_call(expr, out)
+		concrete_fn = next((f for f in all_funcs if f.name == call_target), None)
+		if concrete_fn and concrete_fn.is_async:
 			raise RuntimeError(f"async function '{expr.name}' must be awaited")
-		if base_fn and base_fn.type_params:
-			actuals: List[str] = []
-			if not arg_types:
-				raise RuntimeError(f"Generic function '{expr.name}' called with no arguments to infer type parameters")
-			for tp in base_fn.type_params:
-				found = None
-				for param_idx, (param_typ, _) in enumerate(base_fn.params):
-					if param_typ == tp or tp in param_typ:
-						if param_idx < len(arg_types):
-							found = arg_types[param_idx]
-							break
-				if found is None:
-					if base_fn.ret_type == tp and len(arg_types) > 0:
-						found = arg_types[0]
-				if found is None:
-					raise RuntimeError(f"Cannot infer type parameter '{tp}' for generic function '{expr.name}'")
-				actuals.append(found)
-			mangled_parts = [mangle_type(a) for a in actuals]
-			mononame = f"{expr.name}_" + "_".join(mangled_parts)
-			if mononame not in generated_mono:
-				subst_map = {tp: actual for tp, actual in zip(base_fn.type_params, actuals)}
-				new_params = [(subst_map.get(p[0], p[0]), p[1]) for p in base_fn.params]
-				new_ret = subst_map.get(base_fn.ret_type, base_fn.ret_type)
-				def replace_in_expr(e: Expr) -> Expr:
-					if e is None:
-						return None
-					if isinstance(e, Var):
-						return Var(e.name)
-					if isinstance(e, IntLit):
-						return IntLit(e.value)
-					if isinstance(e, FloatLit):
-						return FloatLit(e.value)
-					if isinstance(e, BoolLit):
-						return BoolLit(e.value)
-					if isinstance(e, CharLit):
-						return CharLit(e.value)
-					if isinstance(e, StrLit):
-						return StrLit(e.value)
-					if isinstance(e, NullLit):
-						return NullLit()
-					if isinstance(e, UnaryDeref):
-						return UnaryDeref(replace_in_expr(e.ptr))
-					if isinstance(e, UnaryOp):
-						return UnaryOp(e.op, replace_in_expr(e.expr))
-					if isinstance(e, BinOp):
-						return BinOp(e.op, replace_in_expr(e.left), replace_in_expr(e.right))
-					if isinstance(e, Ternary):
-						return Ternary(replace_in_expr(e.cond), replace_in_expr(e.then_expr),
-									   replace_in_expr(e.else_expr))
-					if isinstance(e, Cast):
-						return Cast(_subst_type(e.typ, subst_map), replace_in_expr(e.expr))
-					if isinstance(e, Call):
-						return Call(e.name, [replace_in_expr(a) for a in e.args])
-					if isinstance(e, FieldAccess):
-						return FieldAccess(replace_in_expr(e.base), e.field)
-					if isinstance(e, Index):
-						return Index(replace_in_expr(e.array), replace_in_expr(e.index))
-					if isinstance(e, StructInit):
-						return StructInit(e.name, [(fname, replace_in_expr(fexpr)) for fname, fexpr in e.fields])
-					if isinstance(e, AwaitExpr):
-						return AwaitExpr(replace_in_expr(e.expr))
-					return e
-				def replace_in_stmt(s: Stmt) -> Stmt:
-					if s is None:
-						return None
-					if isinstance(s, VarDecl):
-						new_typ = _subst_type(s.typ, subst_map)
-						new_expr = replace_in_expr(s.expr) if s.expr else None
-						return VarDecl(s.access, new_typ, s.name, new_expr, s.nomd)
-					if isinstance(s, Assign):
-						lhs = s.name
-						return Assign(lhs, replace_in_expr(s.expr))
-					if isinstance(s, IndexAssign):
-						return IndexAssign(s.array, replace_in_expr(s.index), replace_in_expr(s.value))
-					if isinstance(s, IfStmt):
-						cond0 = replace_in_expr(s.cond)
-						then_body0 = [replace_in_stmt(ss) for ss in s.then_body]
-						else_body0 = None
-						if s.else_body:
-							if isinstance(s.else_body, IfStmt):
-								else_body0 = replace_in_stmt(s.else_body)
-							else:
-								else_body0 = [replace_in_stmt(ss) for ss in s.else_body]
-						return IfStmt(cond0, then_body0, else_body0)
-					if isinstance(s, WhileStmt):
-						return WhileStmt(replace_in_expr(s.cond), [replace_in_stmt(ss) for ss in s.body])
-					if isinstance(s, ReturnStmt):
-						return ReturnStmt(replace_in_expr(s.expr) if s.expr else None)
-					if isinstance(s, ExprStmt):
-						return ExprStmt(replace_in_expr(s.expr))
-					if isinstance(s, Match):
-						new_expr0 = replace_in_expr(s.expr)
-						new_cases: List[MatchCase] = []
-						for case in s.cases:
-							new_body0 = [replace_in_stmt(ss) for ss in case.body]
-							new_cases.append(MatchCase(case.variant, case.binding, new_body0))
-						return Match(new_expr0, new_cases)
-					return s
-				new_params = [(_subst_type(p[0], subst_map), p[1]) for p in base_fn.params]
-				new_ret = _subst_type(base_fn.ret_type, subst_map)
-				new_body = [replace_in_stmt(stmt) for stmt in base_fn.body] if base_fn.body else None
-				new_fn = Func(base_fn.access, mononame, [], new_params, new_ret, new_body, base_fn.is_extern,
-							  base_fn.is_async)
-				all_funcs.append(new_fn)
-				func_table[mononame] = llvm_ty_of(new_ret)
-				func_table.setdefault(expr.name, func_table[mononame])
-				generated_mono[mononame] = True
-				try:
-					llvm_lines = gen_func(new_fn)
-				except Exception:
-					generated_mono.pop(mononame, None)
-					func_table.pop(mononame, None)
-					if func_table.get(expr.name) == func_table.get(mononame):
-						func_table.pop(expr.name, None)
-					try:
-						all_funcs.remove(new_fn)
-					except ValueError:
-						pass
-					raise
-				out.insert(0, "\n".join(llvm_lines))
-				call_target = mononame if mononame in func_table else expr.name
-				ret_ty = func_table.get(call_target, 'void')
-				if ret_ty == 'void':
-					out.append(f"  call void @{call_target}({', '.join(args_ir)})")
-					for arg_expr, arg_val in zip(expr.args, arg_vals):
-						if isinstance(arg_expr, Var):
-							name = arg_expr.name
-							cr = crumb_runtime.get(name)
-							if cr is not None and '_deferred_frees' in cr:
-								new_deferred = []
-								for (vn, ssa_tmp, llvm_typ) in cr['_deferred_frees']:
-									if ssa_tmp == arg_val:
-										cast_tmp = new_tmp()
-										out.append(f"  {cast_tmp} = bitcast {llvm_typ} {ssa_tmp} to i8*")
-										out.append(f"  call void @free(i8* {cast_tmp})")
-										cr['owned'] = False
-										if vn in owned_vars:
-											owned_vars.discard(vn)
-									else:
-										new_deferred.append((vn, ssa_tmp, llvm_typ))
-								if new_deferred:
-									cr['_deferred_frees'] = new_deferred
-								else:
-									cr.pop('_deferred_frees', None)
-					return ''
+		args_ir = []
+		if concrete_fn:
+			for a_val, (param_typ, _) in zip(arg_vals, concrete_fn.params):
+				llvm_param_ty = llvm_ty_of(param_typ)
+				if a_val is None:
+					args_ir.append(f"{llvm_param_ty} {zero_const_for_llvm(llvm_param_ty)}")
 				else:
-					tmp2 = new_tmp()
-					out.append(f"  {tmp2} = call {ret_ty} @{call_target}({', '.join(args_ir)})")
-					for arg_expr, arg_val in zip(expr.args, arg_vals):
-						if isinstance(arg_expr, Var):
-							name = arg_expr.name
-							cr = crumb_runtime.get(name)
-							if cr is not None and '_deferred_frees' in cr:
-								new_deferred = []
-								for (vn, ssa_tmp, llvm_typ) in cr['_deferred_frees']:
-									if ssa_tmp == arg_val:
-										cast_tmp = new_tmp()
-										out.append(f"  {cast_tmp} = bitcast {llvm_typ} {ssa_tmp} to i8*")
-										out.append(f"  call void @free(i8* {cast_tmp})")
-										cr['owned'] = False
-										if vn in owned_vars:
-											owned_vars.discard(vn)
-									else:
-										new_deferred.append((vn, ssa_tmp, llvm_typ))
-								if new_deferred:
-									cr['_deferred_frees'] = new_deferred
-								else:
-									cr.pop('_deferred_frees', None)
-					return tmp2
-			else:
-				call_target = mononame if mononame in func_table else expr.name
-				ret_ty = func_table.get(call_target, 'void')
-				if ret_ty == 'void':
-					out.append(f"  call void @{call_target}({', '.join(args_ir)})")
-					for arg_expr, arg_val in zip(expr.args, arg_vals):
-						if isinstance(arg_expr, Var):
-							name = arg_expr.name
-							cr = crumb_runtime.get(name)
-							if cr is not None and '_deferred_frees' in cr:
-								new_deferred = []
-								for (vn, ssa_tmp, llvm_typ) in cr['_deferred_frees']:
-									if ssa_tmp == arg_val:
-										cast_tmp = new_tmp()
-										out.append(f"  {cast_tmp} = bitcast {llvm_typ} {ssa_tmp} to i8*")
-										out.append(f"  call void @free(i8* {cast_tmp})")
-										cr['owned'] = False
-										if vn in owned_vars:
-											owned_vars.discard(vn)
-									else:
-										new_deferred.append((vn, ssa_tmp, llvm_typ))
-								if new_deferred:
-									cr['_deferred_frees'] = new_deferred
-								else:
-									cr.pop('_deferred_frees', None)
-					return ''
+					args_ir.append(f"{llvm_param_ty} {a_val}")
+		else:
+			for a_val, a_ty in zip(arg_vals, arg_types):
+				llvm_ty = llvm_ty_of(a_ty)
+				if a_val is None:
+					args_ir.append(f"{llvm_ty} {zero_const_for_llvm(llvm_ty)}")
 				else:
-					tmp2 = new_tmp()
-					out.append(f"  {tmp2} = call {ret_ty} @{call_target}({', '.join(args_ir)})")
-					for arg_expr, arg_val in zip(expr.args, arg_vals):
-						if isinstance(arg_expr, Var):
-							name = arg_expr.name
-							cr = crumb_runtime.get(name)
-							if cr is not None and '_deferred_frees' in cr:
-								new_deferred = []
-								for (vn, ssa_tmp, llvm_typ) in cr['_deferred_frees']:
-									if ssa_tmp == arg_val:
-										cast_tmp = new_tmp()
-										out.append(f"  {cast_tmp} = bitcast {llvm_typ} {ssa_tmp} to i8*")
-										out.append(f"  call void @free(i8* {cast_tmp})")
-										cr['owned'] = False
-										if vn in owned_vars:
-											owned_vars.discard(vn)
-									else:
-										new_deferred.append((vn, ssa_tmp, llvm_typ))
-								if new_deferred:
-									cr['_deferred_frees'] = new_deferred
-								else:
-									cr.pop('_deferred_frees', None)
-					return tmp2
-		if expr.name in func_table:
-			ret_ty = func_table[expr.name]
-			if ret_ty == 'void':
-				out.append(f"  call void @{expr.name}({', '.join(args_ir)})")
-				for arg_expr, arg_val in zip(expr.args, arg_vals):
-					_maybe_flush_deferred(arg_expr, arg_val)
-				return ''
-			else:
-				tmp2 = new_tmp()
-				out.append(f"  {tmp2} = call {ret_ty} @{expr.name}({', '.join(args_ir)})")
-				for arg_expr, arg_val in zip(expr.args, arg_vals):
-					_maybe_flush_deferred(arg_expr, arg_val)
-				return tmp2
-		raise RuntimeError(f"Call to undefined function '{expr.name}'")
+					args_ir.append(f"{llvm_ty} {a_val}")
+		ret_ty = func_table.get(call_target, None)
+		if ret_ty is None:
+			raise RuntimeError(f"Call to undefined function '{expr.name}'")
+		if ret_ty == 'void':
+			out.append(f"  call void @{call_target}({', '.join(args_ir)})")
+			for arg_expr, arg_val in zip(expr.args, arg_vals):
+				_maybe_flush_deferred(arg_expr, arg_val)
+			return ''
+		else:
+			tmp2 = new_tmp()
+			out.append(f"  {tmp2} = call {ret_ty} @{call_target}({', '.join(args_ir)})")
+			for arg_expr, arg_val in zip(expr.args, arg_vals):
+				_maybe_flush_deferred(arg_expr, arg_val)
+			return tmp2
 	if isinstance(expr, FieldAccess):
 		if isinstance(expr.base, Var) and expr.base.name in enum_variant_map:
 			base_name = expr.base.name
@@ -2212,14 +2195,7 @@ def infer_type(expr: Expr) -> str:
 					if found is None:
 						raise RuntimeError(f"Cannot infer type parameter '{tp}' for generic function '{expr.name}'")
 					actuals.append(found)
-				mangled_parts = [mangle_type(a) for a in actuals]
-				mononame = f"{expr.name}_" + "_".join(mangled_parts)
-				if mononame not in func_table:
-					new_ret = fn.ret_type
-					if new_ret in fn.type_params:
-						idx = fn.type_params.index(new_ret)
-						new_ret = actuals[idx]
-					func_table[mononame] = type_map.get(new_ret, f"%struct.{new_ret}")
+				mononame = ensure_monomorph_for_call(expr.name, actuals)
 				new_ret = fn.ret_type
 				if new_ret in fn.type_params:
 					idx = fn.type_params.index(new_ret)
@@ -2525,8 +2501,10 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 		val = gen_expr(stmt.expr, out) if stmt.expr else None
 		if autoregion_stack:
 			for ctx in reversed(autoregion_stack):
-				scope_idx = ctx['scope_index']
-				exset = ctx['except']
+				scope_idx = ctx.get('scope_index')
+				if not isinstance(scope_idx, int):
+					continue
+				exset = ctx.get('except', set())
 				names_in_scope = list(symbol_table.scopes[scope_idx].keys())
 				for nm in names_in_scope:
 					if nm in exset:
@@ -2675,6 +2653,7 @@ def gen_func(fn: Func) -> List[str]:
 		if fn.body is None or len(fn.body) == 0:
 			raise RuntimeError(f"Async function '{fn.name}' has an empty body, cannot generate async state machine.")
 		generated_mono[fn.name] = True
+		func_table[fn.name] = llvm_ty_of(fn.ret_type)
 		symbol_table.push()
 		codegen_adapter = type("CodegenAdapter", (), {})()
 		setattr(codegen_adapter, "gen_expr", gen_expr)
@@ -2805,86 +2784,146 @@ def compile_program(prog: Program) -> str:
 		"@__argv_ptr = global i8** null",
 		"declare i8* @malloc(i64)",
 		"declare void @free(i8*)",
-		"",
 		"declare i64 @strlen(i8*)",
-		"declare void @puts(i8*)",
-		"declare void @exit(i64)",
+		"declare i32 @puts(i8*)",
+		"declare void @exit(i32)",
+		"declare i64 @time(i64*)",
+		"declare void @srand(i32)",
+		"declare i32 @rand()",
+		"declare i32 @usleep(i32)",
+		"",
 	]
 	runtime_block = """
-	@.oob_msg = private unnamed_addr constant [52 x i8] c"[ORCatCompiler-RT-CHCK]: Index out of bounds error.\\00"
-	define void @orcc_oob_abort() {
-	entry:
-	  call void @puts(i8* getelementptr inbounds ([52 x i8], [52 x i8]* @.oob_msg, i32 0, i32 0))
-	  call void @exit(i64 1)
-	  unreachable
-	}
-	@.null_msg = private unnamed_addr constant [45 x i8] c"[ORCatCompiler-RT-CHCK]: Null pointer deref.\\00"
-	define void @orcc_null_abort() {
-	entry:
-	  call void @puts(i8* getelementptr inbounds ([48 x i8], [48 x i8]* @.null_msg, i32 0, i32 0))
-	  call void @exit(i64 1)
-	  unreachable
-	}
-	@.heap_msg = private unnamed_addr constant [67 x i8] c"[ORCatCompiler-RT-HEAP]: Invalid free or heap corruption detected.\\00"
-	@.alloc_magic = global i64 0
-	declare i64 @time(i64*)
-	declare void @srand(i32)
-	declare i32 @rand()
-	define i8* @orcc_malloc(i64 %usize) {
-	entry:
-	  %hdr_sz = add i64 %usize, 24
-	  %raw = call i8* @malloc(i64 %hdr_sz)
-	  %hdr_ptr = bitcast i8* %raw to i64*
-	  %global_magic = load i64, i64* @.alloc_magic
-	  store i64 %global_magic, i64* %hdr_ptr
-	  %size_slot = getelementptr i8, i8* %raw, i64 8
-	  %size_slot_i64 = bitcast i8* %size_slot to i64*
-	  store i64 %usize, i64* %size_slot_i64
-	  %user_ptr = getelementptr i8, i8* %raw, i64 16
-	  %footer_ptr = getelementptr i8, i8* %user_ptr, i64 %usize
-	  %footer_ptr_i64 = bitcast i8* %footer_ptr to i64*
-	  store i64 %global_magic, i64* %footer_ptr_i64
-	  ret i8* %user_ptr
-	}
-	define void @orcc_free(i8* %userptr) {
-	entry:
-	  %raw_hdr = getelementptr i8, i8* %userptr, i64 -16
-	  %hdr_i64 = bitcast i8* %raw_hdr to i64*
-	  %magic = load i64, i64* %hdr_i64
-	  %global_magic_cmp = load i64, i64* @.alloc_magic
-	  %ok = icmp eq i64 %magic, %global_magic_cmp
-	  br i1 %ok, label %free_ok, label %free_fail
-	free_fail:
-	  call void @puts(i8* getelementptr inbounds ([64 x i8], [64 x i8]* @.heap_msg, i32 0, i32 0))
-	  call void @exit(i64 1)
-	  unreachable
-	free_ok:
-	  %size_slot = getelementptr i8, i8* %raw_hdr, i64 8
-	  %size_i64 = bitcast i8* %size_slot to i64*
-	  %sz = load i64, i64* %size_i64
-	  %footer_loc = getelementptr i8, i8* %userptr, i64 %sz
-	  %footer_i64 = bitcast i8* %footer_loc to i64*
-	  %footer_val = load i64, i64* %footer_i64
-	  %ok2 = icmp eq i64 %footer_val, %global_magic_cmp
-	  br i1 %ok2, label %free_ok2, label %free_fail2
-	free_fail2:
-	  call void @puts(i8* getelementptr inbounds ([64 x i8], [64 x i8]* @.heap_msg, i32 0, i32 0))
-	  call void @exit(i64 1)
-	  unreachable
-	free_ok2:
-	  store i64 0, i64* %hdr_i64
-	  %rawptr = bitcast i8* %raw_hdr to i8*
-	  call void @free(i8* %rawptr)
-	  ret void
-	}
-	define i64 @orcc_alloc_size(i8* %userptr) {
-	entry:
-	  %raw_hdr = getelementptr i8, i8* %userptr, i64 -16
-	  %size_slot = getelementptr i8, i8* %raw_hdr, i64 8
-	  %size_i64 = bitcast i8* %size_slot to i64*
-	  %sz = load i64, i64* %size_i64
-	  ret i64 %sz
-	}
+		@.oob_msg = private unnamed_addr constant [52 x i8] c"[ORCatCompiler-RT-CHCK]: Index out of bounds error.\00"
+		define void @orcc_oob_abort() {
+		entry:
+		  call void @puts(i8* getelementptr inbounds ([52 x i8], [52 x i8]* @.oob_msg, i32 0, i32 0))
+		  call void @exit(i64 1)
+		  unreachable
+		}
+		@.null_msg = private unnamed_addr constant [45 x i8] c"[ORCatCompiler-RT-CHCK]: Null pointer deref.\00"
+		define void @orcc_null_abort() {
+		entry:
+		  call void @puts(i8* getelementptr inbounds ([45 x i8], [45 x i8]* @.null_msg, i32 0, i32 0))
+		  call void @exit(i64 1)
+		  unreachable
+		}
+		@.heap_msg = private unnamed_addr constant [67 x i8] c"[ORCatCompiler-RT-HEAP]: Invalid free or heap corruption detected.\00"
+		@.alloc_magic = global i64 0
+		define void @orcc_init_runtime() {
+		entry:
+		  %t = call i64 @time(i64* null)
+		  %t32 = trunc i64 %t to i32
+		  call void @srand(i32 %t32)
+		  %r = call i32 @rand()
+		  %r64 = zext i32 %r to i64
+		  store i64 %r64, i64* @.alloc_magic
+		  ret void
+		}
+		define i8* @orcc_malloc(i64 %usize) {
+		entry:
+		  %hdr_sz = add i64 %usize, 24
+		  %raw = call i8* @malloc(i64 %hdr_sz)
+		  %hdr_ptr = bitcast i8* %raw to i64*
+		  %global_magic = load i64, i64* @.alloc_magic
+		  store i64 %global_magic, i64* %hdr_ptr
+		  %size_slot = getelementptr i8, i8* %raw, i64 8
+		  %size_slot_i64 = bitcast i8* %size_slot to i64*
+		  store i64 %usize, i64* %size_slot_i64
+		  %user_ptr = getelementptr i8, i8* %raw, i64 16
+		  %footer_ptr = getelementptr i8, i8* %user_ptr, i64 %usize
+		  %footer_ptr_i64 = bitcast i8* %footer_ptr to i64*
+		  store i64 %global_magic, i64* %footer_ptr_i64
+		  ret i8* %user_ptr
+		}
+		define void @orcc_free(i8* %userptr) {
+		entry:
+		  %raw_hdr = getelementptr i8, i8* %userptr, i64 -16
+		  %hdr_i64 = bitcast i8* %raw_hdr to i64*
+		  %magic = load i64, i64* %hdr_i64
+		  %global_magic_cmp = load i64, i64* @.alloc_magic
+		  %ok = icmp eq i64 %magic, %global_magic_cmp
+		  br i1 %ok, label %free_ok, label %free_fail
+		free_fail:
+		  call void @puts(i8* getelementptr inbounds ([67 x i8], [67 x i8]* @.heap_msg, i32 0, i32 0))
+		  call void @exit(i64 1)
+		  unreachable
+		free_ok:
+		  %size_slot = getelementptr i8, i8* %raw_hdr, i64 8
+		  %size_i64 = bitcast i8* %size_slot to i64*
+		  %sz = load i64, i64* %size_i64
+		  %footer_loc = getelementptr i8, i8* %userptr, i64 %sz
+		  %footer_i64 = bitcast i8* %footer_loc to i64*
+		  %footer_val = load i64, i64* %footer_i64
+		  %ok2 = icmp eq i64 %footer_val, %global_magic_cmp
+		  br i1 %ok2, label %free_ok2, label %free_fail2
+		free_fail2:
+		  call void @puts(i8* getelementptr inbounds ([67 x i8], [67 x i8]* @.heap_msg, i32 0, i32 0))
+		  call void @exit(i64 1)
+		  unreachable
+		free_ok2:
+		  store i64 0, i64* %hdr_i64
+		  %rawptr = bitcast i8* %raw_hdr to i8*
+		  call void @free(i8* %rawptr)
+		  ret void
+		}
+		define i64 @orcc_alloc_size(i8* %userptr) {
+		entry:
+		  %raw_hdr = getelementptr i8, i8* %userptr, i64 -16
+		  %size_slot = getelementptr i8, i8* %raw_hdr, i64 8
+		  %size_i64 = bitcast i8* %size_slot to i64*
+		  %sz = load i64, i64* %size_i64
+		  ret i64 %sz
+		}
+		%orcc_node = type { i8*, i8*, %orcc_node* }
+		@orcc_head = global %orcc_node* null
+		define void @orcc_register_async(i8* %resume, i8* %handle) {
+		entry:
+		  %szptr = getelementptr %orcc_node, %orcc_node* null, i32 1
+		  %sz = ptrtoint %orcc_node* %szptr to i64
+		  %raw = call i8* @malloc(i64 %sz)
+		  %node = bitcast i8* %raw to %orcc_node*
+		  %rptr = getelementptr %orcc_node, %orcc_node* %node, i32 0, i32 0
+		  %hptr = getelementptr %orcc_node, %orcc_node* %node, i32 0, i32 1
+		  %nptr = getelementptr %orcc_node, %orcc_node* %node, i32 0, i32 2
+		  store i8* %resume, i8** %rptr
+		  store i8* %handle, i8** %hptr
+		  %old = load %orcc_node*, %orcc_node** @orcc_head
+		  store %orcc_node* %old, %orcc_node** %nptr
+		  store %orcc_node* %node, %orcc_node** @orcc_head
+		  ret void
+		}
+		define void @orcc_block_until_complete(i8* %handle) {
+		entry:
+		  br label %scan
+		scan:
+		  %head = load %orcc_node*, %orcc_node** @orcc_head
+		  br label %scan_loop
+		scan_loop:
+		  %cur = phi %orcc_node* [ %head, %scan ], [ %next, %advance ]
+		  %isnull = icmp eq %orcc_node* %cur, null
+		  br i1 %isnull, label %sleep, label %checknode
+		checknode:
+		  %hptr = getelementptr %orcc_node, %orcc_node* %cur, i32 0, i32 1
+		  %hval = load i8*, i8** %hptr
+		  %cmp = icmp eq i8* %hval, %handle
+		  br i1 %cmp, label %invoke, label %advance
+		invoke:
+		  %rptr = getelementptr %orcc_node, %orcc_node* %cur, i32 0, i32 0
+		  %rval = load i8*, i8** %rptr
+		  %resume_fn = bitcast i8* %rval to i1 (i8*)*
+		  %res = call i1 %resume_fn(i8* %handle)
+		  br i1 %res, label %done, label %scan
+		advance:
+		  %nptr2 = getelementptr %orcc_node, %orcc_node* %cur, i32 0, i32 2
+		  %next = load %orcc_node*, %orcc_node** %nptr2
+		  br label %scan_loop
+		sleep:
+		  call i32 @usleep(i32 1000)
+		  br label %scan
+		done:
+		  ret void
+		}
 	"""
 	struct_llvm_defs: List[str] = []
 	for sdef in prog.structs:
@@ -3089,9 +3128,9 @@ def check_types(prog: Program):
 		rmax, wmax, rc, wc = crumb_map[name]
 		wc += 1
 		crumb_map[name] = (rmax, wmax, rc, wc)
-	def _subst_type(typ: str, subst: Dict[str, str]) -> str:
+	def _subst_type(typ: Optional[str], subst: Dict[str, str]) -> Optional[str]:
 		if typ is None:
-			return typ
+			return None
 		if typ in subst:
 			return subst[typ]
 		for param, concrete in subst.items():
@@ -3117,10 +3156,10 @@ def check_types(prog: Program):
 		env.declare(ename, ename)
 		if not has_payload:
 			type_map[ename] = type_map.get('int', 'i64')
-		variant_map: Dict[str, Tuple[str, Optional[str]]] = {}
 	for ename, edef in enum_defs.items():
 		for v in edef.variants:
-			variant_map[v.name] = (ename, v.typ)
+			if v.name not in variant_map:
+				variant_map[v.name] = (ename, v.typ)
 	def check_expr(expr: Expr) -> str:
 		if isinstance(expr, AwaitExpr):
 			return check_expr(expr.expr)
@@ -3718,13 +3757,19 @@ class AsyncStateMachine:
 					if name in promoted:
 						break
 		self.promoted = promoted
+	def _split_at_await(self, stmt: Stmt) -> Tuple[List[str], Optional[AwaitExpr], List[str]]:
+		if isinstance(stmt, ExprStmt) and isinstance(stmt.expr, AwaitExpr):
+			return ([], stmt.expr, [])
+		if isinstance(stmt, VarDecl) and isinstance(stmt.expr, AwaitExpr):
+			llvm_ty = llvm_ty_of(stmt.typ)
+			after_lines = [f"  store {llvm_ty} %await_ret, {llvm_ty}* %{stmt.name}_addr"]
+			return ([], stmt.expr, after_lines)
+		if isinstance(stmt, Assign) and isinstance(stmt.expr, AwaitExpr):
+			return ([], stmt.expr, [])
+		if isinstance(stmt, ReturnStmt) and isinstance(stmt.expr, AwaitExpr):
+			return ([], stmt.expr, [])
+		return ([], None, [])
 	def _build_states(self):
-		if not self.func.body:
-			self.states = []
-			self.allocas = []
-			self.current_state = 0
-			self.local_decls = []
-			return
 		self.states = []
 		self.allocas = list(self.allocas)
 		self.current_state = 0
@@ -3747,10 +3792,11 @@ class AsyncStateMachine:
 				self.current_state += 1
 				if isinstance(await_expr.expr, Call):
 					cal = await_expr.expr
+					call_target = ensure_monomorph_call(cal, accum)
+					concrete_fn = next((f for f in all_funcs if f.name == call_target), None)
 					arg_tokens: List[str] = []
-					base_fn = next((f for f in all_funcs if f.name == cal.name), None)
-					if base_fn:
-						for a, (param_typ, _) in zip(cal.args, base_fn.params):
+					if concrete_fn:
+						for a, (param_typ, _) in zip(cal.args, concrete_fn.params):
 							arg_tmp = self.codegen.gen_expr(a, []) if hasattr(self.codegen, 'gen_expr') else None
 							if arg_tmp is None:
 								arg_tokens.append(f"{llvm_ty_of(param_typ)} 0")
@@ -3764,8 +3810,9 @@ class AsyncStateMachine:
 							else:
 								arg_tokens.append(f"i64 {arg_tmp}")
 					args_ir = ", ".join(arg_tokens)
-					accum.append(f"  %await_handle = call %async.{cal.name}* @{cal.name}_init({args_ir})")
-					accum.append(f"  %await_done = call i1 @{cal.name}_resume(%async.{cal.name}* %await_handle)")
+					struct_name = f"%async.{call_target}"
+					accum.append(f"  %await_handle = call {struct_name}* @{call_target}_init({args_ir})")
+					accum.append(f"  %await_done = call i1 @{call_target}_resume({struct_name}* %await_handle)")
 					suspend_lbl = new_label("await_suspend")
 					cont_lbl = new_label("await_cont")
 					accum.append(f"  %cmp{self.current_state} = icmp eq i1 %await_done, 0")
@@ -3774,9 +3821,9 @@ class AsyncStateMachine:
 					accum.append(f"  store i32 {self.current_state}, i32* %stptr")
 					accum.append(f"  ret i1 0")
 					accum.append(f"{cont_lbl}:")
-					base_fn = next((f for f in all_funcs if f.name == cal.name), None)
-					ret_llvm = llvm_ty_of(base_fn.ret_type) if base_fn else 'i64'
-					accum.append(f"  %res_ptr = getelementptr inbounds %async.{cal.name}, %async.{cal.name}* %await_handle, i32 0, i32 1")
+					ret_llvm = llvm_ty_of(concrete_fn.ret_type) if concrete_fn else 'i64'
+					accum.append(
+						f"  %res_ptr = getelementptr inbounds {struct_name}, {struct_name}* %await_handle, i32 0, i32 1")
 					accum.append(f"  %await_ret = load {ret_llvm}, {ret_llvm}* %res_ptr")
 				else:
 					accum.append("  ret i1 0")
@@ -3794,18 +3841,6 @@ class AsyncStateMachine:
 					self.codegen._gen_stmt(st, accum, llvm_ty_of(self.func.ret_type))
 		if accum:
 			self.states.append(list(accum))
-	def _split_at_await(self, stmt: Stmt) -> Tuple[List[str], Optional[AwaitExpr], List[str]]:
-		if isinstance(stmt, ExprStmt) and isinstance(stmt.expr, AwaitExpr):
-			return ([], stmt.expr, [])
-		if isinstance(stmt, VarDecl) and isinstance(stmt.expr, AwaitExpr):
-			llvm_ty = llvm_ty_of(stmt.typ)
-			after_lines = [f"  store {llvm_ty} %await_ret, {llvm_ty}* %{stmt.name}_addr"]
-			return ([], stmt.expr, after_lines)
-		if isinstance(stmt, Assign) and isinstance(stmt.expr, AwaitExpr):
-			return ([], stmt.expr, [])
-		if isinstance(stmt, ReturnStmt) and isinstance(stmt.expr, AwaitExpr):
-			return ([], stmt.expr, [])
-		return ([], None, [])
 	def generate(self) -> List[str]:
 		name = self.func.name
 		st_ty = f"%async.{name}"
@@ -3861,12 +3896,12 @@ class AsyncStateMachine:
 		lines.append("}")
 		lines.append(f"define i1 @{name}_resume({st_ty}* %sm) {{")
 		lines.append("entry:")
-		self._build_states()
 		for idx, (nm, ty) in enumerate(self.allocas):
 			field_index = 2 + len(self.func.params) + idx
 			lines.append(f"  %{nm}_addr = getelementptr inbounds {st_ty}, {st_ty}* %sm, i32 0, i32 {field_index}")
 		lines.append(f"  %stptr = getelementptr inbounds {st_ty}, {st_ty}* %sm, i32 0, i32 0")
 		lines.append(f"  %st = load i32, i32* %stptr")
+		self._build_states()
 		if self.states:
 			lines.append(f"  switch i32 %st, label %state0 [")
 			for i in range(len(self.states)):
@@ -3902,8 +3937,6 @@ class AsyncStateMachine:
 					lines.append(f"  store {ret_ty} null, {ret_ty}* %ret_ptr")
 			lines.append("  ret i1 1")
 		lines.append("}")
-		global current_async_promoted
-		current_async_promoted = None
 		return lines
 def main():
 	global all_funcs, func_table, builtins_emitted
@@ -3921,7 +3954,7 @@ def main():
 	args = parser.parse_args()
 	global compiled
 	compiled = args.input
-	with open(args.input, encoding="utf-8", errors="ignore") as f:
+	with open(args.input, encoding="utf-8", errors="ignore") as  f:
 		src = f.read()
 	tokens = lex(src)
 	parser_obj = Parser(tokens)
@@ -4010,3 +4043,4 @@ def main():
 		f.write(llvm)
 if __name__ == "__main__":
 	main()
+	
