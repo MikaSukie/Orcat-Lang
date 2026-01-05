@@ -736,7 +736,6 @@ class Parser:
 			expr = self.parse_expr()
 		self.expect('SEMI')
 		return GlobalVar(typ, name, expr)
-
 	def parse_enum_def(self) -> EnumDef:
 		self.expect('ENUM')
 		name = self.expect('IDENT').value
@@ -4043,4 +4042,3 @@ def main():
 		f.write(llvm)
 if __name__ == "__main__":
 	main()
-	
