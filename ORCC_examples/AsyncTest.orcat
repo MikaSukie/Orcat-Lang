@@ -9,7 +9,7 @@ fn main() <int> {
 }
 
 async fn test() <int> {
-    int f = 0;
-    f += 1;
-    return 1;
+    int f = 25;
+    f += 50;
+    return f;
 }
