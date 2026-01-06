@@ -408,6 +408,7 @@ pub fn main() <int> {
     print("=== TEST: generic_enum ===\n"); print(itostr(test_generic_enum())); newline();
     print("=== TEST: get_address ===\n"); test_get_address(); newline();
     print("=== TEST: multigeneric ===\n"); print(itostr(test_multigeneric())); newline();
+	print("=== TEST: tostringtest ===\n"); print(tostring(0)); newline();
 
     print("=== ALL TESTS FINISHED ===\n");
     return 0;
