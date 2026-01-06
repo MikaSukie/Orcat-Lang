@@ -1,4 +1,5 @@
 import std;
+
 /*
  * This file is licensed under the GPL-3 License (or AGPL-3 if applicable)
  * Copyright (C) 2025  MikaSukie (old user), MikaLorielle (alt user), EmikaMai (current user), JaydenFreeman (legal name)
@@ -18,12 +19,13 @@ import std;
  */
 // same as C_string.sorcat but since renamed since I added more types than strings.
 // ─── “builder” functions that just return/consume a string ────────────
-pub extern fn sb_create()                   <string>;
-pub extern fn sb_append_str(string b, string s)   <string>;
-pub extern fn sb_append_int(string b, int x)      <string>;
-pub extern fn sb_append_float(string b, float f)  <string>;
-pub extern fn sb_append_bool(string b, bool bb)   <string>;
-pub extern fn sb_finish(string b)            <string>;
+pub extern fn sb_create()                            <string>;
+pub extern fn sb_append_str(string b, string s)      <string>;
+pub extern fn sb_append_int(string b, int x)         <string>;
+pub extern fn sb_append_float(string b, float f)     <string>;
+pub extern fn sb_append_bool(string b, bool bb)      <string>;
+pub extern fn sb_append_float32(string b, float32 f) <string>;
+pub extern fn sb_finish(string b)                    <string>;
 // ─── “builder” functions that just return/consume a string ────────────
 
 // ─── to_string functions ───────────────────────────────────────────────
@@ -32,6 +34,7 @@ pub extern fn i8tostr(int8 i)    <string>;
 pub extern fn i16tostr(int16 i)    <string>;
 pub extern fn i32tostr(int32 i)    <string>;
 pub extern fn i64tostr(int64 i)    <string>;
+pub extern fn f32tostr(float32 f)  <string>;
 pub extern fn ftostr(float f)<string>;
 pub extern fn btostr(bool b)  <string>;
 pub extern fn tostr(string s)<string>;
@@ -48,7 +51,8 @@ pub extern fn countcontain(string x, string detection_char) <int>;
 pub fn empty() <string> { return tostr(""); }
 
 pub fn <T> tostring(T candidate) <string> {
-    if (streq(typeof(candidate), "int")) {
+    string typcand = typeof(candidate);
+    if (streq(typcand, "int")) {
         if(streq(get_os_max_bits(), "64")) {
             return i64tostr(candidate);
         } else if (streq(get_os_max_bits(), "32")) {
@@ -57,16 +61,36 @@ pub fn <T> tostring(T candidate) <string> {
             return itostr(candidate);
         }
     }
-    if (streq(typeof(candidate), "float")) {
+    if (streq(typcand, "float")) {
         return ftostr(candidate);
     }
-    if (streq(typeof(candidate), "bool")) {
+    if (streq(typcand, "bool")) {
         return btostr(candidate);
     }
-    if (streq(typeof(candidate), "string")) {
+    if (streq(typcand, "string")) {
         return tostr(candidate);
     }
     return "ERROR";
+}
+
+pub fn <F> etostring(F candidate) <string> {
+    string typcand = etypeof(candidate);
+    if (streq(typcand, "int")) {
+        if (countcontain(typcand, "64") == 1) {
+            return i64tostr(candidate);
+        }
+        if (countcontain(typcand, "32") == 1) {
+            return i32tostr(candidate);
+        }
+        if (countcontain(typcand, "16") == 1) {
+            return i16tostr(candidate);
+        }
+        if (countcontain(typcand, "8") == 1) {
+            return i8tostr(candidate);
+        }
+    }
+    // fallback: try the generic tostring (monomorphized on demand)
+    return tostring(candidate);
 }
 
 // ─── String Builder example ────────────────────────────────────────────────
