@@ -6,14 +6,13 @@
  */
 import std;
 import C_io;
-//import C_mem; DEPRECATED LIBRARY
 
 pub fn allocate_and_free() <void> {
     int* ptr;
     ptr = malloc(8);  // allocate 8 bytes
     *ptr = 42;
     print("Value assigned.");newline();
-    deref(ptr);       // this will free the pointer
+    forget(ptr);       // this will free the pointer
     // ptr is now invalid — use-after-deref is not allowed
 }
 
