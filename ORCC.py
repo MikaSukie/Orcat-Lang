@@ -95,7 +95,7 @@ def llvm_ty_of(typ: str) -> str:
 	if typ.endswith('*'):
 		base = typ[:-1]
 		if base in enum_variant_map and any(p is not None for _, p in enum_variant_map[base]):
-			return f"%enum.{base}*"
+			return f"%enum.{base}**"
 		if base in enum_variant_map:
 			return type_map.get(base, type_map.get("int", "i64")) + "*"
 		if base in type_map:
@@ -146,9 +146,8 @@ def ensure_monomorph_call(call_expr: 'Call', out: List[str]) -> str:
 				if param_idx < len(arg_types):
 					found = arg_types[param_idx]
 					break
-		if found is None:
-			if base_fn.ret_type == tp and len(arg_types) > 0:
-				found = arg_types[0]
+		if found is None and base_fn.ret_type == tp and len(arg_types) > 0:
+			found = arg_types[0]
 		if found is None:
 			raise RuntimeError(f"Cannot infer type parameter '{tp}' for generic function '{call_expr.name}'")
 		actuals.append(found)
@@ -156,26 +155,13 @@ def ensure_monomorph_call(call_expr: 'Call', out: List[str]) -> str:
 	mononame = f"{call_expr.name}_" + "_".join(mangled_parts)
 	if mononame in func_table:
 		return mononame
-	def _subst_type_local(typ: str, subst: dict) -> str | None | Any:
-		if typ is None:
-			return typ
-		if typ in subst:
-			return subst[typ]
-		for param, concrete in subst.items():
-			if typ == param:
-				return concrete
-			if typ.startswith(param) and typ[len(param):] in ('*', '[]'):
-				return concrete + typ[len(param):]
-		return typ
-	subst_map = {}
+	subst_map: Dict[str, str] = {}
 	for (param_type, _), actual in zip(base_fn.params, arg_types):
 		for tp in base_fn.type_params:
 			if param_type == tp:
 				subst_map[tp] = actual
 			elif param_type.startswith(tp) and param_type[len(tp):] in ('*', '[]'):
 				subst_map[tp] = actual
-	if base_fn.type_params and not any(tp in subst_map for tp in base_fn.type_params):
-		subst_map[base_fn.type_params[0]] = arg_types[0]
 	def replace_in_expr(e: Expr):
 		if e is None:
 			return None
@@ -202,7 +188,7 @@ def ensure_monomorph_call(call_expr: 'Call', out: List[str]) -> str:
 		if isinstance(e, AddressOf):
 			return AddressOf(replace_in_expr(e.expr))
 		if isinstance(e, Cast):
-			new_typ = _subst_type_local(e.typ, subst_map)
+			new_typ = _subst_type(e.typ, subst_map)
 			return Cast(new_typ, replace_in_expr(e.expr))
 		if isinstance(e, Ternary):
 			return Ternary(replace_in_expr(e.cond), replace_in_expr(e.then_expr), replace_in_expr(e.else_expr))
@@ -213,7 +199,7 @@ def ensure_monomorph_call(call_expr: 'Call', out: List[str]) -> str:
 		if s is None:
 			return None
 		if isinstance(s, VarDecl):
-			new_typ = _subst_type_local(s.typ, subst_map)
+			new_typ = _subst_type(s.typ, subst_map)
 			new_expr = replace_in_expr(s.expr) if s.expr else None
 			return VarDecl(s.access, new_typ, s.name, new_expr, s.nomd)
 		if isinstance(s, Assign):
@@ -245,8 +231,8 @@ def ensure_monomorph_call(call_expr: 'Call', out: List[str]) -> str:
 				new_cases.append(MatchCase(case.variant, case.binding, new_body0))
 			return Match(new_expr0, new_cases)
 		return s
-	new_params = [(_subst_type_local(p[0], subst_map), p[1]) for p in base_fn.params]
-	new_ret = _subst_type_local(base_fn.ret_type, subst_map)
+	new_params = [(_subst_type(p[0], subst_map), p[1]) for p in base_fn.params]
+	new_ret = _subst_type(base_fn.ret_type, subst_map)
 	new_body = [replace_in_stmt(stmt) for stmt in base_fn.body] if base_fn.body else None
 	new_fn = Func(base_fn.access, mononame, [], new_params, new_ret, new_body, base_fn.is_extern, base_fn.is_async)
 	all_funcs.append(new_fn)
@@ -267,7 +253,7 @@ def ensure_monomorph_call(call_expr: 'Call', out: List[str]) -> str:
 		raise
 	out.insert(0, "\n".join(llvm_lines))
 	return mononame if mononame in func_table else call_expr.name
-def _subst_type(typ: str, subst: Dict[str, str]) -> str | None:
+def _subst_type(typ: str, subst: Dict[str, str]) -> str:
 	if typ is None:
 		return typ
 	if typ in subst:
@@ -298,6 +284,67 @@ def llvm_int_bitsize(ty: str) -> Optional[int]:
 	if m:
 		return int(m.group(1))
 	return None
+def emit_cast_value(val: str, src_t: str, dst_t: str, out: List[str]) -> str:
+    if val is None:
+        return val
+    src_llvm = llvm_ty_of(src_t)
+    dst_llvm = llvm_ty_of(dst_t)
+    if src_llvm == dst_llvm:
+        return val
+    if src_llvm.startswith('i') and dst_llvm.startswith('i'):
+        src_bits = llvm_int_bitsize(src_llvm)
+        dst_bits = llvm_int_bitsize(dst_llvm)
+        tmp = new_tmp()
+        if src_bits and dst_bits:
+            if src_bits > dst_bits:
+                out.append(f"  {tmp} = trunc {src_llvm} {val} to {dst_llvm}")
+            else:
+                if is_unsigned_int_type(src_t):
+                    out.append(f"  {tmp} = zext {src_llvm} {val} to {dst_llvm}")
+                else:
+                    out.append(f"  {tmp} = sext {src_llvm} {val} to {dst_llvm}")
+            return tmp
+    if src_llvm.startswith('i') and dst_llvm == 'double':
+        tmp = new_tmp()
+        out.append(f"  {tmp} = sitofp {src_llvm} {val} to double")
+        return tmp
+    if dst_llvm.startswith('i') and src_llvm == 'double':
+        tmp = new_tmp()
+        out.append(f"  {tmp} = fptosi double {val} to {dst_llvm}")
+        return tmp
+    if src_llvm == 'double' and dst_llvm == 'float':
+        tmp = new_tmp()
+        out.append(f"  {tmp} = fptrunc double {val} to float")
+        return tmp
+    if src_llvm == 'float' and dst_llvm == 'double':
+        tmp = new_tmp()
+        out.append(f"  {tmp} = fpext float {val} to double")
+        return tmp
+    if src_llvm.endswith('*') and dst_llvm.endswith('*'):
+        tmp = new_tmp()
+        out.append(f"  {tmp} = bitcast {src_llvm} {val} to {dst_llvm}")
+        return tmp
+    if src_llvm == 'i8*' and dst_llvm == 'i1':
+        tmp = new_tmp()
+        out.append(f"  {tmp} = icmp ne i8* {val}, null")
+        return tmp
+    if src_llvm == 'i1' and dst_llvm.startswith('i') and dst_llvm != 'i1':
+        tmp = new_tmp()
+        out.append(f"  {tmp} = zext i1 {val} to {dst_llvm}")
+        return tmp
+    if src_llvm.startswith('i') and dst_llvm == 'i1':
+        tmp = new_tmp()
+        out.append(f"  {tmp} = icmp ne {src_llvm} {val}, 0")
+        return tmp
+    if dst_llvm.endswith('*') and not src_llvm.endswith('*') and src_llvm.startswith('i'):
+        tmp = new_tmp()
+        out.append(f"  {tmp} = inttoptr {src_llvm} {val} to {dst_llvm}")
+        return tmp
+    if src_llvm.endswith('*') and not dst_llvm.endswith('*') and dst_llvm.startswith('i'):
+        tmp = new_tmp()
+        out.append(f"  {tmp} = ptrtoint {src_llvm} {val} to {dst_llvm}")
+        return tmp
+    return val
 def is_unsigned_int_type(typ: str) -> bool:
 	if typ is None:
 		return False
@@ -1439,11 +1486,13 @@ def gen_expr(expr: Expr, out: List[str]) -> str | None:
 			if concrete_fn:
 				for a, (param_typ, _) in zip(inner.args, concrete_fn.params):
 					tmpa = gen_expr(a, out)
+					ty_a = infer_type(a)
 					llvm_param_ty = llvm_ty_of(param_typ)
 					if tmpa is None:
 						args_ir.append(f"{llvm_param_ty} {zero_const_for_llvm(llvm_param_ty)}")
 					else:
-						args_ir.append(f"{llvm_param_ty} {tmpa}")
+						cast_tmp = emit_cast_value(tmpa, ty_a, param_typ, out)
+						args_ir.append(f"{llvm_param_ty} {cast_tmp}")
 			else:
 				for a in inner.args:
 					tmpa = gen_expr(a, out)
@@ -1998,12 +2047,13 @@ def gen_expr(expr: Expr, out: List[str]) -> str | None:
 			raise RuntimeError(f"async function '{expr.name}' must be awaited")
 		args_ir = []
 		if concrete_fn:
-			for a_val, (param_typ, _) in zip(arg_vals, concrete_fn.params):
+			for a_val, a_ty, (param_typ, _) in zip(arg_vals, arg_types, concrete_fn.params):
 				llvm_param_ty = llvm_ty_of(param_typ)
 				if a_val is None:
 					args_ir.append(f"{llvm_param_ty} {zero_const_for_llvm(llvm_param_ty)}")
 				else:
-					args_ir.append(f"{llvm_param_ty} {a_val}")
+					cast_tmp = emit_cast_value(a_val, a_ty, param_typ, out)
+					args_ir.append(f"{llvm_param_ty} {cast_tmp}")
 		else:
 			for a_val, a_ty in zip(arg_vals, arg_types):
 				llvm_ty = llvm_ty_of(a_ty)
@@ -3218,17 +3268,6 @@ def check_types(prog: Program):
 		rmax, wmax, rc, wc = crumb_map[name]
 		wc += 1
 		crumb_map[name] = (rmax, wmax, rc, wc)
-	def _subst_type(typ: Optional[str], subst: Dict[str, str]) -> Optional[str]:
-		if typ is None:
-			return None
-		if typ in subst:
-			return subst[typ]
-		for param, concrete in subst.items():
-			if typ == param:
-				return concrete
-			if typ.startswith(param) and typ[len(param):] in ('*', '[]'):
-				return concrete + typ[len(param):]
-		return typ
 	struct_defs: Dict[str, StructDef] = {s.name: s for s in prog.structs}
 	enum_defs: Dict[str, EnumDef] = {e.name: e for e in prog.enums}
 	for sdef in prog.structs:
