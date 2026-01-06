@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-'''
+"""
  * This file is licensed under the GPL-3 License (or AGPL-3 if applicable)
  * Copyright (C) 2025 MikaSukie
  * This program is free software: you can redistribute it and/or modify
@@ -12,7 +12,7 @@
  * GNU General Public License for more details.
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
-'''
+"""
 import re, os, argparse
 from typing import List, Optional, Tuple, Union, Dict, Any
 from dataclasses import dataclass
