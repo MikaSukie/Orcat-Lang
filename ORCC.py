@@ -1613,7 +1613,12 @@ def gen_expr(expr: Expr, out: List[str]) -> str | None:
 	if isinstance(expr, TypeofExpr):
 		raw = infer_type(expr.expr)
 		if expr.kind == "etypeof":
-			out_str = raw
+			llvm_ty = llvm_ty_of(raw)
+			bits = llvm_int_bitsize(llvm_ty)
+			if bits:
+				out_str = str(f"int{bits}")
+			else:
+				out_str = raw
 		elif expr.kind == "typeof":
 			if raw.startswith("int") and raw != "int":
 				out_str = "int"
