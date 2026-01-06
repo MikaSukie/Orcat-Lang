@@ -8,12 +8,47 @@ import std;
 import C_io;
 
 pub fn allocate_and_free() <void> {
-    int* ptr;
-    ptr = malloc(8);  // allocate 8 bytes
-    *ptr = 42;
-    print("Value assigned.");newline();
-    forget(ptr);       // this will free the pointer
-    // ptr is now invalid — use-after-deref is not allowed
+    autoregion {
+        int* ptr1 = malloc(8);
+        int* ptr2 = malloc(8);
+        int* ptr3 = malloc(8);
+        int* ptr4 = malloc(8);
+        int* ptr5 = malloc(8);
+
+        *ptr1 = 1;
+        *ptr2 = 2;
+        *ptr3 = 3;
+
+        print("Assigned values to first 3 pointers."); newline();
+
+        autoregion {
+            int* nested1 = malloc(8);
+            int* nested2 = malloc(8);
+            *nested1 = 100;
+            *nested2 = 200;
+            print("Nested allocations done."); newline();
+        }
+
+        print("Exited nested autoregion."); newline();
+
+        int* ptr6 = malloc(8);
+        int* ptr7 = malloc(8);
+        *ptr6 = 6;
+        *ptr7 = 7;
+
+        print("More allocations at top level."); newline();
+    }
+    print("Exited top-level autoregion."); newline();
+
+    print("Starting crumb autofree test"); newline();
+
+    int* ptrx;
+    crumble(ptrx)!r=0!w=1;
+    ptrx = malloc(8);
+
+    print("Manual forget");
+    int* ptry = malloc(8);
+    forget(ptry); newline();
 }
 
 pub fn main() <int> {
