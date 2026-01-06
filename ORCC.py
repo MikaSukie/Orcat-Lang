@@ -18,6 +18,7 @@ from typing import List, Optional, Tuple, Union, Dict, Any
 from dataclasses import dataclass
 compiled=""
 builtins_emitted = False
+no_runtime = False
 TYPE_TOKENS = {
 	'IDENT', 'INT', 'INT8', 'INT16', 'INT32', 'INT64',
 	'FLOAT', 'STRING', 'BOOL', 'CHAR', 'VOID', 'UINT',
@@ -363,9 +364,9 @@ def lex(source: str) -> List[Token]:
 				break
 		if matched:
 			continue
-		if c.isalpha() or c == '_':
+		if c.isalpha() or c in {'_', '@'}:
 			start = i
-			while i < len(source) and (source[i].isalnum() or source[i] == '_'):
+			while i < len(source) and (source[i].isalnum() or source[i] in {'_', '@'}):
 				i += 1
 			val = source[start:i]
 			kind = val if val in KEYWORDS else 'IDENT'
@@ -682,6 +683,16 @@ class Parser:
 		enums = []
 		globals = []
 		while self.peek().kind != 'EOF':
+			if self.peek().kind == 'IDENT' and isinstance(self.peek().value, str) and self.peek().value.startswith('@'):
+				directive = self.bump().value
+				if not self.match('SEMI'):
+					raise SyntaxError(f"Expected ';' after directive {directive} at {self.peek().line}:{self.peek().col}")
+				if directive == '@nrt':
+					global no_runtime
+					no_runtime = True
+					continue
+				else:
+					raise SyntaxError(f"Unknown directive {directive} at {self.peek().line}:{self.peek().col}")
 			if self.match('IMPORT'):
 				while True:
 					if self.peek().kind == 'STRING':
@@ -802,9 +813,12 @@ class Parser:
 				access = self.bump().kind.lower()
 				continue
 			if tk == 'ASYNC':
-				is_async = True
-				self.bump()
-				continue
+				if no_runtime:
+					raise SyntaxError("Cannot use async and/or runtime features with @nrt (No Run Time);")
+				else:
+					is_async = True
+					self.bump()
+					continue
 			if tk != 'FN' and tk.lower() in KEYWORDS:
 				modifiers.append(self.bump().value)
 				continue
@@ -2764,7 +2778,7 @@ def compile_program(prog: Program) -> str:
 	func_table["exit"] = "void"
 	func_table["malloc"] = "i8*"
 	func_table["free"] = "void"
-	func_table["puts"] = "void"
+	func_table["puts"] = "i32"
 	func_table["strlen"] = "i64"
 	func_table["orcat_argc"] = "i64"
 	func_table["orcat_argv"] = "i8*"
@@ -2793,135 +2807,216 @@ def compile_program(prog: Program) -> str:
 		"",
 	]
 	runtime_block = """
-		@.oob_msg = private unnamed_addr constant [52 x i8] c"[ORCatCompiler-RT-CHCK]: Index out of bounds error.\00"
+		@.oob_msg = private unnamed_addr constant [52 x i8] c"[ORCatCompiler-RT-CHCK]: Index out of bounds error.\\00"
+		@.null_msg = private unnamed_addr constant [45 x i8] c"[ORCatCompiler-RT-CHCK]: Null pointer deref.\\00"
+		@.heap_msg = private unnamed_addr constant [67 x i8] c"[ORCatCompiler-RT-HEAP]: Invalid free or heap corruption detected.\\00"
+		@.alloc_magic = global i64 0
 		define void @orcc_oob_abort() {
 		entry:
-		  call void @puts(i8* getelementptr inbounds ([52 x i8], [52 x i8]* @.oob_msg, i32 0, i32 0))
-		  call void @exit(i64 1)
-		  unreachable
+		%tmp_puts = call i32 @puts(i8* getelementptr inbounds ([52 x i8], [52 x i8]* @.oob_msg, i32 0, i32 0))
+		call void @exit(i32 1)
+		unreachable
 		}
-		@.null_msg = private unnamed_addr constant [45 x i8] c"[ORCatCompiler-RT-CHCK]: Null pointer deref.\00"
 		define void @orcc_null_abort() {
 		entry:
-		  call void @puts(i8* getelementptr inbounds ([45 x i8], [45 x i8]* @.null_msg, i32 0, i32 0))
-		  call void @exit(i64 1)
-		  unreachable
+		%tmp_puts1 = call i32 @puts(i8* getelementptr inbounds ([45 x i8], [45 x i8]* @.null_msg, i32 0, i32 0))
+		call void @exit(i32 1)
+		unreachable
 		}
-		@.heap_msg = private unnamed_addr constant [67 x i8] c"[ORCatCompiler-RT-HEAP]: Invalid free or heap corruption detected.\00"
-		@.alloc_magic = global i64 0
 		define void @orcc_init_runtime() {
 		entry:
-		  %t = call i64 @time(i64* null)
-		  %t32 = trunc i64 %t to i32
-		  call void @srand(i32 %t32)
-		  %r = call i32 @rand()
-		  %r64 = zext i32 %r to i64
-		  store i64 %r64, i64* @.alloc_magic
-		  ret void
+		%t = call i64 @time(i64* null)
+		%t32 = trunc i64 %t to i32
+		call void @srand(i32 %t32)
+		%r = call i32 @rand()
+		%r64 = zext i32 %r to i64
+		%xor_magic = xor i64 %r64, 16045690984833335023
+		store i64 %xor_magic, i64* @.alloc_magic
+		ret void
 		}
 		define i8* @orcc_malloc(i64 %usize) {
 		entry:
-		  %hdr_sz = add i64 %usize, 24
-		  %raw = call i8* @malloc(i64 %hdr_sz)
-		  %hdr_ptr = bitcast i8* %raw to i64*
-		  %global_magic = load i64, i64* @.alloc_magic
-		  store i64 %global_magic, i64* %hdr_ptr
-		  %size_slot = getelementptr i8, i8* %raw, i64 8
-		  %size_slot_i64 = bitcast i8* %size_slot to i64*
-		  store i64 %usize, i64* %size_slot_i64
-		  %user_ptr = getelementptr i8, i8* %raw, i64 16
-		  %footer_ptr = getelementptr i8, i8* %user_ptr, i64 %usize
-		  %footer_ptr_i64 = bitcast i8* %footer_ptr to i64*
-		  store i64 %global_magic, i64* %footer_ptr_i64
-		  ret i8* %user_ptr
+		%hdr_sz = add i64 %usize, 24
+		%ovf = icmp ult i64 %hdr_sz, %usize
+		br i1 %ovf, label %oom, label %try_malloc
+		oom:
+		%tmp_puts_oom = call i32 @puts(i8* getelementptr inbounds ([67 x i8], [67 x i8]* @.heap_msg, i32 0, i32 0))
+		call void @exit(i32 1)
+		unreachable
+		try_malloc:
+		%raw = call i8* @malloc(i64 %hdr_sz)
+		%isnull = icmp eq i8* %raw, null
+		br i1 %isnull, label %oom_malloc, label %ok_alloc
+		oom_malloc:
+		%tmp_puts_oom2 = call i32 @puts(i8* getelementptr inbounds ([67 x i8], [67 x i8]* @.heap_msg, i32 0, i32 0))
+		call void @exit(i32 1)
+		unreachable
+		ok_alloc:
+		%hdr_ptr = bitcast i8* %raw to i64*
+		%global_magic = load i64, i64* @.alloc_magic
+		store i64 %global_magic, i64* %hdr_ptr
+		%size_slot = getelementptr i8, i8* %raw, i64 8
+		%size_slot_i64 = bitcast i8* %size_slot to i64*
+		store i64 %usize, i64* %size_slot_i64
+		%user_ptr = getelementptr i8, i8* %raw, i64 16
+		%footer_ptr = getelementptr i8, i8* %user_ptr, i64 %usize
+		%footer_ptr_i64 = bitcast i8* %footer_ptr to i64*
+		store i64 %global_magic, i64* %footer_ptr_i64
+		ret i8* %user_ptr
 		}
 		define void @orcc_free(i8* %userptr) {
 		entry:
-		  %raw_hdr = getelementptr i8, i8* %userptr, i64 -16
-		  %hdr_i64 = bitcast i8* %raw_hdr to i64*
-		  %magic = load i64, i64* %hdr_i64
-		  %global_magic_cmp = load i64, i64* @.alloc_magic
-		  %ok = icmp eq i64 %magic, %global_magic_cmp
-		  br i1 %ok, label %free_ok, label %free_fail
+		%is_null = icmp eq i8* %userptr, null
+		br i1 %is_null, label %ret_void, label %check_hdr
+		check_hdr:
+		%raw_hdr = getelementptr i8, i8* %userptr, i64 -16
+		%hdr_i64 = bitcast i8* %raw_hdr to i64*
+		%magic = load i64, i64* %hdr_i64
+		%global_magic_cmp = load i64, i64* @.alloc_magic
+		%ok = icmp eq i64 %magic, %global_magic_cmp
+		br i1 %ok, label %free_ok, label %free_fail
 		free_fail:
-		  call void @puts(i8* getelementptr inbounds ([67 x i8], [67 x i8]* @.heap_msg, i32 0, i32 0))
-		  call void @exit(i64 1)
-		  unreachable
+		%tmp_puts2 = call i32 @puts(i8* getelementptr inbounds ([67 x i8], [67 x i8]* @.heap_msg, i32 0, i32 0))
+		call void @exit(i32 1)
+		unreachable
 		free_ok:
-		  %size_slot = getelementptr i8, i8* %raw_hdr, i64 8
-		  %size_i64 = bitcast i8* %size_slot to i64*
-		  %sz = load i64, i64* %size_i64
-		  %footer_loc = getelementptr i8, i8* %userptr, i64 %sz
-		  %footer_i64 = bitcast i8* %footer_loc to i64*
-		  %footer_val = load i64, i64* %footer_i64
-		  %ok2 = icmp eq i64 %footer_val, %global_magic_cmp
-		  br i1 %ok2, label %free_ok2, label %free_fail2
+		%size_slot = getelementptr i8, i8* %raw_hdr, i64 8
+		%size_i64 = bitcast i8* %size_slot to i64*
+		%sz = load i64, i64* %size_i64
+		%footer_loc = getelementptr i8, i8* %userptr, i64 %sz
+		%footer_i64 = bitcast i8* %footer_loc to i64*
+		%footer_val = load i64, i64* %footer_i64
+		%ok2 = icmp eq i64 %footer_val, %global_magic_cmp
+		br i1 %ok2, label %free_ok2, label %free_fail2
 		free_fail2:
-		  call void @puts(i8* getelementptr inbounds ([67 x i8], [67 x i8]* @.heap_msg, i32 0, i32 0))
-		  call void @exit(i64 1)
-		  unreachable
+		%tmp_puts3 = call i32 @puts(i8* getelementptr inbounds ([67 x i8], [67 x i8]* @.heap_msg, i32 0, i32 0))
+		call void @exit(i32 1)
+		unreachable
 		free_ok2:
-		  store i64 0, i64* %hdr_i64
-		  %rawptr = bitcast i8* %raw_hdr to i8*
-		  call void @free(i8* %rawptr)
-		  ret void
+		store i64 0, i64* %hdr_i64
+		%rawptr = bitcast i8* %raw_hdr to i8*
+		call void @free(i8* %rawptr)
+		ret void
+		ret_void:
+		ret void
 		}
 		define i64 @orcc_alloc_size(i8* %userptr) {
 		entry:
-		  %raw_hdr = getelementptr i8, i8* %userptr, i64 -16
-		  %size_slot = getelementptr i8, i8* %raw_hdr, i64 8
-		  %size_i64 = bitcast i8* %size_slot to i64*
-		  %sz = load i64, i64* %size_i64
-		  ret i64 %sz
+		%is_null = icmp eq i8* %userptr, null
+		br i1 %is_null, label %ret_zero, label %cont
+		cont:
+		%raw_hdr = getelementptr i8, i8* %userptr, i64 -16
+		%size_slot = getelementptr i8, i8* %raw_hdr, i64 8
+		%size_i64 = bitcast i8* %size_slot to i64*
+		%sz = load i64, i64* %size_i64
+		ret i64 %sz
+		ret_zero:
+		ret i64 0
 		}
 		%orcc_node = type { i8*, i8*, %orcc_node* }
-		@orcc_head = global %orcc_node* null
+		@orcc_buckets = global [1024 x %orcc_node*] zeroinitializer
 		define void @orcc_register_async(i8* %resume, i8* %handle) {
 		entry:
-		  %szptr = getelementptr %orcc_node, %orcc_node* null, i32 1
-		  %sz = ptrtoint %orcc_node* %szptr to i64
-		  %raw = call i8* @malloc(i64 %sz)
-		  %node = bitcast i8* %raw to %orcc_node*
-		  %rptr = getelementptr %orcc_node, %orcc_node* %node, i32 0, i32 0
-		  %hptr = getelementptr %orcc_node, %orcc_node* %node, i32 0, i32 1
-		  %nptr = getelementptr %orcc_node, %orcc_node* %node, i32 0, i32 2
-		  store i8* %resume, i8** %rptr
-		  store i8* %handle, i8** %hptr
-		  %old = load %orcc_node*, %orcc_node** @orcc_head
-		  store %orcc_node* %old, %orcc_node** %nptr
-		  store %orcc_node* %node, %orcc_node** @orcc_head
-		  ret void
+		%szptr = getelementptr %orcc_node, %orcc_node* null, i32 1
+		%sz = ptrtoint %orcc_node* %szptr to i64
+		%raw = call i8* @malloc(i64 %sz)
+		%node = bitcast i8* %raw to %orcc_node*
+		%rptr = getelementptr %orcc_node, %orcc_node* %node, i32 0, i32 0
+		%hptr = getelementptr %orcc_node, %orcc_node* %node, i32 0, i32 1
+		%nptr = getelementptr %orcc_node, %orcc_node* %node, i32 0, i32 2
+		store i8* %resume, i8** %rptr
+		store i8* %handle, i8** %hptr
+		%h_addr = ptrtoint i8* %handle to i64
+		%bucket_idx64 = and i64 %h_addr, 1023
+		%bucket_idx = trunc i64 %bucket_idx64 to i32
+		%slot = getelementptr [1024 x %orcc_node*], [1024 x %orcc_node*]* @orcc_buckets, i32 0, i32 %bucket_idx
+		br label %insert_loop
+		insert_loop:
+		%old_head = load atomic %orcc_node*, %orcc_node** %slot seq_cst, align 8
+		store %orcc_node* %old_head, %orcc_node** %nptr
+		%pair = cmpxchg %orcc_node** %slot, %orcc_node* %old_head, %orcc_node* %node seq_cst seq_cst
+		%succ = extractvalue { %orcc_node*, i1 } %pair, 1
+		br i1 %succ, label %insert_done, label %insert_loop
+		insert_done:
+		ret void
+		}
+		define void @orcc_remove_and_free_node(%orcc_node* %target, %orcc_node** %slot) {
+		entry:
+		br label %try_head
+		try_head:
+		%head = load atomic %orcc_node*, %orcc_node** %slot seq_cst, align 8
+		%is_head = icmp eq %orcc_node* %head, %target
+		br i1 %is_head, label %remove_head, label %scan_pred
+		remove_head:
+		%t_nptr = getelementptr %orcc_node, %orcc_node* %target, i32 0, i32 2
+		%t_next = load atomic %orcc_node*, %orcc_node** %t_nptr seq_cst, align 8
+		%pair = cmpxchg %orcc_node** %slot, %orcc_node* %target, %orcc_node* %t_next seq_cst seq_cst
+		%succ = extractvalue { %orcc_node*, i1 } %pair, 1
+		br i1 %succ, label %freed, label %try_head
+		scan_pred:
+		%pred0 = load atomic %orcc_node*, %orcc_node** %slot seq_cst, align 8
+		br label %scan_loop
+		scan_loop:
+		%pred = phi %orcc_node* [ %pred0, %scan_pred ], [ %pred_next, %advance_pred ]
+		%pred_is_null = icmp eq %orcc_node* %pred, null
+		br i1 %pred_is_null, label %notfound, label %check_pred_next
+		check_pred_next:
+		%pred_nptr = getelementptr %orcc_node, %orcc_node* %pred, i32 0, i32 2
+		%pred_next = load atomic %orcc_node*, %orcc_node** %pred_nptr seq_cst, align 8
+		%cmp_pred = icmp eq %orcc_node* %pred_next, %target
+		br i1 %cmp_pred, label %try_remove_mid, label %advance_pred
+		try_remove_mid:
+		%target_nptr = getelementptr %orcc_node, %orcc_node* %target, i32 0, i32 2
+		%target_next = load atomic %orcc_node*, %orcc_node** %target_nptr seq_cst, align 8
+		%pair2 = cmpxchg %orcc_node** %pred_nptr, %orcc_node* %target, %orcc_node* %target_next seq_cst seq_cst
+		%succ2 = extractvalue { %orcc_node*, i1 } %pair2, 1
+		br i1 %succ2, label %freed, label %scan_pred
+		advance_pred:
+		br label %scan_loop
+		notfound:
+		ret void
+		freed:
+		%rawptr = bitcast %orcc_node* %target to i8*
+		call void @free(i8* %rawptr)
+		ret void
 		}
 		define void @orcc_block_until_complete(i8* %handle) {
 		entry:
-		  br label %scan
+		%h_addr = ptrtoint i8* %handle to i64
+		%bucket_idx64 = and i64 %h_addr, 1023
+		%bucket_idx = trunc i64 %bucket_idx64 to i32
+		%slot = getelementptr [1024 x %orcc_node*], [1024 x %orcc_node*]* @orcc_buckets, i32 0, i32 %bucket_idx
+		br label %scan
 		scan:
-		  %head = load %orcc_node*, %orcc_node** @orcc_head
-		  br label %scan_loop
+		%head = load atomic %orcc_node*, %orcc_node** %slot seq_cst, align 8
+		br label %scan_loop
 		scan_loop:
-		  %cur = phi %orcc_node* [ %head, %scan ], [ %next, %advance ]
-		  %isnull = icmp eq %orcc_node* %cur, null
-		  br i1 %isnull, label %sleep, label %checknode
+		%cur = phi %orcc_node* [ %head, %scan ], [ %next, %advance ]
+		%isnull = icmp eq %orcc_node* %cur, null
+		br i1 %isnull, label %sleep, label %checknode
 		checknode:
-		  %hptr = getelementptr %orcc_node, %orcc_node* %cur, i32 0, i32 1
-		  %hval = load i8*, i8** %hptr
-		  %cmp = icmp eq i8* %hval, %handle
-		  br i1 %cmp, label %invoke, label %advance
+		%hptr = getelementptr %orcc_node, %orcc_node* %cur, i32 0, i32 1
+		%hval = load atomic i8*, i8** %hptr seq_cst, align 8
+		%cmp = icmp eq i8* %hval, %handle
+		br i1 %cmp, label %invoke, label %advance
 		invoke:
-		  %rptr = getelementptr %orcc_node, %orcc_node* %cur, i32 0, i32 0
-		  %rval = load i8*, i8** %rptr
-		  %resume_fn = bitcast i8* %rval to i1 (i8*)*
-		  %res = call i1 %resume_fn(i8* %handle)
-		  br i1 %res, label %done, label %scan
+		%rptr = getelementptr %orcc_node, %orcc_node* %cur, i32 0, i32 0
+		%rval = load atomic i8*, i8** %rptr seq_cst, align 8
+		%resume_fn = bitcast i8* %rval to i1 (i8*)*
+		%res = call i1 %resume_fn(i8* %handle)
+		br i1 %res, label %remove_node, label %scan
+		remove_node:
+		call void @orcc_remove_and_free_node(%orcc_node* %cur, %orcc_node** %slot)
+		br label %done
 		advance:
-		  %nptr2 = getelementptr %orcc_node, %orcc_node* %cur, i32 0, i32 2
-		  %next = load %orcc_node*, %orcc_node** %nptr2
-		  br label %scan_loop
+		%nptr2 = getelementptr %orcc_node, %orcc_node* %cur, i32 0, i32 2
+		%next = load atomic %orcc_node*, %orcc_node** %nptr2 seq_cst, align 8
+		br label %scan_loop
 		sleep:
-		  call i32 @usleep(i32 1000)
-		  br label %scan
+		%tmp_usleep = call i32 @usleep(i32 1000)
+		br label %scan
 		done:
-		  ret void
+		ret void
 		}
 	"""
 	struct_llvm_defs: List[str] = []
@@ -3067,13 +3162,8 @@ def compile_program(prog: Program) -> str:
 		lines.append("  %argc64 = sext i32 %argc to i64")
 		lines.append("  store i64 %argc64, i64* @orcat_argc_global")
 		lines.append("  store i8** %argv, i8*** @orcat_argv_global")
-		lines.append("  %time64 = call i64 @time(i64* null)")
-		lines.append("  %time32 = trunc i64 %time64 to i32")
-		lines.append("  call void @srand(i32 %time32)")
-		lines.append("  %rnd = call i32 @rand()")
-		lines.append("  %rnd64 = zext i32 %rnd to i64")
-		lines.append("  %xor_magic = xor i64 %rnd64, 16045690984833335023")
-		lines.append("  store i64 %xor_magic, i64* @.alloc_magic")
+		if not no_runtime:
+			lines.append("  call void @orcc_init_runtime()")
 		user_ret = func_table.get("user_main", "i64")
 		if user_ret == "void":
 			lines.append("  call void @user_main()")
@@ -3106,9 +3196,10 @@ def compile_program(prog: Program) -> str:
 	def _replace_call_free(m):
 		s = m.group(0)
 		return s.replace('@free(', '@orcc_free(')
-	module_text = re.sub(r'\bcall\b[^\n]*@malloc\(', _replace_call_malloc, module_text)
-	module_text = re.sub(r'\bcall\b[^\n]*@free\(', _replace_call_free, module_text)
-	module_text = module_text + "\n" + runtime_block
+	if not no_runtime:
+		module_text = re.sub(r'\bcall\b[^\n]*@malloc\(', _replace_call_malloc, module_text)
+		module_text = re.sub(r'\bcall\b[^\n]*@free\(', _replace_call_free, module_text)
+		module_text = module_text + "\n" + runtime_block
 	return module_text
 def check_types(prog: Program):
 	env = TypeEnv()
@@ -4042,3 +4133,4 @@ def main():
 		f.write(llvm)
 if __name__ == "__main__":
 	main()
+	
