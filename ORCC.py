@@ -94,6 +94,8 @@ class TypeEnv:
 def llvm_ty_of(typ: str) -> str:
 	if typ.endswith('*'):
 		base = typ[:-1]
+		if base.startswith('%'):
+			return base + '*'
 		if base in enum_variant_map and any(p is not None for _, p in enum_variant_map[base]):
 			return f"%enum.{base}**"
 		if base in enum_variant_map:
@@ -107,6 +109,8 @@ def llvm_ty_of(typ: str) -> str:
 		return type_map.get(typ, type_map.get("int", "i64"))
 	if typ in type_map:
 		return type_map[typ]
+	if typ.startswith('%'):
+		return typ
 	return f"%struct.{typ}"
 def zero_const_for_llvm(llvm_t: str) -> str:
 	if '*' in llvm_t or llvm_t.strip().startswith('%'):
@@ -785,9 +789,21 @@ class Parser:
 		self.program = Program(funcs, imports, structs, enums, globals)
 		return self.program
 	def parse_global(self) -> GlobalVar:
+		prefix_amp = False
+		if self.peek().kind == 'AMP':
+			self.bump()
+			prefix_amp = True
 		if self.peek().kind not in TYPE_TOKENS and self.peek().kind != 'IDENT':
 			raise SyntaxError(f"Expected type after 'pin', got {self.peek().kind}")
 		typ = self.bump().value
+		if prefix_amp or self.match('AMP'):
+			typ += '*'
+		while self.match('STAR'):
+			typ += '*'
+		if self.match('LBRACKET'):
+			size_tok = self.expect('INT')
+			self.expect('RBRACKET')
+			typ += f"[{size_tok.value}]"
 		name = self.expect('IDENT').value
 		expr = None
 		if self.match('EQUAL'):
@@ -806,19 +822,55 @@ class Parser:
 		while self.peek().kind != 'RBRACE':
 			variant_name = self.expect('IDENT').value
 			variant_type: Optional[str] = None
+			prefix_amp = False
+			if self.peek().kind == 'AMP':
+				self.bump()
+				prefix_amp = True
 			if self.peek().kind in TYPE_TOKENS or self.peek().kind == 'IDENT':
 				variant_type = self.bump().value
+				if prefix_amp or self.match('AMP'):
+					variant_type += '*'
+				while self.match('STAR'):
+					variant_type += '*'
+				if self.match('LBRACKET'):
+					size_tok = self.expect('INT')
+					self.expect('RBRACKET')
+					variant_type += f"[{size_tok.value}]"
 				self.expect('SEMI')
 			elif self.match('COLON'):
+				prefix_amp = False
+				if self.peek().kind == 'AMP':
+					self.bump()
+					prefix_amp = True
 				if self.peek().kind in TYPE_TOKENS or self.peek().kind == 'IDENT':
 					variant_type = self.bump().value
+					if prefix_amp or self.match('AMP'):
+						variant_type += '*'
+					while self.match('STAR'):
+						variant_type += '*'
+					if self.match('LBRACKET'):
+						size_tok = self.expect('INT')
+						self.expect('RBRACKET')
+						variant_type += f"[{size_tok.value}]"
 				else:
 					raise SyntaxError(
 						f"Expected type after ':', got {self.peek().kind} at {self.peek().line}:{self.peek().col}")
 				self.expect('SEMI')
 			elif self.match('LPAREN'):
+				prefix_amp = False
+				if self.peek().kind == 'AMP':
+					self.bump()
+					prefix_amp = True
 				if self.peek().kind in TYPE_TOKENS or self.peek().kind == 'IDENT':
 					variant_type = self.bump().value
+					if prefix_amp or self.match('AMP'):
+						variant_type += '*'
+					while self.match('STAR'):
+						variant_type += '*'
+					if self.match('LBRACKET'):
+						size_tok = self.expect('INT')
+						self.expect('RBRACKET')
+						variant_type += f"[{size_tok.value}]"
 				else:
 					raise SyntaxError(
 						f"Expected type inside variant parentheses, got {self.peek().kind} at {self.peek().line}:{self.peek().col}")
@@ -835,8 +887,20 @@ class Parser:
 		self.expect('LBRACE')
 		fields = []
 		while self.peek().kind != 'RBRACE':
-			if self.peek().kind in TYPE_TOKENS:
+			prefix_amp = False
+			if self.peek().kind == 'AMP':
+				self.bump()
+				prefix_amp = True
+			if self.peek().kind in TYPE_TOKENS or self.peek().kind == 'IDENT':
 				typ = self.bump().value
+				if prefix_amp or self.match('AMP'):
+					typ += '*'
+				while self.match('STAR'):
+					typ += '*'
+				if self.match('LBRACKET'):
+					size_tok = self.expect('INT')
+					self.expect('RBRACKET')
+					typ += f"[{size_tok.value}]"
 				fname = self.expect('IDENT').value
 			else:
 				raise SyntaxError(
@@ -884,10 +948,20 @@ class Parser:
 		params: List[Tuple[str, str]] = []
 		if self.peek().kind != 'RPAREN':
 			while True:
+				prefix_amp = False
+				if self.peek().kind == 'AMP':
+					self.bump()
+					prefix_amp = True
 				if self.peek().kind in TYPE_TOKENS or self.peek().kind == 'IDENT':
 					typ = self.bump().value
-					if self.match('STAR'):
+					if prefix_amp or self.match('AMP'):
 						typ += '*'
+					while self.match('STAR'):
+						typ += '*'
+					if self.match('LBRACKET'):
+						size_tok = self.expect('INT')
+						self.expect('RBRACKET')
+						typ += f"[{size_tok.value}]"
 					pname = self.expect('IDENT').value
 					params.append((typ, pname))
 				else:
@@ -898,8 +972,14 @@ class Parser:
 					break
 		self.expect('RPAREN')
 		self.expect('LT')
+		prefix_amp = False
+		if self.peek().kind == 'AMP':
+			self.bump()
+			prefix_amp = True
 		ret_type = self.bump().value
-		if self.match('STAR'):
+		if prefix_amp or self.match('AMP'):
+			ret_type += '*'
+		while self.match('STAR'):
 			ret_type += '*'
 		self.expect('GT')
 		if is_extern:
@@ -1057,9 +1137,15 @@ class Parser:
 		if self.peek().kind == 'NOMD':
 			self.bump()
 			nomd = True
+		prefix_amp = False
+		if self.peek().kind == 'AMP':
+			self.bump()
+			prefix_amp = True
 		if self.peek().kind in TYPE_TOKENS or self.peek().kind == 'IDENT':
 			typ = self.bump().value
-			if self.match('STAR'):
+			if prefix_amp or self.match('AMP'):
+				typ += '*'
+			while self.match('STAR'):
 				typ += '*'
 			if self.match('LBRACKET'):
 				size_tok = self.expect('INT')
@@ -1584,18 +1670,9 @@ def gen_expr(expr: Expr, out: List[str]) -> str | None:
 				return ir_name
 			return f"%{ir_name}_addr"
 		if isinstance(inner, FieldAccess):
-			if isinstance(inner.base, Var):
-				res = symbol_table.lookup(inner.base.name)
-				if res is None:
-					raise RuntimeError(f"Undefined variable: {inner.base.name}")
-				_, base_name = res
-				if base_name.startswith('@'):
-					base_ptr = base_name
-				else:
-					base_ptr = f"%{base_name}_addr"
-			else:
-				base_ptr = gen_expr(inner.base, out)
-			base_raw = infer_type(inner.base)
+			base = inner.base
+			field = inner.field
+			base_raw = infer_type(base)
 			base_name = base_raw
 			if base_name.endswith("*"):
 				base_name = base_name[:-1]
@@ -1605,21 +1682,80 @@ def gen_expr(expr: Expr, out: List[str]) -> str | None:
 				raise RuntimeError(f"Struct type '{base_name}' not found")
 			fields = struct_field_map[base_name]
 			field_dict = dict(fields)
-			if inner.field not in field_dict:
-				raise RuntimeError(f"Field '{inner.field}' not in struct '{base_name}'")
-			index = list(field_dict.keys()).index(inner.field)
-			ptr = new_tmp()
-			out.append(
-				f"  {ptr} = getelementptr inbounds %struct.{base_name}, "
-				f"%struct.{base_name}* {base_ptr}, i32 0, i32 {index}"
-			)
-			return ptr
+			if field not in field_dict:
+				raise RuntimeError(f"Field '{field}' not in struct '{base_name}'")
+			index = list(field_dict.keys()).index(field)
+			if isinstance(base, Var):
+				res = symbol_table.lookup(base.name)
+				if res is None:
+					raise RuntimeError(f"Undefined variable: {base.name}")
+				_, base_ir_name = res
+				base_ty = infer_type(base)
+				if base_ty.endswith("*"):
+					if base_ir_name.startswith('@'):
+						base_val = base_ir_name
+					elif base_ir_name.startswith('%'):
+						base_val = f"{base_ir_name}_addr"
+					else:
+						base_val = f"%{base_ir_name}_addr"
+					llvm_base_llvm_ty = llvm_ty_of(base_ty)
+					is_null = new_tmp()
+					fail_lbl = new_label("null_fail")
+					ok_lbl = new_label("null_ok")
+					out.append(f"  {is_null} = icmp eq {llvm_base_llvm_ty} {base_val}, null")
+					out.append(f"  br i1 {is_null}, label %{fail_lbl}, label %{ok_lbl}")
+					out.append(f"{fail_lbl}:")
+					out.append(f"  call void @orcc_null_abort()")
+					out.append(f"  unreachable")
+					out.append(f"{ok_lbl}:")
+					ptr = new_tmp()
+					out.append(
+						f"  {ptr} = getelementptr inbounds %struct.{base_name}, %struct.{base_name}* {base_val}, i32 0, i32 {index}"
+					)
+					return ptr
+				else:
+					if base_ir_name.startswith('@'):
+						base_ptr_token = base_ir_name
+					else:
+						base_ptr_token = f"%{base_ir_name}_addr"
+					ptr = new_tmp()
+					out.append(
+						f"  {ptr} = getelementptr inbounds %struct.{base_name}, %struct.{base_name}* {base_ptr_token}, i32 0, i32 {index}"
+					)
+					return ptr
+			else:
+				base_val = gen_expr(base, out)
+				base_ty = infer_type(base)
+				if not base_ty.endswith("*"):
+					raise RuntimeError("Taking address of a field on an rvalue struct is not supported")
+				if base_val.startswith('%') and not base_val.endswith('_addr') and not base_val.startswith('%struct.'):
+					tmp_addr = new_tmp()
+					out.append(f"  {tmp_addr} = alloca %struct.{base_name}")
+					out.append(f"  store %struct.{base_name} {base_val}, %struct.{base_name}* {tmp_addr}")
+					base_val_ptr = tmp_addr
+				else:
+					base_val_ptr = base_val
+				llvm_base_llvm_ty = llvm_ty_of(base_ty)
+				is_null = new_tmp()
+				fail_lbl = new_label("null_fail")
+				ok_lbl = new_label("null_ok")
+				out.append(f"  {is_null} = icmp eq {llvm_base_llvm_ty} {base_val_ptr}, null")
+				out.append(f"  br i1 {is_null}, label %{fail_lbl}, label %{ok_lbl}")
+				out.append(f"{fail_lbl}:")
+				out.append(f"  call void @orcc_null_abort()")
+				out.append(f"  unreachable")
+				out.append(f"{ok_lbl}:")
+				ptr = new_tmp()
+				out.append(
+					f"  {ptr} = getelementptr inbounds %struct.{base_name}, %struct.{base_name}* {base_val_ptr}, i32 0, i32 {index}"
+				)
+				return ptr
 		if isinstance(inner, Index):
 			if not isinstance(inner.array, Var):
 				raise RuntimeError(
 					f"Only direct variable array indexing is supported for address-of, got: {inner.array}")
 			var_name = inner.array.name
-			idx = gen_expr(inner.index, out)
+			idx_val = gen_expr(inner.index, out)
 			arr_info = symbol_table.lookup(var_name)
 			if not arr_info:
 				raise RuntimeError(f"Undefined array: {var_name}")
@@ -1628,22 +1764,84 @@ def gen_expr(expr: Expr, out: List[str]) -> str | None:
 			idx_llvm = llvm_ty_of(idx_ty)
 			if idx_llvm != "i32":
 				idx_cast = new_tmp()
-				if idx_llvm.startswith("i") and int(idx_llvm[1:]) > 32:
-					out.append(f"  {idx_cast} = trunc {idx_llvm} {idx} to i32")
+				if idx_llvm.startswith("i") and idx_llvm[1:].isdigit() and int(idx_llvm[1:]) > 32:
+					out.append(f"  {idx_cast} = trunc {idx_llvm} {idx_val} to i32")
 				else:
-					out.append(f"  {idx_cast} = sext {idx_llvm} {idx} to i32")
+					out.append(f"  {idx_cast} = sext {idx_llvm} {idx_val} to i32")
 			else:
-				idx_cast = idx
-			if name.startswith('@'):
-				arr_addr_token = name
+				idx_cast = idx_val
+			if llvm_ty.startswith('['):
+				if name.startswith('@'):
+					len_addr = f"@{var_name}_len"
+					arr_addr_token = name
+				else:
+					len_addr = f"%{var_name}_len"
+					arr_addr_token = f"%{name}_addr"
+				len_val = new_tmp()
+				out.append(f"  {len_val} = load i32, i32* {len_addr}")
+				ok = new_tmp()
+				out.append(f"  {ok} = icmp ult i32 {idx_cast}, {len_val}")
+				fail_lbl = new_label("oob_fail")
+				ok_lbl = new_label("oob_ok")
+				out.append(f"  br i1 {ok}, label %{ok_lbl}, label %{fail_lbl}")
+				out.append(f"{fail_lbl}:")
+				out.append(f"  call void @orcc_oob_abort()")
+				out.append(f"  unreachable")
+				out.append(f"{ok_lbl}:")
+				gep_tmp = new_tmp()
+				out.append(
+					f"  {gep_tmp} = getelementptr inbounds {llvm_ty}, {llvm_ty}* {arr_addr_token}, i32 0, i32 {idx_cast}"
+				)
+				return gep_tmp
+			elif llvm_ty.endswith('*'):
+				if name.startswith('@'):
+					ptr_load = new_tmp()
+					out.append(f"  {ptr_load} = load {llvm_ty}, {llvm_ty}* {name}")
+				else:
+					ptr_load = new_tmp()
+					out.append(f"  {ptr_load} = load {llvm_ty}, {llvm_ty}* %{name}_addr")
+				is_null_tmp = new_tmp()
+				out.append(f"  {is_null_tmp} = icmp eq {llvm_ty} {ptr_load}, null")
+				null_fail = new_label("null_ptr_fail")
+				null_ok = new_label("null_ptr_ok")
+				out.append(f"  br i1 {is_null_tmp}, label %{null_fail}, label %{null_ok}")
+				out.append(f"{null_fail}:")
+				out.append(f"  call void @orcc_null_abort()")
+				out.append(f"  unreachable")
+				out.append(f"{null_ok}:")
+				idx_i64 = new_tmp()
+				if idx_llvm.startswith("i") and idx_llvm[1:].isdigit():
+					bits = int(idx_llvm[1:]) if idx_llvm[1:].isdigit() else 32
+					if bits < 64:
+						if is_unsigned_int_type(idx_ty):
+							out.append(f"  {idx_i64} = zext {idx_llvm} {idx_val} to i64")
+						else:
+							out.append(f"  {idx_i64} = sext {idx_llvm} {idx_val} to i64")
+					else:
+						out.append(f"  {idx_i64} = trunc {idx_llvm} {idx_val} to i64")
+				else:
+					out.append(f"  {idx_i64} = zext i32 {idx_val} to i64")
+				bit_tmp = new_tmp()
+				out.append(f"  {bit_tmp} = bitcast {llvm_ty} {ptr_load} to i8*")
+				size_i64 = new_tmp()
+				out.append(f"  {size_i64} = call i64 @orcc_alloc_size(i8* {bit_tmp})")
+				ok64 = new_tmp()
+				out.append(f"  {ok64} = icmp ult i64 {idx_i64}, {size_i64}")
+				fail_lbl = new_label("oob_fail")
+				ok_lbl = new_label("oob_ok")
+				out.append(f"  br i1 {ok64}, label %{ok_lbl}, label %{fail_lbl}")
+				out.append(f"{fail_lbl}:")
+				out.append(f"  call void @orcc_oob_abort()")
+				out.append(f"  unreachable")
+				out.append(f"{ok_lbl}:")
+				gep_tmp = new_tmp()
+				base_ty = extract_array_base_type(llvm_ty)
+				out.append(
+					f"  {gep_tmp} = getelementptr inbounds {base_ty}, {base_ty}* {ptr_load}, i32 {idx_cast}"
+				)
+				return gep_tmp
 			else:
-				arr_addr_token = f"%{name}_addr"
-			gep_tmp = new_tmp()
-			out.append(
-				f"  {gep_tmp} = getelementptr inbounds {llvm_ty}, "
-				f"{llvm_ty}* {arr_addr_token}, i32 0, i32 {idx_cast}"
-			)
-			return gep_tmp
+				raise RuntimeError("Address-of index not supported for this array kind")
 		raise RuntimeError("Address-of not supported for this expression form")
 	if isinstance(expr, IntLit):
 		tmp = new_tmp()
@@ -2087,9 +2285,10 @@ def gen_expr(expr: Expr, out: List[str]) -> str | None:
 						out.append(f"  {tmp} = add {llvm_enum_ty} 0, {idx}")
 						return tmp
 				raise RuntimeError(f"Enum '{base_name}' has no variant '{expr.field}'")
-			raise RuntimeError(f"Cannot access variant {expr.field} on enum type {base_name} (tagged enums require constructors like Some(...))")
-		base_ptr = gen_expr(expr.base, out)
-		base_raw = infer_type(expr.base)
+			raise RuntimeError(
+				f"Cannot access variant {expr.field} on enum type {base_name} (tagged enums require constructors like Some(...))")
+		field_base = expr.base
+		base_raw = infer_type(field_base)
 		base_name = base_raw
 		if base_name.endswith("*"):
 			base_name = base_name[:-1]
@@ -2106,11 +2305,58 @@ def gen_expr(expr: Expr, out: List[str]) -> str | None:
 		index = list(field_dict.keys()).index(expr.field)
 		field_typ = field_dict[expr.field]
 		field_llvm = llvm_ty_of(field_typ)
+		if isinstance(field_base, Var):
+			res = symbol_table.lookup(field_base.name)
+			if res is None:
+				raise RuntimeError(f"Undefined variable: {field_base.name}")
+			llvm_var_ty, name = res
+			if llvm_var_ty.endswith('*'):
+				if name.startswith('@'):
+					ptr_load = new_tmp()
+					out.append(f"  {ptr_load} = load {llvm_var_ty}, {llvm_var_ty}* {name}")
+				else:
+					ptr_load = new_tmp()
+					if name.startswith('%'):
+						out.append(f"  {ptr_load} = load {llvm_var_ty}, {llvm_var_ty}* {name}_addr")
+					else:
+						out.append(f"  {ptr_load} = load {llvm_var_ty}, {llvm_var_ty}* %{name}_addr")
+				is_null_tmp = new_tmp()
+				out.append(f"  {is_null_tmp} = icmp eq {llvm_var_ty} {ptr_load}, null")
+				null_fail = new_label("null_ptr_fail")
+				null_ok = new_label("null_ptr_ok")
+				out.append(f"  br i1 {is_null_tmp}, label %{null_fail}, label %{null_ok}")
+				out.append(f"{null_fail}:")
+				out.append(f"  call void @orcc_null_abort()")
+				out.append(f"  unreachable")
+				out.append(f"{null_ok}:")
+				base_ptr = ptr_load
+			else:
+				if name.startswith('@'):
+					base_ptr = name
+				else:
+					if name.startswith('%'):
+						base_ptr = f"{name}_addr"
+					else:
+						base_ptr = f"%{name}_addr"
+		else:
+			base_val = gen_expr(field_base, out)
+			base_ty = infer_type(field_base)
+			if not base_ty.endswith("*"):
+				if base_val.startswith('%') and not base_val.endswith('_addr') and not base_val.startswith('%struct.'):
+					tmp_addr = new_tmp()
+					out.append(f"  {tmp_addr} = alloca %struct.{base_name}")
+					out.append(f"  store %struct.{base_name} {base_val}, %struct.{base_name}* {tmp_addr}")
+					base_ptr = tmp_addr
+				else:
+					raise RuntimeError("Taking address of a field on an rvalue struct is not supported")
+			else:
+				base_ptr = base_val
 		ptr = new_tmp()
-		out.append(f"  {ptr} = getelementptr inbounds %struct.{base_name}, %struct.{base_name}* {base_ptr}, i32 0, i32 {index}")
+		out.append(
+			f"  {ptr} = getelementptr inbounds %struct.{base_name}, %struct.{base_name}* {base_ptr}, i32 0, i32 {index}")
 		tmp = new_tmp()
 		out.append(f"  {tmp} = load {field_llvm}, {field_llvm}* {ptr}")
-		_maybe_flush_deferred(expr.base, base_ptr)
+		_maybe_flush_deferred(field_base, base_ptr)
 		return tmp
 	if isinstance(expr, StructInit):
 		struct_name = expr.name
@@ -2952,16 +3198,22 @@ def compile_program(prog: Program) -> str:
 	}
 	define i64 @orcc_alloc_size(i8* %userptr) {
 	entry:
-	%is_null = icmp eq i8* %userptr, null
-	br i1 %is_null, label %ret_zero, label %cont
+	  %is_null = icmp eq i8* %userptr, null
+	  br i1 %is_null, label %ret_zero, label %cont
 	cont:
-	%raw_hdr = getelementptr i8, i8* %userptr, i64 -16
-	%size_slot = getelementptr i8, i8* %raw_hdr, i64 8
-	%size_i64 = bitcast i8* %size_slot to i64*
-	%sz = load i64, i64* %size_i64
-	ret i64 %sz
+	  %raw_hdr = getelementptr i8, i8* %userptr, i64 -16
+	  %hdr_i64 = bitcast i8* %raw_hdr to i64*
+	  %magic = load i64, i64* %hdr_i64
+	  %global_magic_cmp = load i64, i64* @.alloc_magic
+	  %ok = icmp eq i64 %magic, %global_magic_cmp
+	  br i1 %ok, label %ok2, label %ret_zero
+	ok2:
+	  %size_slot = getelementptr i8, i8* %raw_hdr, i64 8
+	  %size_i64 = bitcast i8* %size_slot to i64*
+	  %sz = load i64, i64* %size_i64
+	  ret i64 %sz
 	ret_zero:
-	ret i64 0
+	  ret i64 0
 	}
 	%orcc_node = type { i8*, i8*, %orcc_node* }
 	@orcc_buckets = global [1024 x %orcc_node*] zeroinitializer
