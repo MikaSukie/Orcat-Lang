@@ -253,9 +253,9 @@ def ensure_monomorph_call(call_expr: 'Call', out: List[str]) -> str:
 		raise
 	out.insert(0, "\n".join(llvm_lines))
 	return mononame if mononame in func_table else call_expr.name
-def _subst_type(typ: str, subst: Dict[str, str]) -> str:
+def _subst_type(typ: Optional[str], subst: Dict[str, str]) -> Optional[str]:
 	if typ is None:
-		return typ
+		return None
 	if typ in subst:
 		return subst[typ]
 	for param, concrete in subst.items():
@@ -284,67 +284,67 @@ def llvm_int_bitsize(ty: str) -> Optional[int]:
 	if m:
 		return int(m.group(1))
 	return None
-def emit_cast_value(val: str, src_t: str, dst_t: str, out: List[str]) -> str:
-    if val is None:
-        return val
-    src_llvm = llvm_ty_of(src_t)
-    dst_llvm = llvm_ty_of(dst_t)
-    if src_llvm == dst_llvm:
-        return val
-    if src_llvm.startswith('i') and dst_llvm.startswith('i'):
-        src_bits = llvm_int_bitsize(src_llvm)
-        dst_bits = llvm_int_bitsize(dst_llvm)
-        tmp = new_tmp()
-        if src_bits and dst_bits:
-            if src_bits > dst_bits:
-                out.append(f"  {tmp} = trunc {src_llvm} {val} to {dst_llvm}")
-            else:
-                if is_unsigned_int_type(src_t):
-                    out.append(f"  {tmp} = zext {src_llvm} {val} to {dst_llvm}")
-                else:
-                    out.append(f"  {tmp} = sext {src_llvm} {val} to {dst_llvm}")
-            return tmp
-    if src_llvm.startswith('i') and dst_llvm == 'double':
-        tmp = new_tmp()
-        out.append(f"  {tmp} = sitofp {src_llvm} {val} to double")
-        return tmp
-    if dst_llvm.startswith('i') and src_llvm == 'double':
-        tmp = new_tmp()
-        out.append(f"  {tmp} = fptosi double {val} to {dst_llvm}")
-        return tmp
-    if src_llvm == 'double' and dst_llvm == 'float':
-        tmp = new_tmp()
-        out.append(f"  {tmp} = fptrunc double {val} to float")
-        return tmp
-    if src_llvm == 'float' and dst_llvm == 'double':
-        tmp = new_tmp()
-        out.append(f"  {tmp} = fpext float {val} to double")
-        return tmp
-    if src_llvm.endswith('*') and dst_llvm.endswith('*'):
-        tmp = new_tmp()
-        out.append(f"  {tmp} = bitcast {src_llvm} {val} to {dst_llvm}")
-        return tmp
-    if src_llvm == 'i8*' and dst_llvm == 'i1':
-        tmp = new_tmp()
-        out.append(f"  {tmp} = icmp ne i8* {val}, null")
-        return tmp
-    if src_llvm == 'i1' and dst_llvm.startswith('i') and dst_llvm != 'i1':
-        tmp = new_tmp()
-        out.append(f"  {tmp} = zext i1 {val} to {dst_llvm}")
-        return tmp
-    if src_llvm.startswith('i') and dst_llvm == 'i1':
-        tmp = new_tmp()
-        out.append(f"  {tmp} = icmp ne {src_llvm} {val}, 0")
-        return tmp
-    if dst_llvm.endswith('*') and not src_llvm.endswith('*') and src_llvm.startswith('i'):
-        tmp = new_tmp()
-        out.append(f"  {tmp} = inttoptr {src_llvm} {val} to {dst_llvm}")
-        return tmp
-    if src_llvm.endswith('*') and not dst_llvm.endswith('*') and dst_llvm.startswith('i'):
-        tmp = new_tmp()
-        out.append(f"  {tmp} = ptrtoint {src_llvm} {val} to {dst_llvm}")
-        return tmp
-    return val
+def emit_cast_value(val: Optional[str], src_t: str, dst_t: str, out: List[str]) -> Optional[str]:
+	if val is None:
+		return None
+	src_llvm = llvm_ty_of(src_t)
+	dst_llvm = llvm_ty_of(dst_t)
+	if src_llvm == dst_llvm:
+		return val
+	if src_llvm.startswith('i') and dst_llvm.startswith('i'):
+		src_bits = llvm_int_bitsize(src_llvm)
+		dst_bits = llvm_int_bitsize(dst_llvm)
+		tmp = new_tmp()
+		if src_bits and dst_bits:
+			if src_bits > dst_bits:
+				out.append(f"  {tmp} = trunc {src_llvm} {val} to {dst_llvm}")
+			else:
+				if is_unsigned_int_type(src_t):
+					out.append(f"  {tmp} = zext {src_llvm} {val} to {dst_llvm}")
+				else:
+					out.append(f"  {tmp} = sext {src_llvm} {val} to {dst_llvm}")
+			return tmp
+	if src_llvm.startswith('i') and dst_llvm == 'double':
+		tmp = new_tmp()
+		out.append(f"  {tmp} = sitofp {src_llvm} {val} to double")
+		return tmp
+	if dst_llvm.startswith('i') and src_llvm == 'double':
+		tmp = new_tmp()
+		out.append(f"  {tmp} = fptosi double {val} to {dst_llvm}")
+		return tmp
+	if src_llvm == 'double' and dst_llvm == 'float':
+		tmp = new_tmp()
+		out.append(f"  {tmp} = fptrunc double {val} to float")
+		return tmp
+	if src_llvm == 'float' and dst_llvm == 'double':
+		tmp = new_tmp()
+		out.append(f"  {tmp} = fpext float {val} to double")
+		return tmp
+	if src_llvm.endswith('*') and dst_llvm.endswith('*'):
+		tmp = new_tmp()
+		out.append(f"  {tmp} = bitcast {src_llvm} {val} to {dst_llvm}")
+		return tmp
+	if src_llvm == 'i8*' and dst_llvm == 'i1':
+		tmp = new_tmp()
+		out.append(f"  {tmp} = icmp ne i8* {val}, null")
+		return tmp
+	if src_llvm == 'i1' and dst_llvm.startswith('i') and dst_llvm != 'i1':
+		tmp = new_tmp()
+		out.append(f"  {tmp} = zext i1 {val} to {dst_llvm}")
+		return tmp
+	if src_llvm.startswith('i') and dst_llvm == 'i1':
+		tmp = new_tmp()
+		out.append(f"  {tmp} = icmp ne {src_llvm} {val}, 0")
+		return tmp
+	if dst_llvm.endswith('*') and not src_llvm.endswith('*') and src_llvm.startswith('i'):
+		tmp = new_tmp()
+		out.append(f"  {tmp} = inttoptr {src_llvm} {val} to {dst_llvm}")
+		return tmp
+	if src_llvm.endswith('*') and not dst_llvm.endswith('*') and dst_llvm.startswith('i'):
+		tmp = new_tmp()
+		out.append(f"  {tmp} = ptrtoint {src_llvm} {val} to {dst_llvm}")
+		return tmp
+	return val
 def is_unsigned_int_type(typ: str) -> bool:
 	if typ is None:
 		return False
