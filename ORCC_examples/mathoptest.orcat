@@ -60,5 +60,13 @@ pub fn main() <int> {
     print(itostr(x));
     print("\n");
 
+    x = 6;
+    int y = (x & 3) | 8;
+    int z = y >> 1;
+    print("(x & 3) | 8: ");
+    print(itostr(y)); print("\n");
+    print("y >> 1: ");
+    print(itostr(z)); print("\n");
+
     return x;
 }
