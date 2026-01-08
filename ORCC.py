@@ -52,12 +52,13 @@ SINGLE_CHARS = {
 	'=': 'EQUAL',	'+': 'PLUS',	 '-': 'MINUS',	'*': 'STAR',
 	'/': 'SLASH',	'<': 'LT',	   '>': 'GT',	   '[': 'LBRACKET',
 	']': 'RBRACKET', '?': 'QUESTION', '.': 'DOT', ':': 'COLON', '%': 'PERCENT',
-	'!': 'BANG', '&': 'AMP'
+	'!': 'BANG', '&': 'AMP', '|': 'PIPE', '^': 'CARET'
 	}
 MULTI_CHARS = {
 	'==': 'EQEQ', '!=': 'NEQ', '<=': 'LE', '>=': 'GE', '->': 'ARROW', '&&': 'AND',  '||': 'OR',
 	'+=': 'PLUSEQ', '-=': 'MINUSEQ', '*=': 'STAREQ', '/=': 'SLASHEQ', '%=': 'PERCENTEQ',
-	'&=': 'ANDEQ', '|=': 'OREQ', '^=': 'XOREQ', '<<=': 'LSHIFTEQ', '>>=': 'RSHIFTEQ'
+	'&=': 'ANDEQ', '|=': 'OREQ', '^=': 'XOREQ', '<<=': 'LSHIFTEQ', '>>=': 'RSHIFTEQ',
+	'<<': 'LSHIFT', '>>': 'RSHIFT'
 	}
 class SymbolTable:
 	def __init__(self):
@@ -295,7 +296,23 @@ def emit_cast_value(val: Optional[str], src_t: str, dst_t: str, out: List[str]) 
 	dst_llvm = llvm_ty_of(dst_t)
 	if src_llvm == dst_llvm:
 		return val
-	if src_llvm.startswith('i') and dst_llvm.startswith('i'):
+	if src_llvm.endswith('*') and dst_llvm.endswith('*'):
+		tmp = new_tmp()
+		out.append(f"  {tmp} = bitcast {src_llvm} {val} to {dst_llvm}")
+		return tmp
+	if src_llvm.endswith('*') and dst_llvm == 'i1':
+		tmp = new_tmp()
+		out.append(f"  {tmp} = icmp ne {src_llvm} {val}, null")
+		return tmp
+	if src_llvm.endswith('*') and dst_llvm.startswith('i') and not dst_llvm.endswith('*'):
+		tmp = new_tmp()
+		out.append(f"  {tmp} = ptrtoint {src_llvm} {val} to {dst_llvm}")
+		return tmp
+	if dst_llvm.endswith('*') and src_llvm.startswith('i') and not src_llvm.endswith('*'):
+		tmp = new_tmp()
+		out.append(f"  {tmp} = inttoptr {src_llvm} {val} to {dst_llvm}")
+		return tmp
+	if src_llvm.startswith('i') and not src_llvm.endswith('*') and dst_llvm.startswith('i') and not dst_llvm.endswith('*'):
 		src_bits = llvm_int_bitsize(src_llvm)
 		dst_bits = llvm_int_bitsize(dst_llvm)
 		tmp = new_tmp()
@@ -308,11 +325,11 @@ def emit_cast_value(val: Optional[str], src_t: str, dst_t: str, out: List[str]) 
 				else:
 					out.append(f"  {tmp} = sext {src_llvm} {val} to {dst_llvm}")
 			return tmp
-	if src_llvm.startswith('i') and dst_llvm == 'double':
+	if src_llvm.startswith('i') and not src_llvm.endswith('*') and dst_llvm == 'double':
 		tmp = new_tmp()
 		out.append(f"  {tmp} = sitofp {src_llvm} {val} to double")
 		return tmp
-	if dst_llvm.startswith('i') and src_llvm == 'double':
+	if dst_llvm.startswith('i') and not dst_llvm.endswith('*') and src_llvm == 'double':
 		tmp = new_tmp()
 		out.append(f"  {tmp} = fptosi double {val} to {dst_llvm}")
 		return tmp
@@ -324,29 +341,13 @@ def emit_cast_value(val: Optional[str], src_t: str, dst_t: str, out: List[str]) 
 		tmp = new_tmp()
 		out.append(f"  {tmp} = fpext float {val} to double")
 		return tmp
-	if src_llvm.endswith('*') and dst_llvm.endswith('*'):
-		tmp = new_tmp()
-		out.append(f"  {tmp} = bitcast {src_llvm} {val} to {dst_llvm}")
-		return tmp
-	if src_llvm == 'i8*' and dst_llvm == 'i1':
-		tmp = new_tmp()
-		out.append(f"  {tmp} = icmp ne i8* {val}, null")
-		return tmp
-	if src_llvm == 'i1' and dst_llvm.startswith('i') and dst_llvm != 'i1':
+	if src_llvm == 'i1' and dst_llvm.startswith('i') and not dst_llvm.endswith('*') and dst_llvm != 'i1':
 		tmp = new_tmp()
 		out.append(f"  {tmp} = zext i1 {val} to {dst_llvm}")
 		return tmp
-	if src_llvm.startswith('i') and dst_llvm == 'i1':
+	if src_llvm.startswith('i') and not src_llvm.endswith('*') and dst_llvm == 'i1':
 		tmp = new_tmp()
 		out.append(f"  {tmp} = icmp ne {src_llvm} {val}, 0")
-		return tmp
-	if dst_llvm.endswith('*') and not src_llvm.endswith('*') and src_llvm.startswith('i'):
-		tmp = new_tmp()
-		out.append(f"  {tmp} = inttoptr {src_llvm} {val} to {dst_llvm}")
-		return tmp
-	if src_llvm.endswith('*') and not dst_llvm.endswith('*') and dst_llvm.startswith('i'):
-		tmp = new_tmp()
-		out.append(f"  {tmp} = ptrtoint {src_llvm} {val} to {dst_llvm}")
 		return tmp
 	return val
 def is_unsigned_int_type(typ: str) -> bool:
@@ -1230,6 +1231,7 @@ class Parser:
 			if op_token.kind in {
 				'PLUS', 'MINUS', 'STAR', 'SLASH', 'PERCENT',
 				'EQEQ', 'NEQ', 'LT', 'LE', 'GT', 'GE',
+				'AMP', 'PIPE', 'CARET', 'LSHIFT', 'RSHIFT',
 				'AND', 'OR'
 			}:
 				op_prec = self.get_precedence(op_token.kind)
@@ -1250,12 +1252,16 @@ class Parser:
 		return left
 	def get_precedence(self, op: str) -> int:
 		return {
-			'STAR': 5, 'SLASH': 5, 'PERCENT': 5,
-			'PLUS': 4, 'MINUS': 4,
-			'LT': 3, 'LE': 3,
-			'GT': 3, 'GE': 3,
-			'EQEQ': 2, 'NEQ': 2,
-			'AND': 1, 'OR': 0
+			'STAR': 9, 'SLASH': 9, 'PERCENT': 9,
+			'PLUS': 8, 'MINUS': 8,
+			'LSHIFT': 7, 'RSHIFT': 7,
+			'LT': 6, 'LE': 6, 'GT': 6, 'GE': 6,
+			'EQEQ': 5, 'NEQ': 5,
+			'AMP': 4,
+			'CARET': 3,
+			'PIPE': 2,
+			'AND': 1,
+			'OR': 0
 		}.get(op, 0)
 	def parse_primary(self) -> Expr:
 		if self.peek().kind in {'RPAREN', 'RBRACE', 'RBRACKET', 'COMMA', 'SEMI', 'COLON'}:
@@ -3321,6 +3327,49 @@ def compile_program(prog: Program) -> str:
 	ret void
 	}
 	"""
+	runtime_block_noop = """
+	@.alloc_magic = global i64 0
+	define void @orcc_oob_abort() {
+	entry:
+	ret void
+	}
+	define void @orcc_null_abort() {
+	entry:
+	ret void
+	}
+	define void @orcc_init_runtime() {
+	entry:
+	ret void
+	}
+	define i8* @orcc_malloc(i64 %usize) {
+	entry:
+	%p = call i8* @malloc(i64 %usize)
+	ret i8* %p
+	}
+	define void @orcc_free(i8* %userptr) {
+	entry:
+	call void @free(i8* %userptr)
+	ret void
+	}
+	define i64 @orcc_alloc_size(i8* %userptr) {
+	entry:
+	ret i64 0
+	}
+	%orcc_node = type { i8*, i8*, %orcc_node* }
+	@orcc_buckets = global [1024 x %orcc_node*] zeroinitializer
+	define void @orcc_register_async(i8* %resume, i8* %handle) {
+	entry:
+	ret void
+	}
+	define void @orcc_remove_and_free_node(%orcc_node* %target, %orcc_node** %slot) {
+	entry:
+	ret void
+	}
+	define void @orcc_block_until_complete(i8* %handle) {
+	entry:
+	ret void
+	}
+	"""
 	struct_llvm_defs: List[str] = []
 	for sdef in prog.structs:
 		field_tys: List[str] = []
@@ -3498,10 +3547,12 @@ def compile_program(prog: Program) -> str:
 	def _replace_call_free(m):
 		s = m.group(0)
 		return s.replace('@free(', '@orcc_free(')
+	module_text = re.sub(r'\bcall\b[^\n]*@malloc\(', _replace_call_malloc, module_text)
+	module_text = re.sub(r'\bcall\b[^\n]*@free\(', _replace_call_free, module_text)
 	if not no_runtime:
-		module_text = re.sub(r'\bcall\b[^\n]*@malloc\(', _replace_call_malloc, module_text)
-		module_text = re.sub(r'\bcall\b[^\n]*@free\(', _replace_call_free, module_text)
 		module_text = module_text + "\n" + runtime_block
+	else:
+		module_text = module_text + "\n" + runtime_block_noop
 	return module_text
 def check_types(prog: Program):
 	env = TypeEnv()
