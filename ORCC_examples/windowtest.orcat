@@ -3,50 +3,23 @@ import C_io;
 import C_types;
 
 pub fn main() <int> {
-		if (!win_create(640, 480, "ORCat UI Test")) {
-				print("Failed to create window\n"); newline();
-				return 1;
-		}
-	  
-    bool clicked = false;
-    int bx = 50;
-    int by = 80;
-    int bw = 160;
-    int bh = 40;
-    int mx = win_get_mouse_x();
-		int my = win_get_mouse_y();
-    bool hovering = (mx >= bx && mx <= bx + bw && my >= by && my <= by + bh);
-		while (win_is_open()) {
-				win_poll_events();
-				fb_clear_color(30, 30, 40);
-				fb_fill_rect(0, 0, 640, 40, 20, 20, 30);
-        
-				bx = 50;
-        by = 80;
-        bw = 160;
-        bh = 40;
-				mx = win_get_mouse_x();
-				my = win_get_mouse_y();
+    if (!win_create(640, 480, "FB PIPELINE TEST")) {
+        print("win_create failed\n");
+        return 1;
+    }
 
-				hovering = (mx >= bx && mx <= bx + bw && my >= by && my <= by + bh);
+    int t = 0;
+    while (win_is_open()) {
+        win_poll_events();
 
-				if (hovering) {
-						fb_fill_rect(bx, by, bw, bh, 220, 120, 80);
-						if (win_mouse_down(0)) {
-								clicked = true;
-						} else {
-                            clicked = false;
-                        }
-				} else {
-						fb_fill_rect(bx, by, bw, bh, 180, 80, 40);
-				}
-				if (clicked) {
-						fb_fill_rect(50, 140, 20, 20, 80, 200, 120);
-				}
-				fb_present();
-        printnl(tostring(clicked));
-		}
+        fb_clear_color(t % 256, (t*2) % 256, (t*3) % 256);
 
-		win_destroy();
-		return 0;
+        fb_fill_rect(100 + (t % 200), 100, 200, 150, 0, 255, 0);
+
+        fb_present();
+        t += 1;
+    }
+
+    win_destroy();
+    return 0;
 }
