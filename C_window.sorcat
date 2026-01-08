@@ -1,0 +1,15 @@
+pub extern fn win_create(int w, int h, string title) <bool>;
+pub extern fn win_is_open() <bool>;
+pub extern fn win_destroy() <void>;
+pub extern fn win_poll_events() <void>;
+pub extern fn win_get_width() <int>;
+pub extern fn win_get_height() <int>;
+
+pub extern fn fb_clear_color(int r, int g, int b) <void>;
+pub extern fn fb_set_pixel(int x, int y, int r, int g, int b) <void>;
+pub extern fn fb_fill_rect(int x, int y, int w, int h, int r, int g, int b) <void>;
+pub extern fn fb_present() <void>;
+
+pub extern fn win_get_mouse_x() <int>;
+pub extern fn win_get_mouse_y() <int>;
+pub extern fn win_mouse_down(int btn) <bool>;
