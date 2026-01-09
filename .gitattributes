@@ -1,3 +1,2 @@
-**/*.py linguist-detectable=false
 *.orcat linguist-language=ORCat
 *.sorcat linguist-language=ORCat
