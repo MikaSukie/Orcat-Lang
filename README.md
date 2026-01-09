@@ -20,7 +20,7 @@ Or use homebrew <br>
 
 ## 🚧 Project Status
 🐋
-**ORCat** is currently in **active development** **~~Slowed~~**.  
+**ORCat** is currently in **~~active development~~** **stopped/frozen**.  
 While the compiler core is functional, work is ongoing on:
 
 - 🧱 Standard library development  
