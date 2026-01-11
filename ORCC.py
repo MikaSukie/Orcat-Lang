@@ -52,6 +52,28 @@ def orcc_report_error( line: int | None, col: int | None, msg: str, length: int 
 			pointer += "~" * (length - 1)
 		print(pointer)
 	sys.exit(1)
+def llvm_to_lang(llvm_t: str) -> str:
+    for high, low in type_map.items():
+        if low == llvm_t:
+            return high
+    if llvm_t.startswith("%struct.") and llvm_t.endswith("*"):
+        return llvm_t[len("%struct."):-1] + "*"
+    if llvm_t.startswith("%struct.") and not llvm_t.endswith("*"):
+        return llvm_t[len("%struct."):]
+    m = re.fullmatch(r'i(\d+)', llvm_t)
+    if m:
+        bits = int(m.group(1))
+        return "int" if bits == 64 else f"int{bits}"
+    if llvm_t == 'double':
+        return 'float'
+    if llvm_t == 'float':
+        return 'float32'
+    if llvm_t.endswith('*'):
+        base = llvm_t.rstrip('*')
+        if base.startswith("%struct."):
+            return base[len("%struct."):] + "*"
+        return 'void*'
+    return llvm_t
 TYPE_TOKENS = {
 	'IDENT', 'INT', 'INT8', 'INT16', 'INT32', 'INT64',
 	'FLOAT', 'STRING', 'BOOL', 'CHAR', 'VOID', 'UINT',
@@ -965,13 +987,13 @@ class Parser:
 			break
 		self.expect('FN')
 		type_params: List[str] = []
-		if self.peek().kind == 'LT':
+		if self.peek().kind == 'LBRACKET':
 			self.bump()
 			while True:
 				type_params.append(self.expect('IDENT').value)
 				if not self.match('COMMA'):
 					break
-			self.expect('GT')
+			self.expect('RBRACKET')
 		name = self.expect('IDENT').value
 		self.expect('LPAREN')
 		params: List[Tuple[str, str]] = []
@@ -2864,21 +2886,12 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 					if nm in owned_vars:
 						owned_vars.discard(nm)
 		if val:
-			ret_type = infer_type(stmt.expr)
-			llvm_ty = llvm_ty_of(ret_type)
-			if ret_ty == "i32" and llvm_ty != "i32":
-				tmp = new_tmp()
-				if llvm_ty.startswith("i") and llvm_ty[1:].isdigit():
-					bits = int(llvm_ty[1:])
-					if bits > 32:
-						out.append(f"  {tmp} = trunc {llvm_ty} {val} to i32")
-					else:
-						out.append(f"  {tmp} = sext {llvm_ty} {val} to i32")
-					out.append(f"  ret i32 {tmp}")
-				else:
-					out.append(f"  ret i32 0")
-			else:
-				out.append(f"  ret {llvm_ty} {val}")
+			src_lang = infer_type(stmt.expr)
+			dst_lang = llvm_to_lang(ret_ty)
+			cast_tmp = emit_cast_value(val, src_lang, dst_lang, out)
+			if cast_tmp is None:
+				cast_tmp = val
+			out.append(f"  ret {ret_ty} {cast_tmp}")
 		else:
 			out.append(f"  ret void")
 	elif isinstance(stmt, ExprStmt):
