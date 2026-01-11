@@ -116,7 +116,7 @@ pub fn test_filemain() <int> {
 }
 
 // ----------------- generictypesandstructs -----------------
-fn <T> identity(T x) <T> {
+fn [T] identity(T x) <T> {
     return x;
 }
 
@@ -381,7 +381,7 @@ pub fn test_get_address() <int> {
 }
 
 // multigenerics test
-pub fn <F, U> pair(F a, U b) <void> {
+pub fn [F, U] pair(F a, U b) <void> {
   return;
 }
 pub fn test_multigeneric() <int> {
