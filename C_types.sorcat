@@ -50,7 +50,7 @@ pub extern fn contains(string var, string detection_char) <bool>;
 pub extern fn countcontain(string x, string detection_char) <int>;
 pub fn empty() <string> { return tostr(""); }
 
-pub fn <T> tostring(T candidate) <string> {
+pub fn [T] tostring(T candidate) <string> {
     string typcand = typeof(candidate);
     if (streq(typcand, "int")) {
         if(streq(get_os_max_bits(), "64")) {
@@ -73,7 +73,7 @@ pub fn <T> tostring(T candidate) <string> {
     return "ERROR";
 }
 
-pub fn <F> etostring(F candidate) <string> {
+pub fn [F] etostring(F candidate) <string> {
     string typcand = etypeof(candidate);
     if (streq(typcand, "int")) {
         if (countcontain(typcand, "64") == 1) {
