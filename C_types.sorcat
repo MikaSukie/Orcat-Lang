@@ -1,5 +1,3 @@
-import std;
-
 /*
  * This file is licensed under the GPL-3 License (or AGPL-3 if applicable)
  * Copyright (C) 2025  MikaSukie (old user), MikaLorielle (alt user), EmikaMai (current user), JaydenFreeman (legal name)
@@ -18,6 +16,7 @@ import std;
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 // same as C_string.sorcat but since renamed since I added more types than strings.
+import std;
 // ─── “builder” functions that just return/consume a string ────────────
 pub extern fn sb_create()                            <string>;
 pub extern fn sb_append_str(string b, string s)      <string>;
