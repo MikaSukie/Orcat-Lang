@@ -1,0 +1,11 @@
+// badvasync.orcat
+pin int g = 0;
+
+vasync fn bad() <void> {
+    g = 5;     // should be rejected: since 'g' is a captured global and not listed in except(...)
+}
+
+fn main() <int> {
+    bad();
+    return 0;
+}
