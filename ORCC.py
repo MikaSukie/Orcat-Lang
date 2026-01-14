@@ -54,27 +54,27 @@ def orcc_report_error( line: int | None, col: int | None, msg: str, length: int 
 		print(pointer)
 	sys.exit(1)
 def llvm_to_lang(llvm_t: str) -> str:
-    for high, low in type_map.items():
-        if low == llvm_t:
-            return high
-    if llvm_t.startswith("%struct.") and llvm_t.endswith("*"):
-        return llvm_t[len("%struct."):-1] + "*"
-    if llvm_t.startswith("%struct.") and not llvm_t.endswith("*"):
-        return llvm_t[len("%struct."):]
-    m = re.fullmatch(r'i(\d+)', llvm_t)
-    if m:
-        bits = int(m.group(1))
-        return "int" if bits == 64 else f"int{bits}"
-    if llvm_t == 'double':
-        return 'float'
-    if llvm_t == 'float':
-        return 'float32'
-    if llvm_t.endswith('*'):
-        base = llvm_t.rstrip('*')
-        if base.startswith("%struct."):
-            return base[len("%struct."):] + "*"
-        return 'void*'
-    return llvm_t
+	for high, low in type_map.items():
+		if low == llvm_t:
+			return high
+	if llvm_t.startswith("%struct.") and llvm_t.endswith("*"):
+		return llvm_t[len("%struct."):-1] + "*"
+	if llvm_t.startswith("%struct.") and not llvm_t.endswith("*"):
+		return llvm_t[len("%struct."):]
+	m = re.fullmatch(r'i(\d+)', llvm_t)
+	if m:
+		bits = int(m.group(1))
+		return "int" if bits == 64 else f"int{bits}"
+	if llvm_t == 'double':
+		return 'float'
+	if llvm_t == 'float':
+		return 'float32'
+	if llvm_t.endswith('*'):
+		base = llvm_t.rstrip('*')
+		if base.startswith("%struct."):
+			return base[len("%struct."):] + "*"
+		return 'void*'
+	return llvm_t
 TYPE_TOKENS = {
 	'IDENT', 'INT', 'INT8', 'INT16', 'INT32', 'INT64',
 	'FLOAT', 'STRING', 'BOOL', 'CHAR', 'VOID', 'UINT',
@@ -100,7 +100,7 @@ KEYWORDS = {
 	'true', 'false', 'struct', 'enum', 'match', 'nomd',
 	'pin', 'crumble', 'null', 'continue', 'break',
 	'async', 'await', 'uint', 'uint8', 'uint16', 'uint32', 'uint64',
-	'float32', 'autoregion', 'except'
+	'float32', 'autoregion', 'except', 'vasync', 'vawait'
 	}
 SINGLE_CHARS = {
 	'(': 'LPAREN',   ')': 'RPAREN',   '{': 'LBRACE',   '}': 'RBRACE',
@@ -735,6 +735,9 @@ class Cast(Expr):
 class AwaitExpr(Expr):
 	expr: Expr
 @dataclass
+class VAwaitExpr(Expr):
+	expr: Expr
+@dataclass
 class AutoRegion(Stmt):
 	except_vars: List[str]
 	body: List[Stmt]
@@ -748,6 +751,14 @@ class Func:
 	body: Optional[List[Stmt]] = None
 	is_extern: bool = False
 	is_async: bool = False
+	is_vasync: bool = False
+	vasync_except: List[str] = None
+	_vasync_captured: Optional[set] = None
+	def __post_init__(self):
+		if self.vasync_except is None:
+			self.vasync_except = []
+		else:
+			self.vasync_except = list(self.vasync_except)
 @dataclass
 class Program:
 	funcs: List[Func]
@@ -969,6 +980,7 @@ class Parser:
 		access = 'pub'
 		is_extern = False
 		is_async = False
+		is_vasync = False
 		modifiers = []
 		while True:
 			tk = self.peek().kind
@@ -986,6 +998,10 @@ class Parser:
 					is_async = True
 					self.bump()
 					continue
+			if tk == 'VASYNC':
+				is_vasync = True
+				self.bump()
+				continue
 			if tk != 'FN' and tk.lower() in KEYWORDS:
 				modifiers.append(self.bump().value)
 				continue
@@ -1025,6 +1041,17 @@ class Parser:
 				if not self.match('COMMA'):
 					break
 		self.expect('RPAREN')
+		vasync_except: List[str] = []
+		if is_vasync and self.peek().kind == 'EXCEPT':
+			self.bump()
+			self.expect('LPAREN')
+			while True:
+				if self.peek().kind != 'IDENT':
+					orcc_report_error(self.peek().line, self.peek().col, "Expected identifier in except(...)")
+				vasync_except.append(self.bump().value)
+				if not self.match('COMMA'):
+					break
+			self.expect('RPAREN')
 		self.expect('LT')
 		prefix_amp = False
 		if self.peek().kind == 'AMP':
@@ -1038,11 +1065,11 @@ class Parser:
 		self.expect('GT')
 		if is_extern:
 			self.expect('SEMI')
-			return Func(access, name, type_params, params, ret_type, None, True, is_async)
+			return Func(access, name, type_params, params, ret_type, None, True, is_async, is_vasync, list(vasync_except))
 		self.expect('LBRACE')
 		body = self.parse_block()
 		self.expect('RBRACE')
-		return Func(access, name, type_params, params, ret_type, body, False, is_async)
+		return Func(access, name, type_params, params, ret_type, body, False, is_async, is_vasync, list(vasync_except))
 	def parse_block(self) -> List[Stmt]:
 		stmts = []
 		while self.peek().kind != 'RBRACE':
@@ -1323,6 +1350,10 @@ class Parser:
 			self.bump()
 			inner = self.parse_primary()
 			return AwaitExpr(inner)
+		if self.peek().kind == 'VAWAIT':
+			self.bump()
+			inner = self.parse_primary()
+			return VAwaitExpr(inner)
 		if self.peek().kind == 'STAR':
 			self.bump()
 			inner = self.parse_primary()
@@ -2722,6 +2753,15 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 					out.append(f"  call void @free(i8* {cast_tmp})")
 					cr['owned'] = False
 					owned_vars.discard(vn)
+			curfn = globals().get('__orcc_current_codegen_fn', None)
+			if curfn is not None and getattr(curfn, "is_vasync", False):
+				cap = getattr(curfn, "_vasync_captured", set()) or set()
+				exc = set(getattr(curfn, "vasync_except", []) or [])
+				target_name = stmt.name if isinstance(stmt.name, str) else getattr(stmt.name, "name", None)
+				if isinstance(target_name, str) and target_name in cap and target_name not in exc:
+					out.append("  call void @orcc_vvolatile_abort()")
+					out.append("  unreachable")
+					return
 			out.append(f"  store {llvm_ty} {val}, {llvm_ty}* {addr_token}")
 			if isinstance(stmt.expr, Call):
 				ret_t = infer_type(stmt.expr)
@@ -3024,6 +3064,7 @@ def gen_func(fn: Func) -> List[str]:
 		return lines
 	symbol_table.push()
 	generated_mono[fn.name] = True
+	globals()['__orcc_current_codegen_fn'] = fn
 	if fn.name == "main":
 		ret_ty = "i32"
 		out = [f"define i32 @main(i32 %argc, i8** %argv) {{", "entry:"]
@@ -3105,6 +3146,7 @@ def gen_func(fn: Func) -> List[str]:
 		else:
 			out.append(f"  ret {ret_ty} null")
 	out.append("}")
+	globals()['__orcc_current_codegen_fn'] = None
 	symbol_table.pop()
 	return out
 def compile_program(prog: Program) -> str:
@@ -3242,6 +3284,13 @@ def compile_program(prog: Program) -> str:
 	ret_void:
 	ret void
 	}
+	@.vvolatile_msg = private unnamed_addr constant [69 x i8] c"[ORCatCompiler-RT-CHCK]: Volatile write attempted in vasync (panic).\\00"
+	define void @orcc_vvolatile_abort() {
+	entry:
+	%tmp_puts_vv = call i32 @puts(i8* getelementptr inbounds ([69 x i8], [69 x i8]* @.vvolatile_msg, i32 0, i32 0))
+	call void @exit(i32 1)
+	unreachable
+	}
 	define i64 @orcc_alloc_size(i8* %userptr) {
 	entry:
 	  %is_null = icmp eq i8* %userptr, null
@@ -3378,6 +3427,10 @@ def compile_program(prog: Program) -> str:
 	ret void
 	}
 	define void @orcc_init_runtime() {
+	entry:
+	ret void
+	}
+	define void @orcc_vvolatile_abort() {
 	entry:
 	ret void
 	}
@@ -3632,6 +3685,48 @@ def check_types(prog: Program):
 		for v in edef.variants:
 			if v.name not in variant_map:
 				variant_map[v.name] = (ename, v.typ)
+	def eval_const_int(e):
+		if e is None:
+			return None
+		if isinstance(e, IntLit):
+			try:
+				return int(e.value)
+			except Exception:
+				return None
+		if isinstance(e, UnaryOp):
+			if e.op in ('-', '+'):
+				v = eval_const_int(e.expr)
+				if v is None:
+					return None
+				return -v if e.op == '-' else v
+			return None
+		if isinstance(e, BinOp):
+			left = eval_const_int(e.left)
+			right = eval_const_int(e.right)
+			if left is None or right is None:
+				return None
+			try:
+				if e.op == '+':
+					return left + right
+				if e.op == '-':
+					return left - right
+				if e.op == '*':
+					return left * right
+				if e.op == '/':
+					if right == 0:
+						return None
+					return left // right
+				if e.op == '%':
+					if right == 0:
+						return None
+					return left % right
+				if e.op == '<<':
+					return left << right
+				if e.op == '>>':
+					return left >> right
+			except Exception:
+				return None
+		return None
 	def check_expr(expr: Expr) -> str:
 		if isinstance(expr, AwaitExpr):
 			return check_expr(expr.expr)
@@ -3862,6 +3957,16 @@ def check_types(prog: Program):
 			idx_type = check_expr(expr.index)
 			if idx_type != 'int':
 				orcc_report_error(getattr(expr.index, "lineno", None), getattr(expr.index, "col", None), f"Array index must be 'int', got '{idx_type}'")
+			try:
+				inside = var_typ.split('[', 1)[1][:-1]
+				array_len = int(inside) if inside.isdigit() else None
+			except Exception:
+				array_len = None
+			if array_len is not None:
+				cval = eval_const_int(expr.index)
+				if cval is not None:
+					if cval < 0 or cval >= array_len:
+						orcc_report_error(getattr(expr.index, "lineno", None), getattr(expr.index, "col", None), f"Array index constant {cval} out of bounds for array of length {array_len}")
 			return base_type
 		if isinstance(expr, FieldAccess):
 			base_type = check_expr(expr.base).rstrip('*')
@@ -3965,6 +4070,13 @@ def check_types(prog: Program):
 				expr_type = 'float'
 			if expr_type != var_type:
 				orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Assign type mismatch: {var_type} = {expr_type}")
+			if func is not None and getattr(func, "is_vasync", False):
+				cap = getattr(func, "_vasync_captured", set()) or set()
+				exc = set(getattr(func, "vasync_except", []) or [])
+				target_name = stmt.name if isinstance(stmt.name, str) else getattr(stmt.name, "name", None)
+				if isinstance(target_name, str) and target_name in cap and target_name not in exc:
+					orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None),
+						f'Variable "{target_name}" was accessed in a context where its value is volitile/unsure.')
 			_inc_write(stmt.name, node_desc=f"AssignWrite@{getattr(stmt,'lineno','?')}")
 			return
 		if isinstance(stmt, ForgetStmt):
@@ -3994,6 +4106,16 @@ def check_types(prog: Program):
 			idx_type = check_expr(stmt.index)
 			if idx_type != 'int':
 				orcc_report_error(getattr(stmt.index, "lineno", None), getattr(stmt.index, "col", None), f"Array index must be 'int', got '{idx_type}'")
+			try:
+				inside = var_type.split('[', 1)[1][:-1]
+				array_len = int(inside) if inside.isdigit() else None
+			except Exception:
+				array_len = None
+			if array_len is not None:
+				cval = eval_const_int(stmt.index)
+				if cval is not None:
+					if cval < 0 or cval >= array_len:
+						orcc_report_error(getattr(stmt.index, "lineno", None), getattr(stmt.index, "col", None), f"Array index constant {cval} out of bounds for array of length {array_len}")
 			val_type = check_expr(stmt.value)
 			if val_type != base_type:
 				orcc_report_error(getattr(stmt.value, "lineno", None), getattr(stmt.value, "col", None), f"Index-assign type mismatch: array of {base_type}, got {val_type}")
@@ -4081,7 +4203,64 @@ def check_types(prog: Program):
 		env.declare(g.name, g.typ)
 		if g.nomd:
 			crumb_map[g.name] = (None, 0, 0, 0)
+	def _collect_used_names(node, out: set):
+		if node is None:
+			return
+		if isinstance(node, Var):
+			out.add(node.name)
+			return
+		if isinstance(node, Assign):
+			if isinstance(node.name, str):
+				out.add(node.name)
+			_collect_used_names(node.expr, out)
+			return
+		if isinstance(node, IndexAssign):
+			if isinstance(node.array, str):
+				out.add(node.array)
+			_collect_used_names(node.index, out)
+			_collect_used_names(node.value, out)
+			return
+		if isinstance(node, list):
+			for n in node:
+				_collect_used_names(n, out)
+			return
+		for attr in getattr(node, '__dict__', {}):
+			val = getattr(node, attr)
+			if isinstance(val, list):
+				for item in val:
+					_collect_used_names(item, out)
+			elif hasattr(val, '__dict__'):
+				_collect_used_names(val, out)
+	def _collect_local_decls(node, out: set):
+		if node is None:
+			return
+		if isinstance(node, VarDecl):
+			out.add(node.name)
+			return
+		if isinstance(node, list):
+			for n in node:
+				_collect_local_decls(n, out)
+			return
+		for attr in getattr(node, '__dict__', {}):
+			val = getattr(node, attr)
+			if isinstance(val, list):
+				for item in val:
+					_collect_local_decls(item, out)
+			elif hasattr(val, '__dict__'):
+				_collect_local_decls(val, out)
 	for func in prog.funcs:
+		used = set()
+		for s in (func.body or []):
+			_collect_used_names(s, used)
+		local_names = { pname for (_, pname) in func.params }
+		local_decls = set()
+		for s in (func.body or []):
+			_collect_local_decls(s, local_decls)
+		local_names |= local_decls
+		captured = used - local_names
+		func._vasync_captured = captured
+		if getattr(func, 'vasync_except', None) is None:
+			func.vasync_except = []
 		env.push()
 		for (param_typ, param_name) in func.params:
 			env.declare(param_name, param_typ)
@@ -4538,3 +4717,4 @@ def main():
 		f.write(llvm)
 if __name__ == "__main__":
 	main()
+	
