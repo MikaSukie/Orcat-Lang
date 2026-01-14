@@ -19,6 +19,7 @@ from dataclasses import dataclass
 compiled=""
 builtins_emitted = False
 no_runtime = False
+no_main = False
 def _orcc_get_source_lines():
 	try:
 		with open(compiled, encoding="utf-8", errors="ignore") as f:
@@ -797,6 +798,10 @@ class Parser:
 				if directive == '@nrt':
 					global no_runtime
 					no_runtime = True
+					continue
+				elif directive == '@nomain':
+					global no_main
+					no_main = True
 					continue
 				else:
 					orcc_report_error(self.peek().line, self.peek().col, f"Unknown directive {directive}")
@@ -3542,7 +3547,7 @@ def compile_program(prog: Program) -> str:
 		lines.extend(string_constants)
 		lines.append("")
 		string_constants.clear()
-	if has_user_main:
+	if has_user_main and not no_main:
 		lines.append("define i32 @main(i32 %argc, i8** %argv) {")
 		lines.append("entry:")
 		lines.append("  %argc64 = sext i32 %argc to i64")
@@ -4522,8 +4527,8 @@ def main():
 			orcc_report_error(None, None, f"Duplicate function definition: '{fn.name}', remove or rename the duplicate.")
 		seen_names[fn.name] = idx
 	has_main = any(fn.name == "main" for fn in final_prog.funcs)
-	if not has_main:
-		orcc_report_error(None, None, "No startpoint: no main function found. Add a 'fn main(...) <...>' function.")
+	if not has_main and not no_main:
+		orcc_report_error(None, None, "No startpoint: no main function found. Add a 'fn main(...) <...>' function, or use @nomain; to suppress emission of the wrapper startpoint.")
 	for fn in final_prog.funcs:
 		if getattr(fn, "is_async", False) and (fn.body is None or len(fn.body) == 0):
 			orcc_report_error(None, None, f"Async function '{fn.name}' has an empty body; async functions must contain at least one statement or be removed.")
