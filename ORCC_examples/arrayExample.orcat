@@ -1,3 +1,4 @@
+
 /*
  * Example file for ORCatLang
  *
@@ -21,8 +22,9 @@ pub fn main() <int> {
 
     gloarr1[1] = "testar";
     print(gloarr1[1]);
+    newline();
     /*
-    OOB test
+    // OOB test
     print(arr1[8]);
     print(gloarr1[8]);
     */
