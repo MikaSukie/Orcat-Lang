@@ -321,6 +321,13 @@ entry:
 	ret_void:
 	ret void
 	}
+	@.vvolatile_msg = private unnamed_addr constant [69 x i8] c"[ORCatCompiler-RT-CHCK]: Volatile write attempted in vasync (panic).\00"
+	define void @orcc_vvolatile_abort() {
+	entry:
+	%tmp_puts_vv = call i32 @puts(i8* getelementptr inbounds ([69 x i8], [69 x i8]* @.vvolatile_msg, i32 0, i32 0))
+	call void @exit(i32 1)
+	unreachable
+	}
 	define i64 @orcc_alloc_size(i8* %userptr) {
 	entry:
 	  %is_null = icmp eq i8* %userptr, null
