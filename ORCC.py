@@ -114,7 +114,7 @@ MULTI_CHARS = {
 	'==': 'EQEQ', '!=': 'NEQ', '<=': 'LE', '>=': 'GE', '->': 'ARROW', '&&': 'AND',  '||': 'OR',
 	'+=': 'PLUSEQ', '-=': 'MINUSEQ', '*=': 'STAREQ', '/=': 'SLASHEQ', '%=': 'PERCENTEQ',
 	'&=': 'ANDEQ', '|=': 'OREQ', '^=': 'XOREQ', '<<=': 'LSHIFTEQ', '>>=': 'RSHIFTEQ',
-	'<<': 'LSHIFT', '>>': 'RSHIFT'
+	'<<': 'LSHIFT', '>>': 'RSHIFT', '~': 'TILDE'
 	}
 class SymbolTable:
 	def __init__(self):
@@ -839,13 +839,22 @@ class Parser:
 				is_extern = False
 				nomd = False
 				pinned = False
+				seen_nomd = False
 				while self.peek().kind in {'EXTERN', 'NOMD', 'PIN'}:
 					if self.match('EXTERN'):
 						is_extern = True
-					elif self.match('NOMD'):
-						nomd = True
-					elif self.match('PIN'):
+						continue
+					if self.peek().kind == 'PIN':
+						if seen_nomd:
+							orcc_report_error(self.peek().line, self.peek().col, "Invalid modifier order: 'pin' cannot follow 'nomd'. Use 'pin nomd' not 'nomd pin'.")
+						self.bump()
 						pinned = True
+						continue
+					if self.peek().kind == 'NOMD':
+						self.bump()
+						nomd = True
+						seen_nomd = True
+						continue
 				decl = self.parse_var_decl()
 				if is_extern and decl.expr is not None:
 					orcc_report_error(None, None, "extern globals cannot have initializers")
@@ -1370,6 +1379,10 @@ class Parser:
 			self.bump()
 			inner = self.parse_primary()
 			return UnaryOp('-', inner)
+		if self.peek().kind == 'TILDE':
+			self.bump()
+			inner = self.parse_primary()
+			return UnaryOp('~', inner)
 		def parse_atom() -> Expr:
 			t = self.bump()
 			if t.kind == 'IDENT' and t.value in {'typeof', 'etypeof'} and self.peek().kind == 'LPAREN':
@@ -1384,8 +1397,11 @@ class Parser:
 				inner = self.parse_expr()
 				self.expect('RPAREN')
 				return Cast(type_name, inner)
-			if t.kind == 'INT':
-				return IntLit(int(t.value, 0))
+			if t.kind == 'INT' and re.match(r'^[0-9]', t.value):
+				try:
+					return IntLit(int(t.value, 0))
+				except Exception:
+					orcc_report_error(t.line, t.col, f"Invalid integer literal: {t.value}")
 			if t.kind == 'FLOAT':
 				return FloatLit(float(t.value), bits=64)
 			if t.kind == 'FLOAT32':
@@ -1722,6 +1738,16 @@ def gen_expr(expr: Expr, out: List[str]) -> str | None:
 			return tmp
 		elif expr.op == '+':
 			return val
+		elif expr.op == '~':
+			if llvm_ty.startswith('i'):
+				if llvm_ty == 'i1':
+					out.append(f"  {tmp} = xor i1 {val}, 1")
+				else:
+					out.append(f"  {tmp} = xor {llvm_ty} {val}, -1")
+				_maybe_flush_deferred(expr.expr, val)
+				return tmp
+			else:
+				orcc_report_error(None, None, f"Unary '~' requires integer operand, found {ty}")
 		else:
 			orcc_report_error(None, None, f"Unsupported unary operator: {expr.op}")
 	if isinstance(expr, UnaryDeref):
@@ -4717,4 +4743,4 @@ def main():
 		f.write(llvm)
 if __name__ == "__main__":
 	main()
-	
+
