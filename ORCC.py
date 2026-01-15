@@ -4102,7 +4102,7 @@ def check_types(prog: Program):
 				target_name = stmt.name if isinstance(stmt.name, str) else getattr(stmt.name, "name", None)
 				if isinstance(target_name, str) and target_name in cap and target_name not in exc:
 					orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None),
-						f'Variable "{target_name}" was accessed in a context where its value is volitile/unsure.')
+						f'Variable "{target_name}" was accessed in a context where its value is volatile/unsure.')
 			_inc_write(stmt.name, node_desc=f"AssignWrite@{getattr(stmt,'lineno','?')}")
 			return
 		if isinstance(stmt, ForgetStmt):
