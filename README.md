@@ -35,7 +35,7 @@ Want to join the community? (Please do 🙏)
 
 ---
 ## Memory ownership (important) <br>
-- many manual frees can be done via forget(varnane) or the RAII-like autoregion {}. for libraries you may use the crumb system to limit reads and writes (optionally auto free only if both are specified.) <br>
+- many manual frees can be done via forget(varname) or the RAII-like autoregion {}. for libraries you may use the crumb system to limit reads and writes (optionally auto free only if both are specified.) <br>
 - more coming soon.
 ---
 
