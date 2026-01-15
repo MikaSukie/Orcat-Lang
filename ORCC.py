@@ -100,7 +100,8 @@ KEYWORDS = {
 	'true', 'false', 'struct', 'enum', 'match', 'nomd',
 	'pin', 'crumble', 'null', 'continue', 'break',
 	'async', 'await', 'uint', 'uint8', 'uint16', 'uint32', 'uint64',
-	'float32', 'autoregion', 'except', 'vasync', 'vawait'
+	'float32', 'autoregion', 'except', 'vasync', 'vawait',
+	'typeswitch', 'case', 'fallback'
 	}
 SINGLE_CHARS = {
 	'(': 'LPAREN',   ')': 'RPAREN',   '{': 'LBRACE',   '}': 'RBRACE',
@@ -280,6 +281,39 @@ def ensure_monomorph_call(call_expr: 'Call', out: List[str]) -> str:
 			return IfStmt(cond0, then_body0, else_body0)
 		if isinstance(s, WhileStmt):
 			return WhileStmt(replace_in_expr(s.cond), [replace_in_stmt(ss) for ss in s.body])
+		if isinstance(s, TypeSwitch):
+			subj = s.subject
+			actual = subst_map.get(subj)
+			def transform_body(body_list):
+				out_stmts = []
+				for ss in body_list:
+					r = replace_in_stmt(ss)
+					if r is None:
+						continue
+					if isinstance(r, list):
+						out_stmts.extend(r)
+					else:
+						out_stmts.append(r)
+				return out_stmts
+			if actual is None:
+				new_cases = []
+				for case in s.cases:
+					new_body = transform_body(case.body)
+					new_cases.append(TypeSwitchCase(_subst_type(case.typ, subst_map), new_body))
+				new_fb = None
+				if s.fallback:
+					new_fb = transform_body(s.fallback)
+				return TypeSwitch(subj, new_cases, new_fb)
+			processed_cases = []
+			for case in s.cases:
+				ct = _subst_type(case.typ, subst_map)
+				processed_cases.append((ct, case.body))
+			for ct, body in processed_cases:
+				if ct == actual:
+					return transform_body(body)
+			if s.fallback is not None:
+				return transform_body(s.fallback)
+			return []
 		if isinstance(s, ReturnStmt):
 			return ReturnStmt(replace_in_expr(s.expr) if s.expr else None)
 		if isinstance(s, ExprStmt):
@@ -294,7 +328,17 @@ def ensure_monomorph_call(call_expr: 'Call', out: List[str]) -> str:
 		return s
 	new_params = [(_subst_type(p[0], subst_map), p[1]) for p in base_fn.params]
 	new_ret = _subst_type(base_fn.ret_type, subst_map)
-	new_body = [replace_in_stmt(stmt) for stmt in base_fn.body] if base_fn.body else None
+	new_body = []
+	if base_fn.body:
+		for stmt in base_fn.body:
+			repl = replace_in_stmt(stmt)
+			if repl is None:
+				continue
+			if isinstance(repl, list):
+				for s in repl:
+					new_body.append(s)
+			else:
+				new_body.append(repl)
 	new_fn = Func(base_fn.access, mononame, [], new_params, new_ret, new_body, base_fn.is_extern, base_fn.is_async)
 	all_funcs.append(new_fn)
 	func_table[mononame] = llvm_ty_of(new_ret)
@@ -694,6 +738,15 @@ class Match(Stmt):
 class StructInit(Expr):
 	name: str
 	fields: List[Tuple[str, Expr]]
+@dataclass
+class TypeSwitchCase:
+	typ: str
+	body: List[Stmt]
+@dataclass
+class TypeSwitch(Stmt):
+	subject: str
+	cases: List[TypeSwitchCase]
+	fallback: Optional[List[Stmt]] = None
 @dataclass
 class IfStmt(Stmt):
 	cond: Expr
@@ -1111,6 +1164,8 @@ class Parser:
 			return self.parse_if()
 		if t.kind == 'WHILE':
 			return self.parse_while()
+		if t.kind == 'TYPESWITCH':
+			return self.parse_typeswitch()
 		if self.match('CRUMBLE'):
 			return self.parse_crumble()
 		if t.kind == 'CONTINUE':
@@ -1124,6 +1179,45 @@ class Parser:
 		if t.kind == 'RETURN':
 			return self.parse_return()
 		return self.parse_expr_stmt()
+	def parse_typeswitch(self) -> TypeSwitch:
+		self.expect('TYPESWITCH')
+		self.expect('LPAREN')
+		if self.peek().kind != 'IDENT':
+			orcc_report_error(self.peek().line, self.peek().col, "Expected type parameter identifier in typeswitch(...)")
+		subject = self.bump().value
+		self.expect('RPAREN')
+		self.expect('LBRACE')
+		cases: List[TypeSwitchCase] = []
+		fallback_body: Optional[List[Stmt]] = None
+		while self.peek().kind != 'RBRACE':
+			if self.peek().kind == 'CASE':
+				self.bump()
+				self.expect('LPAREN')
+				if self.peek().kind not in TYPE_TOKENS and self.peek().kind != 'IDENT':
+					orcc_report_error(self.peek().line, self.peek().col, "Expected type after case(")
+				case_typ = self.bump().value
+				if self.peek().kind == 'AMP' or self.peek().kind == 'STAR':
+					while self.match('STAR') or self.match('AMP'):
+						case_typ += '*'
+				if self.match('LBRACKET'):
+					size_tok = self.expect('INT')
+					self.expect('RBRACKET')
+					case_typ += '[' + size_tok.value + ']'
+				self.expect('RPAREN')
+				self.expect('LBRACE')
+				body = self.parse_block()
+				self.expect('RBRACE')
+				cases.append(TypeSwitchCase(case_typ, body))
+				continue
+			if self.peek().kind == 'FALLBACK':
+				self.bump()
+				self.expect('LBRACE')
+				fallback_body = self.parse_block()
+				self.expect('RBRACE')
+				continue
+			orcc_report_error(self.peek().line, self.peek().col, f"Unexpected token in typeswitch: {self.peek().kind}")
+		self.expect('RBRACE')
+		return TypeSwitch(subject, cases, fallback_body)
 	def parse_compound_assign(self) -> Assign:
 		name = self.expect('IDENT').value
 		op_token = self.bump()
@@ -2927,6 +3021,8 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 			out.append(f"  br label %{head_lbl}")
 		out.append(f"{end_lbl}:")
 		loop_stack.pop()
+	elif isinstance(stmt, TypeSwitch):
+		orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), "Internal compiler error: typeswitch remained in codegen (should be resolved at monomorphization)")
 	elif isinstance(stmt, ReturnStmt):
 		val = gen_expr(stmt.expr, out) if stmt.expr else None
 		if autoregion_stack:
@@ -4171,6 +4267,26 @@ def check_types(prog: Program):
 			for s in stmt.body:
 				check_stmt(s, expected_ret, func)
 			env.pop()
+			return
+		if isinstance(stmt, TypeSwitch):
+			if func is not None:
+				if stmt.subject not in (func.type_params or []):
+					orcc_report_error(getattr(stmt.cond, "lineno", None), getattr(stmt.cond, "col", None), f"typeswitch subject '{stmt.subject}' is not a type parameter")
+			for case in stmt.cases:
+				base_type = case.typ.rstrip('*')
+				if '[' in base_type and base_type.endswith(']'):
+					base_type = base_type.split('[', 1)[0]
+				if base_type not in type_map and base_type not in struct_defs and base_type not in enum_defs and base_type not in (func.type_params if func else []):
+					orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Unknown type in typeswitch case: {case.typ}")
+				env.push()
+				for s in case.body:
+					check_stmt(s, expected_ret, func)
+				env.pop()
+			if stmt.fallback:
+				env.push()
+				for s in stmt.fallback:
+					check_stmt(s, expected_ret, func)
+				env.pop()
 			return
 		if isinstance(stmt, ReturnStmt):
 			if stmt.expr:
