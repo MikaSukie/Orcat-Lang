@@ -1,3 +1,5 @@
+import std;
+
 /*
  * This file is licensed under the GPL-3 License (or AGPL-3 if applicable)
  * Copyright (C) 2025  MikaSukie (old user), MikaLorielle (alt user), EmikaMai (current user), JaydenFreeman (legal name)
@@ -16,7 +18,6 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 // same as C_string.sorcat but since renamed since I added more types than strings.
-import std;
 // ─── “builder” functions that just return/consume a string ────────────
 pub extern fn sb_create()                            <string>;
 pub extern fn sb_append_str(string b, string s)      <string>;
@@ -50,45 +51,31 @@ pub extern fn countcontain(string x, string detection_char) <int>;
 pub fn empty() <string> { return tostr(""); }
 
 pub fn [T] tostring(T candidate) <string> {
-    string typcand = typeof(candidate);
-    if (streq(typcand, "int")) {
-        if(streq(get_os_max_bits(), "64")) {
-            return i64tostr(candidate);
-        } else if (streq(get_os_max_bits(), "32")) {
-            return i32tostr(candidate);
-        } else {
-            return itostr(candidate);
+    typeswitch(T) {
+        case(int) {
+            if (streq(get_os_max_bits(), "64")) {
+                return i64tostr(candidate);
+            } else if (streq(get_os_max_bits(), "32")) {
+                return i32tostr(candidate);
+            } else {
+                return itostr(candidate);
+            }
         }
+        case(float) { return ftostr(candidate); }
+        case(bool)  { return btostr(candidate); }
+        case(string){ return tostr(candidate); }
     }
-    if (streq(typcand, "float")) {
-        return ftostr(candidate);
-    }
-    if (streq(typcand, "bool")) {
-        return btostr(candidate);
-    }
-    if (streq(typcand, "string")) {
-        return tostr(candidate);
-    }
-    return "ERROR";
+    return "tostring has errored as no matching cases were found.";
 }
 
 pub fn [F] etostring(F candidate) <string> {
-    string typcand = etypeof(candidate);
-    if (streq(typcand, "int")) {
-        if (countcontain(typcand, "64") == 1) {
-            return i64tostr(candidate);
-        }
-        if (countcontain(typcand, "32") == 1) {
-            return i32tostr(candidate);
-        }
-        if (countcontain(typcand, "16") == 1) {
-            return i16tostr(candidate);
-        }
-        if (countcontain(typcand, "8") == 1) {
-            return i8tostr(candidate);
-        }
+    typeswitch(F) {
+        case(int8)  { return i8tostr(candidate); }
+        case(int16) { return i16tostr(candidate); }
+        case(int32) { return i32tostr(candidate); }
+        case(int64) { return i64tostr(candidate); }
     }
-    // fallback: try the generic tostring (monomorphized on demand)
+    // fallback to the generic tostring (monomorphized separately)
     return tostring(candidate);
 }
 
