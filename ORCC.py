@@ -2617,8 +2617,12 @@ def gen_expr(expr: Expr, out: List[str]) -> str | None:
 	orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Unhandled expr: {expr}")
 def infer_type(expr: Expr) -> str:
 	if isinstance(expr, UnaryDeref):
-		ptr_type = infer_type(expr.ptr)
-		if not ptr_type.endswith("*"):
+		if isinstance(expr.ptr, NullLit):
+			orcc_report_error(getattr(expr.ptr, "lineno", None), getattr(expr.ptr, "col", None), "[ORCC-ERR]: dereference of literal null pointer")
+		ptr_type = check_expr(expr.ptr)
+		if ptr_type == 'null' or ptr_type == 'void*':
+			orcc_report_error(getattr(expr.ptr, "lineno", None), getattr(expr.ptr, "col", None), "[ORCC-ERR]: dereference of an expression known to be null")
+		if not ptr_type.endswith('*'):
 			orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Dereferencing non-pointer type '{ptr_type}'")
 		pointee = ptr_type[:-1]
 		if pointee == "void":
@@ -3987,6 +3991,10 @@ def check_types(prog: Program):
 		if isinstance(expr, BinOp):
 			left = check_expr(expr.left)
 			right = check_expr(expr.right)
+			if expr.op in {'/', '%'}:
+				cval = eval_const_int(expr.right)
+				if cval is not None and cval == 0:
+					orcc_report_error(getattr(expr.right, "lineno", None), getattr(expr.right, "col", None), f"[ORCC-ERR]: division or modulo by constant 0 ('{expr.op}')")
 			if expr.op == "+" and left == "string" and right == "string":
 				return "string"
 			if expr.op in {"&&", "||"}:
@@ -4008,6 +4016,21 @@ def check_types(prog: Program):
 			return common
 		if isinstance(expr, Call):
 			arg_types = [check_expr(a) for a in expr.args]
+			if expr.name in ("free", "orcc_free"):
+				if len(expr.args) != 1:
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"'free' expects one argument")
+				a0 = expr.args[0]
+				if isinstance(a0, Var):
+					vname = a0.name
+					v_typ = env.lookup(vname)
+					if v_typ is None:
+						orcc_report_error(getattr(a0, "lineno", None), getattr(a0, "col", None), f"free() of undeclared variable '{vname}'")
+					if not v_typ.endswith('*') and v_typ != 'void*':
+						orcc_report_error(getattr(a0, "lineno", None), getattr(a0, "col", None), f"free() argument must be a pointer, got '{v_typ}'")
+					if v_typ == "undefined":
+						orcc_report_error(getattr(a0, "lineno", None), getattr(a0, "col", None), f"[ORCC-ERR]: double free detected on variable '{vname}'")
+					env.declare(vname, "undefined")
+				return "void"
 			if expr.name == '!' and len(arg_types) == 1:
 				if arg_types[0] != 'bool':
 					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Unary '!' requires bool operand, got '{arg_types[0]}'")
@@ -4278,6 +4301,9 @@ def check_types(prog: Program):
 				orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Cannot forget undeclared variable '{stmt.varname}'")
 			if not ptr_typ.endswith('*'):
 				orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Cannot forget non-pointer variable '{stmt.varname}' of type '{ptr_typ}'")
+			if ptr_typ == "undefined":
+				orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None),
+								f"Compile-time error: double free / forget on variable '{stmt.varname}'")
 			env.declare(stmt.varname, "undefined")
 			return
 		if isinstance(stmt, CrumbleStmt):
@@ -4477,8 +4503,17 @@ def check_types(prog: Program):
 		env.push()
 		for (param_typ, param_name) in func.params:
 			env.declare(param_name, param_typ)
-		for s in (func.body or []):
+		reachable = True
+		for i, s in enumerate((func.body or [])):
+			if not reachable:
+				print(f"[ORCC-WARN-Reachability]: unreachable code in function '{func.name}' at statement index {i}")
+				check_stmt(s, func.ret_type, func)
+				continue
 			check_stmt(s, func.ret_type, func)
+			if isinstance(s, ReturnStmt):
+				reachable = False
+			elif isinstance(s, ExprStmt) and isinstance(s.expr, Call) and s.expr.name in ("exit", "orcc_oob_abort", "orcc_null_abort", "orcc_vvolatile_abort"):
+				reachable = False
 		env.pop()
 	over_errors = []
 	for name, (rmax, wmax, rc, wc) in list(crumb_map.items()):
