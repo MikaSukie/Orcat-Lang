@@ -2579,8 +2579,14 @@ def gen_expr(expr: Expr, out: List[str]) -> str | None:
 	if isinstance(expr, StructInit):
 		struct_name = expr.name
 		struct_ty = f"%struct.{struct_name}"
+		size_tmp = new_tmp()
+		out.append(
+			f"  {size_tmp} = ptrtoint {struct_ty}* getelementptr ({struct_ty}, {struct_ty}* null, i32 1) to i64"
+		)
+		malloc_tmp = new_tmp()
+		out.append(f"  {malloc_tmp} = call i8* @malloc(i64 {size_tmp})")
 		tmp_ptr = new_tmp()
-		out.append(f"  {tmp_ptr} = alloca {struct_ty}")
+		out.append(f"  {tmp_ptr} = bitcast i8* {malloc_tmp} to {struct_ty}*")
 		field_dict = dict(struct_field_map[struct_name])
 		for field_name, field_expr in expr.fields:
 			if field_name not in field_dict:
@@ -2794,92 +2800,36 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 				suf = new_tmp()[1:]
 				return f"{name}_{suf}"
 			return name
+		ir_name = _pick_ir_name(stmt.name)
+		llvm_ty = None
 		if "[" in stmt.typ:
 			base, count = stmt.typ.split("[")
 			count = count[:-1]
 			llvm_ty = f"[{count} x {type_map[base]}]"
-			if promoted is not None and stmt.name in promoted:
-				if stmt.expr:
-					val = gen_expr(stmt.expr, out)
-					try:
-						_, ir_name = symbol_table.lookup(stmt.name)
-					except Exception:
-						ir_name = _pick_ir_name(stmt.name)
-					src_ptr = val
-					dst_addr = f"%{ir_name}_addr"
-					src_cast = new_tmp()
-					dst_cast = new_tmp()
-					out.append(f"  {src_cast} = bitcast {llvm_ty}* {src_ptr} to i8*")
-					out.append(f"  {dst_cast} = bitcast {llvm_ty}* {dst_addr} to i8*")
-					size_tmp = new_tmp()
-					out.append(
-						f"  {size_tmp} = ptrtoint {llvm_ty}* getelementptr ({llvm_ty}, {llvm_ty}* null, i32 1) to i64")
-					out.append(
-						f"  call void @llvm.memcpy.p0i8.p0i8.i64(i8* {dst_cast}, i8* {src_cast}, i64 {size_tmp}, i1 false)")
-				if stmt.name not in symbol_table.scopes[-1]:
-					ir_name = _pick_ir_name(stmt.name)
-					symbol_table.declare(stmt.name, llvm_ty, ir_name)
-				return
 			if stmt.name not in symbol_table.scopes[-1]:
-				ir_name = _pick_ir_name(stmt.name)
 				out.append(f"  %{ir_name}_addr = alloca {llvm_ty}")
 				out.append(f"  store {llvm_ty} zeroinitializer, {llvm_ty}* %{ir_name}_addr")
 				out.append(f"  %{ir_name}_len  = alloca i32")
 				out.append(f"  store i32 {count}, i32* %{ir_name}_len")
 				symbol_table.declare(stmt.name, llvm_ty, ir_name)
-			if stmt.expr:
-				val = gen_expr(stmt.expr, out)
-				try:
-					_, ir_name = symbol_table.lookup(stmt.name)
-				except Exception:
-					ir_name = _pick_ir_name(stmt.name)
-				src_ptr = val
-				dst_addr = f"%{ir_name}_addr"
-				src_cast = new_tmp()
-				dst_cast = new_tmp()
-				out.append(f"  {src_cast} = bitcast {llvm_ty}* {src_ptr} to i8*")
-				out.append(f"  {dst_cast} = bitcast {llvm_ty}* {dst_addr} to i8*")
-				size_tmp = new_tmp()
-				out.append(
-					f"  {size_tmp} = ptrtoint {llvm_ty}* getelementptr ({llvm_ty}, {llvm_ty}* null, i32 1) to i64"
-				)
-				out.append(
-					f"  call void @llvm.memcpy.p0i8.p0i8.i64(i8* {dst_cast}, i8* {src_cast}, i64 {size_tmp}, i1 false)"
-				)
-			return
-		else:
-			llvm_ty = llvm_ty_of(stmt.typ)
 			if promoted is not None and stmt.name in promoted:
-				if stmt.name not in symbol_table.scopes[-1]:
-					ir_name = _pick_ir_name(stmt.name)
-					symbol_table.declare(stmt.name, llvm_ty, ir_name)
 				if stmt.expr:
 					val = gen_expr(stmt.expr, out)
-					src_llvm = llvm_ty_of(infer_type(stmt.expr))
-				if src_llvm != llvm_ty:
-					cast_tmp = new_tmp()
-					bits_src = llvm_int_bitsize(src_llvm)
-					bits_dst = llvm_int_bitsize(llvm_ty)
-					if bits_src and bits_dst:
-						if bits_src > bits_dst:
-							out.append(f"  {cast_tmp} = trunc {src_llvm} {val} to {llvm_ty}")
-						else:
-							out.append(f"  {cast_tmp} = sext {src_llvm} {val} to {llvm_ty}")
-						val = cast_tmp
-				try:
-					_, ir_name = symbol_table.lookup(stmt.name)
-				except Exception:
-					ir_name = stmt.name
-				out.append(f"  store {llvm_ty} {val}, {llvm_ty}* %{ir_name}_addr")
-				if isinstance(stmt.expr, Call):
-					ret_t = infer_type(stmt.expr)
-					if ret_t is not None and (ret_t.endswith('*') or ret_t == 'string'):
-						owned_vars.add(stmt.name)
-						if stmt.name in crumb_runtime:
-							crumb_runtime[stmt.name]['owned'] = True
+					out.append(f"  store {llvm_ty} {val}, {llvm_ty}* %{ir_name}_addr")
+				return
+			if stmt.expr:
+				val = gen_expr(stmt.expr, out)
+				src_cast = new_tmp()
+				dst_cast = new_tmp()
+				out.append(f"  {src_cast} = bitcast {llvm_ty}* {val} to i8*")
+				out.append(f"  {dst_cast} = bitcast {llvm_ty}* %{ir_name}_addr to i8*")
+				size_tmp = new_tmp()
+				out.append(
+					f"  {size_tmp} = ptrtoint {llvm_ty}* getelementptr ({llvm_ty}, {llvm_ty}* null, i32 1) to i64")
+				out.append(f"  call void @llvm.memcpy.p0i8.p0i8.i64(i8* {dst_cast}, i8* {src_cast}, i64 {size_tmp}, i1 false)")
 			return
+		llvm_ty = llvm_ty_of(stmt.typ)
 		if stmt.name not in symbol_table.scopes[-1]:
-			ir_name = _pick_ir_name(stmt.name)
 			out.append(f"  %{ir_name}_addr = alloca {llvm_ty}")
 			if llvm_ty.endswith('*'):
 				out.append(f"  store {llvm_ty} null, {llvm_ty}* %{ir_name}_addr")
@@ -2890,9 +2840,57 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 			else:
 				out.append(f"  store {llvm_ty} zeroinitializer, {llvm_ty}* %{ir_name}_addr")
 			symbol_table.declare(stmt.name, llvm_ty, ir_name)
+		if promoted is not None and stmt.name in promoted:
+			if stmt.expr:
+				val = gen_expr(stmt.expr, out)
+				src_llvm = llvm_ty_of(infer_type(stmt.expr))
+				if src_llvm != llvm_ty:
+					cast_tmp = new_tmp()
+					bits_src = llvm_int_bitsize(src_llvm)
+					bits_dst = llvm_int_bitsize(llvm_ty)
+					if bits_src and bits_dst:
+						if bits_src > bits_dst:
+							out.append(f"  {cast_tmp} = trunc {src_llvm} {val} to {llvm_ty}")
+						else:
+							out.append(f"  {cast_tmp} = sext {src_llvm} {val} to {llvm_ty}")
+						val = cast_tmp
+				out.append(f"  store {llvm_ty} {val}, {llvm_ty}* %{ir_name}_addr")
+				if isinstance(stmt.expr, Call):
+					ret_t = infer_type(stmt.expr)
+					if ret_t is not None and (ret_t.endswith('*') or ret_t == 'string'):
+						owned_vars.add(stmt.name)
+						if stmt.name in crumb_runtime:
+							crumb_runtime[stmt.name]['owned'] = True
+			return
 		if stmt.expr:
 			val = gen_expr(stmt.expr, out)
 			src_llvm = llvm_ty_of(infer_type(stmt.expr))
+			if llvm_ty.endswith('*') and src_llvm.endswith('*'):
+				if src_llvm != llvm_ty:
+					cast_tmp = new_tmp()
+					out.append(f"  {cast_tmp} = bitcast {src_llvm} {val} to {llvm_ty}")
+					val = cast_tmp
+				out.append(f"  store {llvm_ty} {val}, {llvm_ty}* %{ir_name}_addr")
+				if isinstance(stmt.expr, Call):
+					ret_t = infer_type(stmt.expr)
+					if ret_t is not None and (ret_t.endswith('*') or ret_t == 'string'):
+						owned_vars.add(stmt.name)
+						if stmt.name in crumb_runtime:
+							crumb_runtime[stmt.name]['owned'] = True
+				return
+			if src_llvm.endswith('*') and not llvm_ty.endswith('*'):
+				src_cast = new_tmp()
+				dst_cast = new_tmp()
+				out.append(f"  {src_cast} = bitcast {src_llvm} {val} to i8*")
+				out.append(f"  {dst_cast} = bitcast {llvm_ty}* %{ir_name}_addr to i8*")
+				size_tmp = new_tmp()
+				out.append(
+					f"  {size_tmp} = ptrtoint {llvm_ty}* getelementptr ({llvm_ty}, {llvm_ty}* null, i32 1) to i64"
+				)
+				out.append(
+					f"  call void @llvm.memcpy.p0i8.p0i8.i64(i8* {dst_cast}, i8* {src_cast}, i64 {size_tmp}, i1 false)"
+				)
+				return
 			if src_llvm != llvm_ty:
 				cast_tmp = new_tmp()
 				bits_src = llvm_int_bitsize(src_llvm)
@@ -2903,10 +2901,6 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 					else:
 						out.append(f"  {cast_tmp} = sext {src_llvm} {val} to {llvm_ty}")
 					val = cast_tmp
-			try:
-				_, ir_name = symbol_table.lookup(stmt.name)
-			except Exception:
-				ir_name = stmt.name
 			out.append(f"  store {llvm_ty} {val}, {llvm_ty}* %{ir_name}_addr")
 			if isinstance(stmt.expr, Call):
 				ret_t = infer_type(stmt.expr)
@@ -4745,6 +4739,19 @@ class AsyncStateMachine:
 		param_types = [llvm_ty_of(t) for t, n in self.func.params]
 		ret_ty = llvm_ty_of(self.func.ret_type)
 		self._compute_promoted_locals()
+		all_local_decls: List[VarDecl] = []
+		for st in self.func.body:
+			if isinstance(st, VarDecl):
+				all_local_decls.append(st)
+		self.non_promoted_locals: List[Tuple[str, str]] = []
+		for st in all_local_decls:
+			llvm_ty = llvm_ty_of(st.typ)
+			if st.name in self.promoted:
+				continue
+			if not symbol_table.lookup(st.name):
+				symbol_table.declare(st.name, llvm_ty, st.name)
+			self.non_promoted_locals.append((st.typ, st.name))
+		self._compute_promoted_locals()
 		for pname in self.promoted:
 			decl_typ = None
 			for st in self.func.body:
@@ -4793,6 +4800,22 @@ class AsyncStateMachine:
 		lines.append("}")
 		lines.append(f"define i1 @{name}_resume({st_ty}* %sm) {{")
 		lines.append("entry:")
+		for typ, namep in getattr(self, 'non_promoted_locals', []):
+			llvm_ty = llvm_ty_of(typ)
+			lines.append(f"  %{namep}_addr = alloca {llvm_ty}")
+			if llvm_ty.endswith('*'):
+				lines.append(f"  store {llvm_ty} null, {llvm_ty}* %{namep}_addr")
+			elif llvm_ty == 'double' or llvm_ty == 'float':
+				lines.append(f"  store {llvm_ty} 0.0, {llvm_ty}* %{namep}_addr")
+			elif llvm_ty.startswith('i'):
+				lines.append(f"  store {llvm_ty} 0, {llvm_ty}* %{namep}_addr")
+			else:
+				lines.append(f"  store {llvm_ty} zeroinitializer, {llvm_ty}* %{namep}_addr")
+			decl_node = next((s for s in self.func.body if isinstance(s, VarDecl) and s.name == namep), None)
+			if decl_node is not None and getattr(decl_node, 'expr', None) is not None:
+				val = self.codegen.gen_expr(decl_node.expr, lines)
+				if val is not None:
+					lines.append(f"  store {llvm_ty} {val}, {llvm_ty}* %{namep}_addr")
 		for idx, (nm, ty) in enumerate(self.allocas):
 			field_index = 2 + len(self.func.params) + idx
 			lines.append(f"  %{nm}_addr = getelementptr inbounds {st_ty}, {st_ty}* %sm, i32 0, i32 {field_index}")
