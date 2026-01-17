@@ -2696,9 +2696,7 @@ def infer_type(expr: Expr) -> str:
 		return expr.name + "*"
 	if isinstance(expr, ArrayInit):
 		if not expr.elements:
-			orcc_report_error(
-				getattr(expr, "lineno", None),
-				getattr(expr, "col", None), "Cannot infer type for empty array literal")
+			orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "Cannot infer type for empty array literal")
 		elem_type = infer_type(expr.elements[0])
 		for el in expr.elements[1:]:
 			t = infer_type(el)
@@ -4272,8 +4270,7 @@ def check_types(prog: Program):
 					common = unify_int_types(left_type, right_type)
 					if not common:
 						if left_type != right_type:
-							orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None),
-											f"Type mismatch in compound assignment '{stmt.expr.op}': {left_type} vs {right_type}")
+							orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Type mismatch in compound assignment '{stmt.expr.op}': {left_type} vs {right_type}")
 						common = left_type
 					expr_type = common
 				_inc_read(stmt.name, node_desc=f"CompoundAssignRead@{getattr(stmt,'lineno','?')}")
@@ -4293,8 +4290,7 @@ def check_types(prog: Program):
 				exc = set(getattr(func, "vasync_except", []) or [])
 				target_name = stmt.name if isinstance(stmt.name, str) else getattr(stmt.name, "name", None)
 				if isinstance(target_name, str) and target_name in cap and target_name not in exc:
-					orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None),
-						f'Variable "{target_name}" was accessed in a context where its value is volatile/unsure.')
+					orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f'Variable "{target_name}" was accessed in a context where its value is volatile/unsure.')
 			_inc_write(stmt.name, node_desc=f"AssignWrite@{getattr(stmt,'lineno','?')}")
 			if isinstance(stmt.expr, Var) and var_type.endswith('*'):
 				src_name = stmt.expr.name
@@ -4314,8 +4310,7 @@ def check_types(prog: Program):
 			if not ptr_typ.endswith('*'):
 				orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Cannot forget non-pointer variable '{stmt.varname}' of type '{ptr_typ}'")
 			if ptr_typ == "undefined":
-				orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None),
-								f"Compile-time error: double free / forget on variable '{stmt.varname}'")
+				orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Compile-time error: double free / forget on variable '{stmt.varname}'")
 			env.declare(stmt.varname, "undefined")
 			return
 		if isinstance(stmt, CrumbleStmt):
