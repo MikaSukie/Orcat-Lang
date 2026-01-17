@@ -22,7 +22,7 @@ Or use homebrew <br>
 ## ~> Project Status
 
 **ORCat** is currently in **active development** **~~stopped/frozen~~**.  
-While the compiler core is functional, work is ongoing on:
+While the compiler core is functional, work is in progress:
 
 - # Standard library development  
 - ## 🎨 Language feature polish  
