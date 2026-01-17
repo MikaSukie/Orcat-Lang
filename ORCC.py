@@ -4272,7 +4272,8 @@ def check_types(prog: Program):
 					common = unify_int_types(left_type, right_type)
 					if not common:
 						if left_type != right_type:
-							orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Type mismatch in compound assignment '{stmt.expr.op}': {left_type} vs {right_type}")
+							orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None),
+											f"Type mismatch in compound assignment '{stmt.expr.op}': {left_type} vs {right_type}")
 						common = left_type
 					expr_type = common
 				_inc_read(stmt.name, node_desc=f"CompoundAssignRead@{getattr(stmt,'lineno','?')}")
@@ -4284,6 +4285,7 @@ def check_types(prog: Program):
 			elif expr_type == 'float32' and var_type == 'float':
 				stmt.expr = Cast('float', stmt.expr)
 				expr_type = 'float'
+
 			if expr_type != var_type:
 				orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Assign type mismatch: {var_type} = {expr_type}")
 			if func is not None and getattr(func, "is_vasync", False):
@@ -4294,6 +4296,16 @@ def check_types(prog: Program):
 					orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None),
 						f'Variable "{target_name}" was accessed in a context where its value is volatile/unsure.')
 			_inc_write(stmt.name, node_desc=f"AssignWrite@{getattr(stmt,'lineno','?')}")
+			if isinstance(stmt.expr, Var) and var_type.endswith('*'):
+				src_name = stmt.expr.name
+				if src_name != stmt.name:
+					src_typ = env.lookup(src_name)
+					if src_typ and src_typ.endswith('*'):
+						env.declare(src_name, "undefined")
+						if src_name in crumb_runtime:
+							crumb_runtime[src_name]['owned'] = False
+						if src_name in owned_vars:
+							owned_vars.discard(src_name)
 			return
 		if isinstance(stmt, ForgetStmt):
 			ptr_typ = env.lookup(stmt.varname)
