@@ -4,12 +4,12 @@ Compiler Birthday: May 31st 2025
 <img src="https://github.com/user-attachments/assets/02dfcb6a-84e6-4954-b9a8-e911f462359f" width="200"/>
 
 # 🐋 ORCat Compiler 🐱
-
+</div>
 [![Version](https://img.shields.io/badge/ORCatCompiler‑VER-1.8‑Beta-blue)](https://github.com/MikaLorielle/Orcat-Lang)
 ![GitHub last commit](https://img.shields.io/github/last-commit/MikaLorielle/Orcat-lang)
 [![Issues](https://img.shields.io/github/issues/MikaLorielle/Orcat-Lang.svg)](https://github.com/MikaLorielle/Orcat-Lang/issues)
 [![Stars](https://img.shields.io/github/stars/MikaLorielle/Orcat-Lang.svg?style=social)](https://github.com/MikaLorielle/Orcat-Lang/stargazers)
-
+<div align="left">
 On Windows IMPORTANT you need the CLANG compiler. <br>
 windows https://github.com/llvm/llvm-project/releases <br>
 -and https://visualstudio.microsoft.com/visual-cpp-build-tools/ <br>
@@ -25,8 +25,8 @@ Or use homebrew <br>
 While the compiler core is functional, work is ongoing on:
 
 - # Standard library development  
-- {🎨} Language feature polish  
-- >_ Runtime and performance enhancements
+- ## 🎨 Language feature polish  
+- ## Runtime and performance enhancements
 
 The syntax has been fully built and is being improved upon.  
 Want to join the community? (Please do 🙏)
@@ -39,7 +39,7 @@ Want to join the community? (Please do 🙏)
 - more coming soon.
 ---
 
-## 🙏 Goals
+## 👌 Goals
 
 - This is a “small” but EXTREMELY ambitious compiler project.
 - *(because I do not like how Rust did their safety and simplicity balance.),
@@ -47,5 +47,5 @@ Want to join the community? (Please do 🙏)
 - Full control by default, optional safety tools provided.
 ---
 
-Stay tuned for more updates!  
+Stay tuned for more updates!🎉🎉
 And thank you for checking out ORCat. 🐋🐱
