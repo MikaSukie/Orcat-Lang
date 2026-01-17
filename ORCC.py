@@ -739,6 +739,9 @@ class StructInit(Expr):
 	name: str
 	fields: List[Tuple[str, Expr]]
 @dataclass
+class ArrayInit(Expr):
+	elements: List[Expr]
+@dataclass
 class TypeSwitchCase:
 	typ: str
 	body: List[Stmt]
@@ -1479,6 +1482,15 @@ class Parser:
 			return UnaryOp('~', inner)
 		def parse_atom() -> Expr:
 			t = self.bump()
+			if t.kind == 'LBRACKET':
+				elems: List[Expr] = []
+				if self.peek().kind != 'RBRACKET':
+					while True:
+						elems.append(self.parse_expr())
+						if not self.match('COMMA'):
+							break
+				self.expect('RBRACKET')
+				return ArrayInit(elems)
 			if t.kind == 'IDENT' and t.value in {'typeof', 'etypeof'} and self.peek().kind == 'LPAREN':
 				fn = t.value
 				self.expect('LPAREN')
@@ -2581,6 +2593,21 @@ def gen_expr(expr: Expr, out: List[str]) -> str | None:
 			out.append(f"  {ptr} = getelementptr inbounds {struct_ty}, {struct_ty}* {tmp_ptr}, i32 0, i32 {index}")
 			out.append(f"  store {field_llvm} {field_val}, {field_llvm}* {ptr}")
 		return tmp_ptr
+	if isinstance(expr, ArrayInit):
+		count = len(expr.elements)
+		if count == 0:
+			orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "Empty array literal must have explicit type")
+		elem_t = infer_type(expr.elements[0])
+		elem_llvm = llvm_ty_of(elem_t)
+		arr_llvm_ty = f"[{count} x {elem_llvm}]"
+		tmp_ptr = new_tmp()
+		out.append(f"  {tmp_ptr} = alloca {arr_llvm_ty}")
+		for i, el in enumerate(expr.elements):
+			val = gen_expr(el, out)
+			gep = new_tmp()
+			out.append(f"  {gep} = getelementptr inbounds {arr_llvm_ty}, {arr_llvm_ty}* {tmp_ptr}, i32 0, i32 {i}")
+			out.append(f"  store {elem_llvm} {val}, {elem_llvm}* {gep}")
+		return tmp_ptr
 	orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Unhandled expr: {expr}")
 def infer_type(expr: Expr) -> str:
 	if isinstance(expr, UnaryDeref):
@@ -2657,6 +2684,17 @@ def infer_type(expr: Expr) -> str:
 		return field_dict[expr.field]
 	if isinstance(expr, StructInit):
 		return expr.name + "*"
+	if isinstance(expr, ArrayInit):
+		if not expr.elements:
+			orcc_report_error(
+				getattr(expr, "lineno", None),
+				getattr(expr, "col", None), "Cannot infer type for empty array literal")
+		elem_type = infer_type(expr.elements[0])
+		for el in expr.elements[1:]:
+			t = infer_type(el)
+			if unify_types(elem_type, t) is None:
+				orcc_report_error(getattr(el, "lineno", None), getattr(el, "col", None), f"Array literal element types do not match: {elem_type} vs {t}")
+		return f"{elem_type}[{len(expr.elements)}]"
 	if isinstance(expr, Call) and expr.name == "!" and len(expr.args) == 1:
 		arg_t = infer_type(expr.args[0])
 		if arg_t != "bool":
@@ -2767,7 +2805,17 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 						_, ir_name = symbol_table.lookup(stmt.name)
 					except Exception:
 						ir_name = _pick_ir_name(stmt.name)
-					out.append(f"  store {llvm_ty} {val}, {llvm_ty}* %{ir_name}_addr")
+					src_ptr = val
+					dst_addr = f"%{ir_name}_addr"
+					src_cast = new_tmp()
+					dst_cast = new_tmp()
+					out.append(f"  {src_cast} = bitcast {llvm_ty}* {src_ptr} to i8*")
+					out.append(f"  {dst_cast} = bitcast {llvm_ty}* {dst_addr} to i8*")
+					size_tmp = new_tmp()
+					out.append(
+						f"  {size_tmp} = ptrtoint {llvm_ty}* getelementptr ({llvm_ty}, {llvm_ty}* null, i32 1) to i64")
+					out.append(
+						f"  call void @llvm.memcpy.p0i8.p0i8.i64(i8* {dst_cast}, i8* {src_cast}, i64 {size_tmp}, i1 false)")
 				if stmt.name not in symbol_table.scopes[-1]:
 					ir_name = _pick_ir_name(stmt.name)
 					symbol_table.declare(stmt.name, llvm_ty, ir_name)
@@ -2779,6 +2827,26 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 				out.append(f"  %{ir_name}_len  = alloca i32")
 				out.append(f"  store i32 {count}, i32* %{ir_name}_len")
 				symbol_table.declare(stmt.name, llvm_ty, ir_name)
+			if stmt.expr:
+				val = gen_expr(stmt.expr, out)
+				try:
+					_, ir_name = symbol_table.lookup(stmt.name)
+				except Exception:
+					ir_name = _pick_ir_name(stmt.name)
+				src_ptr = val
+				dst_addr = f"%{ir_name}_addr"
+				src_cast = new_tmp()
+				dst_cast = new_tmp()
+				out.append(f"  {src_cast} = bitcast {llvm_ty}* {src_ptr} to i8*")
+				out.append(f"  {dst_cast} = bitcast {llvm_ty}* {dst_addr} to i8*")
+				size_tmp = new_tmp()
+				out.append(
+					f"  {size_tmp} = ptrtoint {llvm_ty}* getelementptr ({llvm_ty}, {llvm_ty}* null, i32 1) to i64"
+				)
+				out.append(
+					f"  call void @llvm.memcpy.p0i8.p0i8.i64(i8* {dst_cast}, i8* {src_cast}, i64 {size_tmp}, i1 false)"
+				)
+			return
 		else:
 			llvm_ty = llvm_ty_of(stmt.typ)
 			if promoted is not None and stmt.name in promoted:
@@ -2788,40 +2856,40 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 				if stmt.expr:
 					val = gen_expr(stmt.expr, out)
 					src_llvm = llvm_ty_of(infer_type(stmt.expr))
-					if src_llvm != llvm_ty:
-						cast_tmp = new_tmp()
-						bits_src = llvm_int_bitsize(src_llvm)
-						bits_dst = llvm_int_bitsize(llvm_ty)
-						if bits_src and bits_dst:
-							if bits_src > bits_dst:
-								out.append(f"  {cast_tmp} = trunc {src_llvm} {val} to {llvm_ty}")
-							else:
-								out.append(f"  {cast_tmp} = sext {src_llvm} {val} to {llvm_ty}")
-							val = cast_tmp
-					try:
-						_, ir_name = symbol_table.lookup(stmt.name)
-					except Exception:
-						ir_name = stmt.name
-					out.append(f"  store {llvm_ty} {val}, {llvm_ty}* %{ir_name}_addr")
-					if isinstance(stmt.expr, Call):
-						ret_t = infer_type(stmt.expr)
-						if ret_t is not None and (ret_t.endswith('*') or ret_t == 'string'):
-							owned_vars.add(stmt.name)
-							if stmt.name in crumb_runtime:
-								crumb_runtime[stmt.name]['owned'] = True
-				return
-			if stmt.name not in symbol_table.scopes[-1]:
-				ir_name = _pick_ir_name(stmt.name)
-				out.append(f"  %{ir_name}_addr = alloca {llvm_ty}")
-				if llvm_ty.endswith('*'):
-					out.append(f"  store {llvm_ty} null, {llvm_ty}* %{ir_name}_addr")
-				elif llvm_ty == 'double' or llvm_ty == 'float':
-					out.append(f"  store {llvm_ty} 0.0, {llvm_ty}* %{ir_name}_addr")
-				elif llvm_ty.startswith('i'):
-					out.append(f"  store {llvm_ty} 0, {llvm_ty}* %{ir_name}_addr")
-				else:
-					out.append(f"  store {llvm_ty} zeroinitializer, {llvm_ty}* %{ir_name}_addr")
-				symbol_table.declare(stmt.name, llvm_ty, ir_name)
+				if src_llvm != llvm_ty:
+					cast_tmp = new_tmp()
+					bits_src = llvm_int_bitsize(src_llvm)
+					bits_dst = llvm_int_bitsize(llvm_ty)
+					if bits_src and bits_dst:
+						if bits_src > bits_dst:
+							out.append(f"  {cast_tmp} = trunc {src_llvm} {val} to {llvm_ty}")
+						else:
+							out.append(f"  {cast_tmp} = sext {src_llvm} {val} to {llvm_ty}")
+						val = cast_tmp
+				try:
+					_, ir_name = symbol_table.lookup(stmt.name)
+				except Exception:
+					ir_name = stmt.name
+				out.append(f"  store {llvm_ty} {val}, {llvm_ty}* %{ir_name}_addr")
+				if isinstance(stmt.expr, Call):
+					ret_t = infer_type(stmt.expr)
+					if ret_t is not None and (ret_t.endswith('*') or ret_t == 'string'):
+						owned_vars.add(stmt.name)
+						if stmt.name in crumb_runtime:
+							crumb_runtime[stmt.name]['owned'] = True
+			return
+		if stmt.name not in symbol_table.scopes[-1]:
+			ir_name = _pick_ir_name(stmt.name)
+			out.append(f"  %{ir_name}_addr = alloca {llvm_ty}")
+			if llvm_ty.endswith('*'):
+				out.append(f"  store {llvm_ty} null, {llvm_ty}* %{ir_name}_addr")
+			elif llvm_ty == 'double' or llvm_ty == 'float':
+				out.append(f"  store {llvm_ty} 0.0, {llvm_ty}* %{ir_name}_addr")
+			elif llvm_ty.startswith('i'):
+				out.append(f"  store {llvm_ty} 0, {llvm_ty}* %{ir_name}_addr")
+			else:
+				out.append(f"  store {llvm_ty} zeroinitializer, {llvm_ty}* %{ir_name}_addr")
+			symbol_table.declare(stmt.name, llvm_ty, ir_name)
 		if stmt.expr:
 			val = gen_expr(stmt.expr, out)
 			src_llvm = llvm_ty_of(infer_type(stmt.expr))
@@ -4126,6 +4194,15 @@ def check_types(prog: Program):
 				missing = all_field_names - seen_fields
 				orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Struct '{expr.name}' initializer missing fields {missing}")
 			return expr.name + "*"
+		if isinstance(expr, ArrayInit):
+			if len(expr.elements) == 0:
+				orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "Cannot infer type for empty array literal; give it a type")
+			first_t = infer_type(expr.elements[0])
+			for el in expr.elements[1:]:
+				el_t = infer_type(el)
+				if unify_types(first_t, el_t) is None:
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Array literal element types do not match: {first_t} vs {el_t}")
+			return f"{first_t}[{len(expr.elements)}]"
 		orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Unsupported expression: {expr}")
 	def check_stmt(stmt: Stmt, expected_ret: str, func: Optional[Func] = None):
 		if isinstance(stmt, VarDecl):
