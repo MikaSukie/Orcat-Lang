@@ -10,7 +10,7 @@ Compiler Birthday: May 31st 2025
 [![Issues](https://img.shields.io/github/issues/MikaLorielle/Orcat-Lang.svg)](https://github.com/MikaLorielle/Orcat-Lang/issues)
 [![Stars](https://img.shields.io/github/stars/MikaLorielle/Orcat-Lang.svg?style=social)](https://github.com/MikaLorielle/Orcat-Lang/stargazers)
 
-On Windows IMPORTANT you need the CLANG compiler. <br>
+On Windows IMPORTANT you need the clang/llvm compiler. <br>
 windows https://github.com/llvm/llvm-project/releases <br>
 -and https://visualstudio.microsoft.com/visual-cpp-build-tools/ <br>
 MacOS xcode-select --install <br>
