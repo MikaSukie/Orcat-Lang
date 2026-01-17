@@ -19,33 +19,33 @@ Or use homebrew <br>
 
 ---
 
-## 🚧 Project Status
-🐋
-**ORCat** is currently in **~~active development~~** **stopped/frozen**.  
+## ~> Project Status
+
+**ORCat** is currently in **active development** **~~stopped/frozen~~**.  
 While the compiler core is functional, work is ongoing on:
 
-- 🧱 Standard library development  
-- 🧬 Language feature polish  
-- ⚙️ Runtime and performance enhancements
+- # Standard library development  
+- {🎨} Language feature polish  
+- >_ Runtime and performance enhancements
 
 The syntax has been fully built and is being improved upon.  
 Want to join the community? (Please do 🙏)
 
-👉 **[Join the Discord!](https://discord.gg/zmnuz4h88x)**
+>> **[Join the Discord!](https://discord.gg/zmnuz4h88x)**
 
 ---
 ## Memory ownership (important) <br>
-- many manual frees can be done via forget(varname) or the RAII-like autoregion {}. for libraries you may use the crumb system to limit reads and writes (optionally auto free only if both are specified.) <br>
+- many manual frees can be done via forget(varname) or the RAII-like autoregion {}. For libraries you may use the crumb system to limit reads and writes (optionally auto free only if both are specified.) <br>
 - more coming soon.
 ---
 
-## 📌 Notes
+## 🙏 Goals
 
-- This is a “small” but VERY ambitious compiler project.
-- *(because I do not like compiled languages that slap the dev for doing something risky),
+- This is a “small” but EXTREMELY ambitious compiler project.
+- *(because I do not like how Rust did their safety and simplicity balance.),
 - safety, and simplicity in a language, but unsafe if you need it to be.
-- Safe by default, unsafe and/or full control when needed.
+- Full control by default, optional safety tools provided.
 ---
 
-Stay tuned for more updates! 🌟  
+Stay tuned for more updates!  
 And thank you for checking out ORCat. 🐋🐱
