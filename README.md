@@ -5,7 +5,7 @@ Compiler Birthday: May 31st 2025
 
 # 🐋 ORCat Compiler 🐱
 
-[![Version](https://img.shields.io/badge/ORCatCompiler‑VER-1.8‑Beta-blue)](https://github.com/MikaLorielle/Orcat-Lang)
+[![Version](https://img.shields.io/badge/ORCatCompiler‑VER-B2.0-blue)](https://github.com/MikaLorielle/Orcat-Lang)
 ![GitHub last commit](https://img.shields.io/github/last-commit/MikaLorielle/Orcat-lang)
 [![Issues](https://img.shields.io/github/issues/MikaLorielle/Orcat-Lang.svg)](https://github.com/MikaLorielle/Orcat-Lang/issues)
 [![Stars](https://img.shields.io/github/stars/MikaLorielle/Orcat-Lang.svg?style=social)](https://github.com/MikaLorielle/Orcat-Lang/stargazers)
