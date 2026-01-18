@@ -2619,7 +2619,7 @@ def infer_type(expr: Expr) -> str:
 	if isinstance(expr, UnaryDeref):
 		if isinstance(expr.ptr, NullLit):
 			orcc_report_error(getattr(expr.ptr, "lineno", None), getattr(expr.ptr, "col", None), "[ORCC-ERR]: dereference of literal null pointer")
-		ptr_type = check_expr(expr.ptr)
+		ptr_type = infer_type(expr.ptr)
 		if ptr_type == 'null' or ptr_type == 'void*':
 			orcc_report_error(getattr(expr.ptr, "lineno", None), getattr(expr.ptr, "col", None), "[ORCC-ERR]: dereference of an expression known to be null")
 		if not ptr_type.endswith('*'):
