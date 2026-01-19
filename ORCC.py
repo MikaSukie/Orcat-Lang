@@ -4375,7 +4375,7 @@ def check_types(prog: Program):
 		if isinstance(stmt, TypeSwitch):
 			if func is not None:
 				if stmt.subject not in (func.type_params or []):
-					orcc_report_error(getattr(stmt.cond, "lineno", None), getattr(stmt.cond, "col", None), f"typeswitch subject '{stmt.subject}' is not a type parameter")
+					orcc_report_error(None, None, f"typeswitch subject '{stmt.subject}' is not a type parameter")
 			for case in stmt.cases:
 				base_type = case.typ.rstrip('*')
 				if '[' in base_type and base_type.endswith(']'):
