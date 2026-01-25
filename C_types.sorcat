@@ -51,7 +51,7 @@ pub fn empty() <string> { return tostr(""); }
 
 pub fn [T] tostring(T candidate) <string> {
     typeswitch(T) {
-        case(int) {
+        typecase(int) {
             if (streq(get_os_max_bits(), "64")) {
                 return i64tostr(candidate);
             } else if (streq(get_os_max_bits(), "32")) {
@@ -60,19 +60,19 @@ pub fn [T] tostring(T candidate) <string> {
                 return itostr(candidate);
             }
         }
-        case(float) { return ftostr(candidate); }
-        case(bool)  { return btostr(candidate); }
-        case(string){ return tostr(candidate); }
+        typecase(float) { return ftostr(candidate); }
+        typecase(bool)  { return btostr(candidate); }
+        typecase(string){ return tostr(candidate); }
     }
-    return "tostring has errored as no matching cases were found.";
+    return "tostring has errored as no matching typecases were found.";
 }
 
 pub fn [F] etostring(F candidate) <string> {
     typeswitch(F) {
-        case(int8)  { return i8tostr(candidate); }
-        case(int16) { return i16tostr(candidate); }
-        case(int32) { return i32tostr(candidate); }
-        case(int64) { return i64tostr(candidate); }
+        typecase(int8)  { return i8tostr(candidate); }
+        typecase(int16) { return i16tostr(candidate); }
+        typecase(int32) { return i32tostr(candidate); }
+        typecase(int64) { return i64tostr(candidate); }
     }
     // fallback to the generic tostring (monomorphized separately)
     return tostring(candidate);
