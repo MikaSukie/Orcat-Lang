@@ -1,17 +1,6 @@
 #!/usr/bin/env python3
 """
- * This file is licensed under the GPL-3 License (or AGPL-3 if applicable)
- * Copyright (C) 2025 MikaSukie
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ * GPL2.0 license
 """
 import re, os, argparse, sys
 from typing import List, Optional, Tuple, Union, Dict, Any, NoReturn
@@ -1526,8 +1515,8 @@ class Parser:
 				expr = self.parse_expr()
 				self.expect('RPAREN')
 				return expr
-			if t.kind == 'IDENT' and t.value == 'ORCC.get_args':
-				return Call('ORCC.get_args', [])
+			if t.kind == 'IDENT' and t.value == 'BHC.get_args':
+				return Call('BHC.get_args', [])
 			if t.kind == 'IDENT':
 				base = Var(t.value)
 				if self.peek().kind == 'LBRACE':
@@ -2073,7 +2062,7 @@ def gen_expr(expr: Expr, out: List[str]) -> str | None:
 		tmp = new_tmp()
 		out.append(f"  {tmp} = bitcast i8* null to i8*")
 		return tmp
-	if isinstance(expr, Call) and expr.name == 'ORCC.get_args':
+	if isinstance(expr, Call) and expr.name == 'BHC.get_args':
 		tmp = new_tmp()
 		out.append(f"  {tmp} = load i8**, i8*** @__argv_ptr")
 		return tmp
@@ -2618,10 +2607,10 @@ def gen_expr(expr: Expr, out: List[str]) -> str | None:
 def infer_type(expr: Expr) -> str:
 	if isinstance(expr, UnaryDeref):
 		if isinstance(expr.ptr, NullLit):
-			orcc_report_error(getattr(expr.ptr, "lineno", None), getattr(expr.ptr, "col", None), "[ORCC-ERR]: dereference of literal null pointer")
+			orcc_report_error(getattr(expr.ptr, "lineno", None), getattr(expr.ptr, "col", None), "[BHC-ERR]: dereference of literal null pointer")
 		ptr_type = infer_type(expr.ptr)
 		if ptr_type == 'null' or ptr_type == 'void*':
-			orcc_report_error(getattr(expr.ptr, "lineno", None), getattr(expr.ptr, "col", None), "[ORCC-ERR]: dereference of an expression known to be null")
+			orcc_report_error(getattr(expr.ptr, "lineno", None), getattr(expr.ptr, "col", None), "[BHC-ERR]: dereference of an expression known to be null")
 		if not ptr_type.endswith('*'):
 			orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Dereferencing non-pointer type '{ptr_type}'")
 		pointee = ptr_type[:-1]
@@ -3350,8 +3339,8 @@ def compile_program(prog: Program) -> str:
 	func_table["free"] = "void"
 	func_table["puts"] = "i32"
 	func_table["strlen"] = "i64"
-	func_table["orcat_argc"] = "i64"
-	func_table["orcat_argv"] = "i8*"
+	func_table["orcc_argc"] = "i64"
+	func_table["orcc_argv"] = "i8*"
 	has_user_main = False
 	for fn in prog.funcs:
 		if fn.name == "main":
@@ -3362,7 +3351,7 @@ def compile_program(prog: Program) -> str:
 			func_table["user_main"] = llvm_ret_ty
 			break
 	lines: List[str] = [
-		"; ModuleID = 'orcat'",
+		"; ModuleID = 'orcc'",
 		f"source_filename = \"{compiled}\"",
 		"@__argv_ptr = global i8** null",
 		"declare i8* @malloc(i64)",
@@ -3377,277 +3366,277 @@ def compile_program(prog: Program) -> str:
 		"",
 	]
 	runtime_block = """
-	@.oob_msg = private unnamed_addr constant [52 x i8] c"[ORCatCompiler-RT-CHCK]: Index out of bounds error.\\00"
-	@.null_msg = private unnamed_addr constant [45 x i8] c"[ORCatCompiler-RT-CHCK]: Null pointer deref.\\00"
-	@.heap_msg = private unnamed_addr constant [67 x i8] c"[ORCatCompiler-RT-HEAP]: Invalid free or heap corruption detected.\\00"
-	@.alloc_magic = global i64 0
-	define void @orcc_oob_abort() {
-	entry:
-	%tmp_puts = call i32 @puts(i8* getelementptr inbounds ([52 x i8], [52 x i8]* @.oob_msg, i32 0, i32 0))
-	call void @exit(i32 1)
-	unreachable
-	}
-	define void @orcc_null_abort() {
-	entry:
-	%tmp_puts1 = call i32 @puts(i8* getelementptr inbounds ([45 x i8], [45 x i8]* @.null_msg, i32 0, i32 0))
-	call void @exit(i32 1)
-	unreachable
-	}
-	define void @orcc_init_runtime() {
-	entry:
-	%t = call i64 @time(i64* null)
-	%t32 = trunc i64 %t to i32
-	call void @srand(i32 %t32)
-	%r = call i32 @rand()
-	%r64 = zext i32 %r to i64
-	%xor_magic = xor i64 %r64, 16045690984833335023
-	store i64 %xor_magic, i64* @.alloc_magic
-	ret void
-	}
-	define i8* @orcc_malloc(i64 %usize) {
-	entry:
-	%hdr_sz = add i64 %usize, 24
-	%ovf = icmp ult i64 %hdr_sz, %usize
-	br i1 %ovf, label %oom, label %try_malloc
-	oom:
-	%tmp_puts_oom = call i32 @puts(i8* getelementptr inbounds ([67 x i8], [67 x i8]* @.heap_msg, i32 0, i32 0))
-	call void @exit(i32 1)
-	unreachable
-	try_malloc:
-	%raw = call i8* @malloc(i64 %hdr_sz)
-	%isnull = icmp eq i8* %raw, null
-	br i1 %isnull, label %oom_malloc, label %ok_alloc
-	oom_malloc:
-	%tmp_puts_oom2 = call i32 @puts(i8* getelementptr inbounds ([67 x i8], [67 x i8]* @.heap_msg, i32 0, i32 0))
-	call void @exit(i32 1)
-	unreachable
-	ok_alloc:
-	%hdr_ptr = bitcast i8* %raw to i64*
-	%global_magic = load i64, i64* @.alloc_magic
-	store i64 %global_magic, i64* %hdr_ptr
-	%size_slot = getelementptr i8, i8* %raw, i64 8
-	%size_slot_i64 = bitcast i8* %size_slot to i64*
-	store i64 %usize, i64* %size_slot_i64
-	%user_ptr = getelementptr i8, i8* %raw, i64 16
-	%footer_ptr = getelementptr i8, i8* %user_ptr, i64 %usize
-	%footer_ptr_i64 = bitcast i8* %footer_ptr to i64*
-	store i64 %global_magic, i64* %footer_ptr_i64
-	ret i8* %user_ptr
-	}
-	define void @orcc_free(i8* %userptr) {
-	entry:
-	%is_null = icmp eq i8* %userptr, null
-	br i1 %is_null, label %ret_void, label %check_hdr
-	check_hdr:
-	%raw_hdr = getelementptr i8, i8* %userptr, i64 -16
-	%hdr_i64 = bitcast i8* %raw_hdr to i64*
-	%magic = load i64, i64* %hdr_i64
-	%global_magic_cmp = load i64, i64* @.alloc_magic
-	%ok = icmp eq i64 %magic, %global_magic_cmp
-	br i1 %ok, label %free_ok, label %free_fail
-	free_fail:
-	%tmp_puts2 = call i32 @puts(i8* getelementptr inbounds ([67 x i8], [67 x i8]* @.heap_msg, i32 0, i32 0))
-	call void @exit(i32 1)
-	unreachable
-	free_ok:
-	%size_slot = getelementptr i8, i8* %raw_hdr, i64 8
-	%size_i64 = bitcast i8* %size_slot to i64*
-	%sz = load i64, i64* %size_i64
-	%footer_loc = getelementptr i8, i8* %userptr, i64 %sz
-	%footer_i64 = bitcast i8* %footer_loc to i64*
-	%footer_val = load i64, i64* %footer_i64
-	%ok2 = icmp eq i64 %footer_val, %global_magic_cmp
-	br i1 %ok2, label %free_ok2, label %free_fail2
-	free_fail2:
-	%tmp_puts3 = call i32 @puts(i8* getelementptr inbounds ([67 x i8], [67 x i8]* @.heap_msg, i32 0, i32 0))
-	call void @exit(i32 1)
-	unreachable
-	free_ok2:
-	store i64 0, i64* %hdr_i64
-	%rawptr = bitcast i8* %raw_hdr to i8*
-	call void @free(i8* %rawptr)
-	ret void
-	ret_void:
-	ret void
-	}
-	@.vvolatile_msg = private unnamed_addr constant [69 x i8] c"[ORCatCompiler-RT-CHCK]: Volatile write attempted in vasync (panic).\\00"
-	define void @orcc_vvolatile_abort() {
-	entry:
-	%tmp_puts_vv = call i32 @puts(i8* getelementptr inbounds ([69 x i8], [69 x i8]* @.vvolatile_msg, i32 0, i32 0))
-	call void @exit(i32 1)
-	unreachable
-	}
-	define i64 @orcc_alloc_size(i8* %userptr) {
-	entry:
-	  %is_null = icmp eq i8* %userptr, null
-	  br i1 %is_null, label %ret_zero, label %cont
-	cont:
-	  %raw_hdr = getelementptr i8, i8* %userptr, i64 -16
-	  %hdr_i64 = bitcast i8* %raw_hdr to i64*
-	  %magic = load i64, i64* %hdr_i64
-	  %global_magic_cmp = load i64, i64* @.alloc_magic
-	  %ok = icmp eq i64 %magic, %global_magic_cmp
-	  br i1 %ok, label %ok2, label %ret_zero
-	ok2:
-	  %size_slot = getelementptr i8, i8* %raw_hdr, i64 8
-	  %size_i64 = bitcast i8* %size_slot to i64*
-	  %sz = load i64, i64* %size_i64
-	  ret i64 %sz
-	ret_zero:
-	  ret i64 0
-	}
-	%orcc_node = type { i8*, i8*, %orcc_node* }
-	@orcc_buckets = global [1024 x %orcc_node*] zeroinitializer
-	define void @orcc_register_async(i8* %resume, i8* %handle) {
-	entry:
-	%szptr = getelementptr %orcc_node, %orcc_node* null, i32 1
-	%sz = ptrtoint %orcc_node* %szptr to i64
-	%raw = call i8* @malloc(i64 %sz)
-	%node = bitcast i8* %raw to %orcc_node*
-	%rptr = getelementptr %orcc_node, %orcc_node* %node, i32 0, i32 0
-	%hptr = getelementptr %orcc_node, %orcc_node* %node, i32 0, i32 1
-	%nptr = getelementptr %orcc_node, %orcc_node* %node, i32 0, i32 2
-	store i8* %resume, i8** %rptr
-	store i8* %handle, i8** %hptr
-	%h_addr = ptrtoint i8* %handle to i64
-	%bucket_idx64 = and i64 %h_addr, 1023
-	%bucket_idx = trunc i64 %bucket_idx64 to i32
-	%slot = getelementptr [1024 x %orcc_node*], [1024 x %orcc_node*]* @orcc_buckets, i32 0, i32 %bucket_idx
-	br label %insert_loop
-	insert_loop:
-	%old_head = load atomic %orcc_node*, %orcc_node** %slot seq_cst, align 8
-	store %orcc_node* %old_head, %orcc_node** %nptr
-	%pair = cmpxchg %orcc_node** %slot, %orcc_node* %old_head, %orcc_node* %node seq_cst seq_cst
-	%succ = extractvalue { %orcc_node*, i1 } %pair, 1
-	br i1 %succ, label %insert_done, label %insert_loop
-	insert_done:
-	ret void
-	}
-	define void @orcc_remove_and_free_node(%orcc_node* %target, %orcc_node** %slot) {
-	entry:
-	br label %try_head
-	try_head:
-	%head = load atomic %orcc_node*, %orcc_node** %slot seq_cst, align 8
-	%is_head = icmp eq %orcc_node* %head, %target
-	br i1 %is_head, label %remove_head, label %scan_pred
-	remove_head:
-	%t_nptr = getelementptr %orcc_node, %orcc_node* %target, i32 0, i32 2
-	%t_next = load atomic %orcc_node*, %orcc_node** %t_nptr seq_cst, align 8
-	%pair = cmpxchg %orcc_node** %slot, %orcc_node* %target, %orcc_node* %t_next seq_cst seq_cst
-	%succ = extractvalue { %orcc_node*, i1 } %pair, 1
-	br i1 %succ, label %freed, label %try_head
-	scan_pred:
-	%pred0 = load atomic %orcc_node*, %orcc_node** %slot seq_cst, align 8
-	br label %scan_loop
-	scan_loop:
-	%pred = phi %orcc_node* [ %pred0, %scan_pred ], [ %pred_next, %advance_pred ]
-	%pred_is_null = icmp eq %orcc_node* %pred, null
-	br i1 %pred_is_null, label %notfound, label %check_pred_next
-	check_pred_next:
-	%pred_nptr = getelementptr %orcc_node, %orcc_node* %pred, i32 0, i32 2
-	%pred_next = load atomic %orcc_node*, %orcc_node** %pred_nptr seq_cst, align 8
-	%cmp_pred = icmp eq %orcc_node* %pred_next, %target
-	br i1 %cmp_pred, label %try_remove_mid, label %advance_pred
-	try_remove_mid:
-	%target_nptr = getelementptr %orcc_node, %orcc_node* %target, i32 0, i32 2
-	%target_next = load atomic %orcc_node*, %orcc_node** %target_nptr seq_cst, align 8
-	%pair2 = cmpxchg %orcc_node** %pred_nptr, %orcc_node* %target, %orcc_node* %target_next seq_cst seq_cst
-	%succ2 = extractvalue { %orcc_node*, i1 } %pair2, 1
-	br i1 %succ2, label %freed, label %scan_pred
-	advance_pred:
-	br label %scan_loop
-	notfound:
-	ret void
-	freed:
-	%rawptr = bitcast %orcc_node* %target to i8*
-	call void @free(i8* %rawptr)
-	ret void
-	}
-	define void @orcc_block_until_complete(i8* %handle) {
-	entry:
-	%h_addr = ptrtoint i8* %handle to i64
-	%bucket_idx64 = and i64 %h_addr, 1023
-	%bucket_idx = trunc i64 %bucket_idx64 to i32
-	%slot = getelementptr [1024 x %orcc_node*], [1024 x %orcc_node*]* @orcc_buckets, i32 0, i32 %bucket_idx
-	br label %scan
-	scan:
-	%head = load atomic %orcc_node*, %orcc_node** %slot seq_cst, align 8
-	br label %scan_loop
-	scan_loop:
-	%cur = phi %orcc_node* [ %head, %scan ], [ %next, %advance ]
-	%isnull = icmp eq %orcc_node* %cur, null
-	br i1 %isnull, label %sleep, label %checknode
-	checknode:
-	%hptr = getelementptr %orcc_node, %orcc_node* %cur, i32 0, i32 1
-	%hval = load atomic i8*, i8** %hptr seq_cst, align 8
-	%cmp = icmp eq i8* %hval, %handle
-	br i1 %cmp, label %invoke, label %advance
-	invoke:
-	%rptr = getelementptr %orcc_node, %orcc_node* %cur, i32 0, i32 0
-	%rval = load atomic i8*, i8** %rptr seq_cst, align 8
-	%resume_fn = bitcast i8* %rval to i1 (i8*)*
-	%res = call i1 %resume_fn(i8* %handle)
-	br i1 %res, label %remove_node, label %scan
-	remove_node:
-	call void @orcc_remove_and_free_node(%orcc_node* %cur, %orcc_node** %slot)
-	br label %done
-	advance:
-	%nptr2 = getelementptr %orcc_node, %orcc_node* %cur, i32 0, i32 2
-	%next = load atomic %orcc_node*, %orcc_node** %nptr2 seq_cst, align 8
-	br label %scan_loop
-	sleep:
-	%tmp_usleep = call i32 @usleep(i32 1000)
-	br label %scan
-	done:
-	ret void
-	}
+@.oob_msg = private unnamed_addr constant [52 x i8] c"[ORCCompiler-RT-CHCK]: Index out of bounds error.\\00"
+@.null_msg = private unnamed_addr constant [45 x i8] c"[ORCCompiler-RT-CHCK]: Null pointer deref.\\00"
+@.heap_msg = private unnamed_addr constant [67 x i8] c"[ORCCompiler-RT-HEAP]: Invalid free or heap corruption detected.\\00"
+@.alloc_magic = global i64 0
+define void @orcc_oob_abort() {
+entry:
+  %tmp_puts = call i32 @puts(i8* getelementptr inbounds ([52 x i8], [52 x i8]* @.oob_msg, i32 0, i32 0))
+  call void @exit(i32 1)
+  unreachable
+}
+define void @orcc_null_abort() {
+entry:
+  %tmp_puts1 = call i32 @puts(i8* getelementptr inbounds ([45 x i8], [45 x i8]* @.null_msg, i32 0, i32 0))
+  call void @exit(i32 1)
+  unreachable
+}
+define void @orcc_init_runtime() {
+entry:
+  %t = call i64 @time(i64* null)
+  %t32 = trunc i64 %t to i32
+  call void @srand(i32 %t32)
+  %r = call i32 @rand()
+  %r64 = zext i32 %r to i64
+  %xor_magic = xor i64 %r64, 16045690984833335023
+  store i64 %xor_magic, i64* @.alloc_magic
+  ret void
+}
+define i8* @orcc_malloc(i64 %usize) {
+entry:
+  %hdr_sz = add i64 %usize, 24
+  %ovf = icmp ult i64 %hdr_sz, %usize
+  br i1 %ovf, label %oom, label %try_malloc
+oom:
+  %tmp_puts_oom = call i32 @puts(i8* getelementptr inbounds ([67 x i8], [67 x i8]* @.heap_msg, i32 0, i32 0))
+  call void @exit(i32 1)
+  unreachable
+try_malloc:
+  %raw = call i8* @malloc(i64 %hdr_sz)
+  %isnull = icmp eq i8* %raw, null
+  br i1 %isnull, label %oom_malloc, label %ok_alloc
+oom_malloc:
+  %tmp_puts_oom2 = call i32 @puts(i8* getelementptr inbounds ([67 x i8], [67 x i8]* @.heap_msg, i32 0, i32 0))
+  call void @exit(i32 1)
+  unreachable
+ok_alloc:
+  %hdr_ptr = bitcast i8* %raw to i64*
+  %global_magic = load i64, i64* @.alloc_magic
+  store i64 %global_magic, i64* %hdr_ptr
+  %size_slot = getelementptr i8, i8* %raw, i64 8
+  %size_slot_i64 = bitcast i8* %size_slot to i64*
+  store i64 %usize, i64* %size_slot_i64
+  %user_ptr = getelementptr i8, i8* %raw, i64 16
+  %footer_ptr = getelementptr i8, i8* %user_ptr, i64 %usize
+  %footer_ptr_i64 = bitcast i8* %footer_ptr to i64*
+  store i64 %global_magic, i64* %footer_ptr_i64
+  ret i8* %user_ptr
+}
+define void @orcc_free(i8* %userptr) {
+entry:
+  %is_null = icmp eq i8* %userptr, null
+  br i1 %is_null, label %ret_void, label %check_hdr
+check_hdr:
+  %raw_hdr = getelementptr i8, i8* %userptr, i64 -16
+  %hdr_i64 = bitcast i8* %raw_hdr to i64*
+  %magic = load i64, i64* %hdr_i64
+  %global_magic_cmp = load i64, i64* @.alloc_magic
+  %ok = icmp eq i64 %magic, %global_magic_cmp
+  br i1 %ok, label %free_ok, label %free_fail
+free_fail:
+  %tmp_puts2 = call i32 @puts(i8* getelementptr inbounds ([67 x i8], [67 x i8]* @.heap_msg, i32 0, i32 0))
+  call void @exit(i32 1)
+  unreachable
+free_ok:
+  %size_slot = getelementptr i8, i8* %raw_hdr, i64 8
+  %size_i64 = bitcast i8* %size_slot to i64*
+  %sz = load i64, i64* %size_i64
+  %footer_loc = getelementptr i8, i8* %userptr, i64 %sz
+  %footer_i64 = bitcast i8* %footer_loc to i64*
+  %footer_val = load i64, i64* %footer_i64
+  %ok2 = icmp eq i64 %footer_val, %global_magic_cmp
+  br i1 %ok2, label %free_ok2, label %free_fail2
+free_fail2:
+  %tmp_puts3 = call i32 @puts(i8* getelementptr inbounds ([67 x i8], [67 x i8]* @.heap_msg, i32 0, i32 0))
+  call void @exit(i32 1)
+  unreachable
+free_ok2:
+  store i64 0, i64* %hdr_i64
+  %rawptr = bitcast i8* %raw_hdr to i8*
+  call void @free(i8* %rawptr)
+  ret void
+ret_void:
+  ret void
+}
+@.vvolatile_msg = private unnamed_addr constant [69 x i8] c"[ORCCompiler-RT-CHCK]: Volatile write attempted in vasync (panic).\\00"
+define void @orcc_vvolatile_abort() {
+entry:
+  %tmp_puts_vv = call i32 @puts(i8* getelementptr inbounds ([69 x i8], [69 x i8]* @.vvolatile_msg, i32 0, i32 0))
+  call void @exit(i32 1)
+  unreachable
+}
+define i64 @orcc_alloc_size(i8* %userptr) {
+entry:
+  %is_null = icmp eq i8* %userptr, null
+  br i1 %is_null, label %ret_zero, label %cont
+cont:
+  %raw_hdr = getelementptr i8, i8* %userptr, i64 -16
+  %hdr_i64 = bitcast i8* %raw_hdr to i64*
+  %magic = load i64, i64* %hdr_i64
+  %global_magic_cmp = load i64, i64* @.alloc_magic
+  %ok = icmp eq i64 %magic, %global_magic_cmp
+  br i1 %ok, label %ok2, label %ret_zero
+ok2:
+  %size_slot = getelementptr i8, i8* %raw_hdr, i64 8
+  %size_i64 = bitcast i8* %size_slot to i64*
+  %sz = load i64, i64* %size_i64
+  ret i64 %sz
+ret_zero:
+  ret i64 0
+}
+%orcc_node = type { i8*, i8*, %orcc_node* }
+@orcc_buckets = global [1024 x %orcc_node*] zeroinitializer
+define void @orcc_register_async(i8* %resume, i8* %handle) {
+entry:
+  %szptr = getelementptr %orcc_node, %orcc_node* null, i32 1
+  %sz = ptrtoint %orcc_node* %szptr to i64
+  %raw = call i8* @malloc(i64 %sz)
+  %node = bitcast i8* %raw to %orcc_node*
+  %rptr = getelementptr %orcc_node, %orcc_node* %node, i32 0, i32 0
+  %hptr = getelementptr %orcc_node, %orcc_node* %node, i32 0, i32 1
+  %nptr = getelementptr %orcc_node, %orcc_node* %node, i32 0, i32 2
+  store i8* %resume, i8** %rptr
+  store i8* %handle, i8** %hptr
+  %h_addr = ptrtoint i8* %handle to i64
+  %bucket_idx64 = and i64 %h_addr, 1023
+  %bucket_idx = trunc i64 %bucket_idx64 to i32
+  %slot = getelementptr [1024 x %orcc_node*], [1024 x %orcc_node*]* @orcc_buckets, i32 0, i32 %bucket_idx
+  br label %insert_loop
+insert_loop:
+  %old_head = load atomic %orcc_node*, %orcc_node** %slot seq_cst, align 8
+  store %orcc_node* %old_head, %orcc_node** %nptr
+  %pair = cmpxchg %orcc_node** %slot, %orcc_node* %old_head, %orcc_node* %node seq_cst seq_cst
+  %succ = extractvalue { %orcc_node*, i1 } %pair, 1
+  br i1 %succ, label %insert_done, label %insert_loop
+insert_done:
+  ret void
+}
+define void @orcc_remove_and_free_node(%orcc_node* %target, %orcc_node** %slot) {
+entry:
+  br label %try_head
+try_head:
+  %head = load atomic %orcc_node*, %orcc_node** %slot seq_cst, align 8
+  %is_head = icmp eq %orcc_node* %head, %target
+  br i1 %is_head, label %remove_head, label %scan_pred
+remove_head:
+  %t_nptr = getelementptr %orcc_node, %orcc_node* %target, i32 0, i32 2
+  %t_next = load atomic %orcc_node*, %orcc_node** %t_nptr seq_cst, align 8
+  %pair = cmpxchg %orcc_node** %slot, %orcc_node* %target, %orcc_node* %t_next seq_cst seq_cst
+  %succ = extractvalue { %orcc_node*, i1 } %pair, 1
+  br i1 %succ, label %freed, label %try_head
+scan_pred:
+  %pred0 = load atomic %orcc_node*, %orcc_node** %slot seq_cst, align 8
+  br label %scan_loop
+scan_loop:
+  %pred = phi %orcc_node* [ %pred0, %scan_pred ], [ %pred_next, %advance_pred ]
+  %pred_is_null = icmp eq %orcc_node* %pred, null
+  br i1 %pred_is_null, label %notfound, label %check_pred_next
+check_pred_next:
+  %pred_nptr = getelementptr %orcc_node, %orcc_node* %pred, i32 0, i32 2
+  %pred_next = load atomic %orcc_node*, %orcc_node** %pred_nptr seq_cst, align 8
+  %cmp_pred = icmp eq %orcc_node* %pred_next, %target
+  br i1 %cmp_pred, label %try_remove_mid, label %advance_pred
+try_remove_mid:
+  %target_nptr = getelementptr %orcc_node, %orcc_node* %target, i32 0, i32 2
+  %target_next = load atomic %orcc_node*, %orcc_node** %target_nptr seq_cst, align 8
+  %pair2 = cmpxchg %orcc_node** %pred_nptr, %orcc_node* %target, %orcc_node* %target_next seq_cst seq_cst
+  %succ2 = extractvalue { %orcc_node*, i1 } %pair2, 1
+  br i1 %succ2, label %freed, label %scan_pred
+advance_pred:
+  br label %scan_loop
+notfound:
+  ret void
+freed:
+  %rawptr = bitcast %orcc_node* %target to i8*
+  call void @free(i8* %rawptr)
+  ret void
+}
+define void @orcc_block_until_complete(i8* %handle) {
+entry:
+  %h_addr = ptrtoint i8* %handle to i64
+  %bucket_idx64 = and i64 %h_addr, 1023
+  %bucket_idx = trunc i64 %bucket_idx64 to i32
+  %slot = getelementptr [1024 x %orcc_node*], [1024 x %orcc_node*]* @orcc_buckets, i32 0, i32 %bucket_idx
+  br label %scan
+scan:
+  %head = load atomic %orcc_node*, %orcc_node** %slot seq_cst, align 8
+  br label %scan_loop
+scan_loop:
+  %cur = phi %orcc_node* [ %head, %scan ], [ %next, %advance ]
+  %isnull = icmp eq %orcc_node* %cur, null
+  br i1 %isnull, label %sleep, label %checknode
+checknode:
+  %hptr = getelementptr %orcc_node, %orcc_node* %cur, i32 0, i32 1
+  %hval = load atomic i8*, i8** %hptr seq_cst, align 8
+  %cmp = icmp eq i8* %hval, %handle
+  br i1 %cmp, label %invoke, label %advance
+invoke:
+  %rptr = getelementptr %orcc_node, %orcc_node* %cur, i32 0, i32 0
+  %rval = load atomic i8*, i8** %rptr seq_cst, align 8
+  %resume_fn = bitcast i8* %rval to i1 (i8*)*
+  %res = call i1 %resume_fn(i8* %handle)
+  br i1 %res, label %remove_node, label %scan
+remove_node:
+  call void @orcc_remove_and_free_node(%orcc_node* %cur, %orcc_node** %slot)
+  br label %done
+advance:
+  %nptr2 = getelementptr %orcc_node, %orcc_node* %cur, i32 0, i32 2
+  %next = load atomic %orcc_node*, %orcc_node** %nptr2 seq_cst, align 8
+  br label %scan_loop
+sleep:
+  %tmp_usleep = call i32 @usleep(i32 1000)
+  br label %scan
+done:
+  ret void
+}
 	"""
 	runtime_block_noop = """
-	@.alloc_magic = global i64 0
-	define void @orcc_oob_abort() {
-	entry:
-	ret void
-	}
-	define void @orcc_null_abort() {
-	entry:
-	ret void
-	}
-	define void @orcc_init_runtime() {
-	entry:
-	ret void
-	}
-	define void @orcc_vvolatile_abort() {
-	entry:
-	ret void
-	}
-	define i8* @orcc_malloc(i64 %usize) {
-	entry:
-	%p = call i8* @malloc(i64 %usize)
-	ret i8* %p
-	}
-	define void @orcc_free(i8* %userptr) {
-	entry:
-	call void @free(i8* %userptr)
-	ret void
-	}
-	define i64 @orcc_alloc_size(i8* %userptr) {
-	entry:
-	ret i64 0
-	}
-	%orcc_node = type { i8*, i8*, %orcc_node* }
-	@orcc_buckets = global [1024 x %orcc_node*] zeroinitializer
-	define void @orcc_register_async(i8* %resume, i8* %handle) {
-	entry:
-	ret void
-	}
-	define void @orcc_remove_and_free_node(%orcc_node* %target, %orcc_node** %slot) {
-	entry:
-	ret void
-	}
-	define void @orcc_block_until_complete(i8* %handle) {
-	entry:
-	ret void
-	}
+@.alloc_magic = global i64 0
+define void @orcc_oob_abort() {
+entry:
+  ret void
+}
+define void @orcc_null_abort() {
+entry:
+  ret void
+}
+define void @orcc_init_runtime() {
+entry:
+  ret void
+}
+define void @orcc_vvolatile_abort() {
+entry:
+  ret void
+}
+define i8* @orcc_malloc(i64 %usize) {
+entry:
+  %p = call i8* @malloc(i64 %usize)
+  ret i8* %p
+}
+define void @orcc_free(i8* %userptr) {
+entry:
+  call void @free(i8* %userptr)
+  ret void
+}
+define i64 @orcc_alloc_size(i8* %userptr) {
+entry:
+  ret i64 0
+}
+%orcc_node = type { i8*, i8*, %orcc_node* }
+@orcc_buckets = global [1024 x %orcc_node*] zeroinitializer
+define void @orcc_register_async(i8* %resume, i8* %handle) {
+entry:
+  ret void
+}
+define void @orcc_remove_and_free_node(%orcc_node* %target, %orcc_node** %slot) {
+entry:
+  ret void
+}
+define void @orcc_block_until_complete(i8* %handle) {
+entry:
+  ret void
+}
 	"""
 	struct_llvm_defs: List[str] = []
 	for sdef in prog.structs:
@@ -3729,20 +3718,20 @@ def compile_program(prog: Program) -> str:
 		m_f = re.match(r'\s*define\s+[^(]+\s+@(\w+)\s*\(', line)
 		if m_f:
 			existing_funcs.add(m_f.group(1))
-	if not builtins_emitted and "orcat_argc_global" not in existing_globals:
-		lines.append("@orcat_argc_global = global i64 0")
-		lines.append("@orcat_argv_global = global i8** null")
+	if not builtins_emitted and "orcc_argc_global" not in existing_globals:
+		lines.append("@orcc_argc_global = global i64 0")
+		lines.append("@orcc_argv_global = global i8** null")
 		lines.append("")
-		lines.append("define i64 @orcat_argc() {")
+		lines.append("define i64 @orcc_argc() {")
 		lines.append("entry:")
-		lines.append("  %t0 = load i64, i64* @orcat_argc_global")
+		lines.append("  %t0 = load i64, i64* @orcc_argc_global")
 		lines.append("  ret i64 %t0")
 		lines.append("}")
 		lines.append("")
 		string_constants.append('@.str_null = private unnamed_addr constant [5 x i8] c"null\\00"')
-		lines.append("define i8* @orcat_argv(i64 %idx) {")
+		lines.append("define i8* @orcc_argv(i64 %idx) {")
 		lines.append("entry:")
-		lines.append("  %argvp = load i8**, i8*** @orcat_argv_global")
+		lines.append("  %argvp = load i8**, i8*** @orcc_argv_global")
 		lines.append("  %isnull = icmp eq i8** %argvp, null")
 		lines.append("  br i1 %isnull, label %null_case, label %check_bounds")
 		lines.append("null_case:")
@@ -3751,7 +3740,7 @@ def compile_program(prog: Program) -> str:
 		lines.append("  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %alloc0, i8* %src, i64 5, i1 false)")
 		lines.append("  ret i8* %alloc0")
 		lines.append("check_bounds:")
-		lines.append("  %argc = load i64, i64* @orcat_argc_global")
+		lines.append("  %argc = load i64, i64* @orcc_argc_global")
 		lines.append("  %neg = icmp slt i64 %idx, 0")
 		lines.append("  %uge = icmp uge i64 %idx, %argc")
 		lines.append("  %oob = or i1 %neg, %uge")
@@ -3790,8 +3779,8 @@ def compile_program(prog: Program) -> str:
 		lines.append("define i32 @main(i32 %argc, i8** %argv) {")
 		lines.append("entry:")
 		lines.append("  %argc64 = sext i32 %argc to i64")
-		lines.append("  store i64 %argc64, i64* @orcat_argc_global")
-		lines.append("  store i8** %argv, i8*** @orcat_argv_global")
+		lines.append("  store i64 %argc64, i64* @orcc_argc_global")
+		lines.append("  store i8** %argv, i8*** @orcc_argv_global")
 		if not no_runtime:
 			lines.append("  call void @orcc_init_runtime()")
 		user_ret = func_table.get("user_main", "i64")
@@ -3838,6 +3827,11 @@ def check_types(prog: Program):
 	crumb_map: Dict[str, Tuple[Optional[int], Optional[int], int, int]] = {}
 	funcs = {f.name: f for f in prog.funcs}
 	variant_map: Dict[str, Tuple[str, Optional[str]]] = {}
+	alias_creations: List[Tuple[str, str, Optional[int], Optional[int], int]] = []
+	alias_targets: Dict[str, set] = {}
+	alias_set: set = set()
+	alias_creation_counter = 0
+	crumb_order: Dict[str, int] = {}
 	def _inc_read(name: str, node_desc: Optional[str] = None):
 		if name not in crumb_map:
 			return
@@ -3992,7 +3986,7 @@ def check_types(prog: Program):
 			if expr.op in {'/', '%'}:
 				cval = eval_const_int(expr.right)
 				if cval is not None and cval == 0:
-					orcc_report_error(getattr(expr.right, "lineno", None), getattr(expr.right, "col", None), f"[ORCC-ERR]: division or modulo by constant 0 ('{expr.op}')")
+					orcc_report_error(getattr(expr.right, "lineno", None), getattr(expr.right, "col", None), f"[BHC-ERR]: division or modulo by constant 0 ('{expr.op}')")
 			if expr.op == "+" and left == "string" and right == "string":
 				return "string"
 			if expr.op in {"&&", "||"}:
@@ -4026,7 +4020,7 @@ def check_types(prog: Program):
 					if not v_typ.endswith('*') and v_typ != 'void*':
 						orcc_report_error(getattr(a0, "lineno", None), getattr(a0, "col", None), f"free() argument must be a pointer, got '{v_typ}'")
 					if v_typ == "undefined":
-						orcc_report_error(getattr(a0, "lineno", None), getattr(a0, "col", None), f"[ORCC-ERR]: double free detected on variable '{vname}'")
+						orcc_report_error(getattr(a0, "lineno", None), getattr(a0, "col", None), f"[BHC-ERR]: double free detected on variable '{vname}'")
 					env.declare(vname, "undefined")
 				return "void"
 			if expr.name == '!' and len(arg_types) == 1:
@@ -4076,15 +4070,15 @@ def check_types(prog: Program):
 				if arg_ty != "string" and not arg_ty.endswith("*"):
 					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "strlen() expects a string (or pointer) argument")
 				return "int"
-			if expr.name == "orcat_argc":
+			if expr.name == "orcc_argc":
 				if len(arg_types) != 0:
-					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "orcat_argc() takes no arguments")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "orcc_argc() takes no arguments")
 				return "int"
-			if expr.name == "orcat_argv":
+			if expr.name == "orcc_argv":
 				if len(arg_types) != 1:
-					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "orcat_argv() takes exactly one int argument")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "orcc_argv() takes exactly one int argument")
 				if not arg_types[0].startswith("int"):
-					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "orcat_argv() expects an int index")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "orcc_argv() expects an int index")
 				return "string"
 			if expr.name == "time":
 				if len(arg_types) != 1:
@@ -4220,6 +4214,7 @@ def check_types(prog: Program):
 			return f"{first_t}[{len(expr.elements)}]"
 		orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Unsupported expression: {expr}")
 	def check_stmt(stmt: Stmt, expected_ret: str, func: Optional[Func] = None):
+		nonlocal alias_creation_counter
 		if isinstance(stmt, VarDecl):
 			if env.lookup(stmt.name):
 				orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Variable '{stmt.name}' already declared")
@@ -4233,6 +4228,17 @@ def check_types(prog: Program):
 			if stmt.expr:
 				expr_type = check_expr(stmt.expr)
 				_inc_write(stmt.name, node_desc=f"VarInit@{getattr(stmt,'lineno','?')}")
+				if isinstance(stmt.expr, AddressOf) and raw_typ.endswith('*'):
+					inner = stmt.expr.expr
+					if isinstance(inner, Var):
+						original_name = inner.name
+						alias_name = stmt.name
+						alias_creations.append(
+							(alias_name, original_name, getattr(stmt, 'lineno', None), getattr(stmt, 'col', None),
+							 alias_creation_counter))
+						alias_creation_counter += 1
+						alias_targets.setdefault(original_name, set()).add(alias_name)
+						alias_set.add(alias_name)
 				if expr_type == 'float' and raw_typ == 'float32':
 					stmt.expr = Cast('float32', stmt.expr)
 					expr_type = 'float32'
@@ -4256,6 +4262,17 @@ def check_types(prog: Program):
 					orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Pointer-assign type mismatch: attempted to store '{expr_type}' into '{ptr_type}'")
 				return
 			var_type = env.lookup(stmt.name)
+			if isinstance(stmt.expr, AddressOf) and (var_type is not None and var_type.endswith('*')):
+				inner = stmt.expr.expr
+				if isinstance(inner, Var):
+					original_name = inner.name
+					alias_name = stmt.name if isinstance(stmt.name, str) else getattr(stmt.name, 'name', None)
+					alias_creations.append(
+						(alias_name, original_name, getattr(stmt, 'lineno', None), getattr(stmt, 'col', None),
+						 alias_creation_counter))
+					alias_creation_counter += 1
+					alias_targets.setdefault(original_name, set()).add(alias_name)
+					alias_set.add(alias_name)
 			if not var_type:
 				orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Assign to undeclared variable '{stmt.name}'")
 			global_decl = next((g for g in prog.globals if g.name == stmt.name), None)
@@ -4282,7 +4299,6 @@ def check_types(prog: Program):
 			elif expr_type == 'float32' and var_type == 'float':
 				stmt.expr = Cast('float', stmt.expr)
 				expr_type = 'float'
-
 			if expr_type != var_type:
 				orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Assign type mismatch: {var_type} = {expr_type}")
 			if func is not None and getattr(func, "is_vasync", False):
@@ -4296,7 +4312,7 @@ def check_types(prog: Program):
 				src_name = stmt.expr.name
 				if src_name != stmt.name:
 					src_typ = env.lookup(src_name)
-					if src_typ and src_typ.endswith('*'):
+					if src_typ and src_typ.endswith('*') and src_name in alias_set:
 						env.declare(src_name, "undefined")
 						if src_name in crumb_runtime:
 							crumb_runtime[src_name]['owned'] = False
@@ -4319,6 +4335,7 @@ def check_types(prog: Program):
 			if stmt.name in crumb_map:
 				orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Variable '{stmt.name}' already crumbled")
 			crumb_map[stmt.name] = (stmt.max_reads, stmt.max_writes, 0, 0)
+			crumb_order[stmt.name] = getattr(stmt, "lineno", -1)
 			return
 		if isinstance(stmt, IndexAssign):
 			arr_name = stmt.array
@@ -4513,7 +4530,7 @@ def check_types(prog: Program):
 		reachable = True
 		for i, s in enumerate((func.body or [])):
 			if not reachable:
-				print(f"[ORCC-WARN-Reachability]: unreachable code in function '{func.name}' at statement index {i}")
+				print(f"[BHC-WARN-Reachability]: unreachable code in function '{func.name}' at statement index {i}")
 				check_stmt(s, func.ret_type, func)
 				continue
 			check_stmt(s, func.ret_type, func)
@@ -4523,6 +4540,32 @@ def check_types(prog: Program):
 				reachable = False
 		env.pop()
 	over_errors = []
+	for (alias_name, original_name, lineno, col, idx) in alias_creations:
+		if alias_name is None:
+			orcc_report_error(lineno, col, f"Internal alias error: alias name is None (original='{original_name}')")
+		if alias_name not in crumb_map:
+			orcc_report_error(lineno, col, f"Alias '{alias_name}' must have a corresponding crumble({alias_name}) statement to declare mutability (e.g. crumble({alias_name})!r=...!w=...;)")
+	for original, aliases in alias_targets.items():
+		mutable_aliases = []
+		for a in aliases:
+			if a not in crumb_map:
+				continue
+			rmax, wmax, rc, wc = crumb_map[a]
+			allows_write = (wmax is None) or (wmax > 0)
+			if allows_write:
+				mutable_aliases.append(a)
+		if len(mutable_aliases) <= 1:
+			continue
+		def _score(alias_name):
+			return (crumb_order.get(alias_name, -1), next((idx for (an, _, _, _, idx) in alias_creations if an == alias_name), -1))
+		winner = max(mutable_aliases, key=_score)
+		for other in mutable_aliases:
+			if other == winner:
+				continue
+			rmax, wmax, rc, wc = crumb_map[other]
+			if (wmax is None) or (wmax > 0):
+				crumb_map[other] = (rmax, 0, rc, wc)
+				print(f"[Crawl-Checker]-[WARN]: revoked write permission on alias '{other}' because alias '{winner}' has more recent write permissions for original '{original}'.")
 	for name, (rmax, wmax, rc, wc) in list(crumb_map.items()):
 		over_r = (rc - rmax) if (rmax is not None and rc > rmax) else 0
 		over_w = (wc - wmax) if (wmax is not None and wc > wmax) else 0
@@ -4910,8 +4953,8 @@ def main():
 	struct_field_map.clear()
 	string_constants.clear()
 	generated_mono.clear()
-	parser = argparse.ArgumentParser(description="ORCat Compiler")
-	parser.add_argument("input", help="Input source file (.orcat or .sorcat)")
+	parser = argparse.ArgumentParser(description="ORC Compiler")
+	parser.add_argument("input", help="Input source file (.orcc or .sorcc)")
 	parser.add_argument("-o", "--output", required=True, help="Output LLVM IR file (.ll)")
 	args = parser.parse_args()
 	global compiled
