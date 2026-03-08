@@ -5,6 +5,11 @@ Compiler Birthday: May 31st 2025
 
 # 🐋 ORCat Compiler 🐱
 
+Now Replaced by:
+```
+https://github.com/MikaSukie/Bhumi
+```
+
 [![Version](https://img.shields.io/badge/ORCatCompiler‑VER-B2.0-blue)](https://github.com/MikaLorielle/Orcat-Lang)
 ![GitHub last commit](https://img.shields.io/github/last-commit/MikaLorielle/Orcat-lang)
 [![Issues](https://img.shields.io/github/issues/MikaLorielle/Orcat-Lang.svg)](https://github.com/MikaLorielle/Orcat-Lang/issues)
@@ -21,7 +26,7 @@ Or use homebrew <br>
 
 ## ~> Project Status
 
-**ORCat** is currently in **active development** **~~stopped/frozen~~**.  
+**ORCat** is currently in **~~active development~~** **stopped/frozen**.  
 While the compiler core is functional, work is in progress:
 
 - # Standard library development  
