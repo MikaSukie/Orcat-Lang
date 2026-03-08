@@ -47,7 +47,7 @@ Want to join the community? (Please do 🙏)
 ## 👌 Goals
 
 - This is a “small” but EXTREMELY ambitious compiler project.
-- *(because I do not like how Rust did their safety and simplicity balance.),
+- *(because I do not like how Rust did their safety and simplicity balance, nor their community, or governance model.),
 - safety, and simplicity in a language, but unsafe if you need it to be.
 - Full control by default, optional safety tools provided.
 ---
