@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-""" [-GPL2.0 license-] """
+"""
+ * GPL2.0 license
+"""
 import re, os, argparse, sys
 from typing import List, Optional, Tuple, Union, Dict, Any, NoReturn
 from dataclasses import dataclass
@@ -7,7 +9,7 @@ compiled=""
 builtins_emitted = False
 no_runtime = False
 no_main = False
-def _orcat_get_source_lines():
+def _orcc_get_source_lines():
 	try:
 		with open(compiled, encoding="utf-8", errors="ignore") as f:
 			return f.read().splitlines()
@@ -23,9 +25,9 @@ def _visual_col(line: str, col: int, tabsize: int = 4) -> int:
 		else:
 			visual += 1
 	return visual
-def orcat_report_error( line: int | None, col: int | None, msg: str, length: int = 1) -> NoReturn:
-	print("[OrcatCompiler] Error: " + str(msg))
-	src_lines = _orcat_get_source_lines()
+def orcc_report_error( line: int | None, col: int | None, msg: str, length: int = 1) -> NoReturn:
+	print("error: " + str(msg))
+	src_lines = _orcc_get_source_lines()
 	if line is not None and 1 <= line <= len(src_lines):
 		raw_line = src_lines[line - 1]
 		expanded = raw_line.expandtabs(4)
@@ -65,9 +67,8 @@ def llvm_to_lang(llvm_t: str) -> str:
 TYPE_TOKENS = {
 	'IDENT', 'INT', 'INT8', 'INT16', 'INT32', 'INT64',
 	'FLOAT', 'STRING', 'BOOL', 'CHAR', 'VOID', 'UINT',
-	'UINT8', 'UINT16', 'UINT32', 'UINT64', 'FLOAT32',
-	'HASH'
-}
+	'UINT8', 'UINT16', 'UINT32', 'UINT64', 'FLOAT32'
+	}
 CAST_TYPE_TOKENS = {
 	'INT', 'INT8', 'INT16', 'INT32', 'INT64',
 	'FLOAT', 'STRING', 'BOOL', 'CHAR', 'VOID',
@@ -97,7 +98,7 @@ SINGLE_CHARS = {
 	'=': 'EQUAL',	'+': 'PLUS',	 '-': 'MINUS',	'*': 'STAR',
 	'/': 'SLASH',	'<': 'LT',	   '>': 'GT',	   '[': 'LBRACKET',
 	']': 'RBRACKET', '?': 'QUESTION', '.': 'DOT', ':': 'COLON', '%': 'PERCENT',
-	'!': 'BANG', '&': 'AMP', '|': 'PIPE', '^': 'CARET', '#': 'HASH'
+	'!': 'BANG', '&': 'AMP', '|': 'PIPE', '^': 'CARET'
 	}
 MULTI_CHARS = {
 	'==': 'EQEQ', '!=': 'NEQ', '<=': 'LE', '>=': 'GE', '->': 'ARROW', '&&': 'AND',  '||': 'OR',
@@ -138,10 +139,6 @@ class TypeEnv:
 				return scope[name]
 		return None
 def llvm_ty_of(typ: str) -> str:
-	if typ == '#':
-		orcat_report_error(None, None, "Internal compiler error: encountered placeholder '#' in llvm_ty_of, missing monomorphisation")
-	if re.fullmatch(r"i\d+(\*)?", typ):
-		return typ
 	if typ.endswith('*'):
 		base = typ[:-1]
 		if base.startswith('%'):
@@ -166,32 +163,18 @@ def zero_const_for_llvm(llvm_t: str) -> str:
 	if '*' in llvm_t or llvm_t.strip().startswith('%'):
 		return 'null'
 	return '0'
-def demangle_mononame(mononame: str) -> str:
-	return mono_map.get(mononame, mononame)
-def ensure_monomorph_for_call(base_name: str, actual_types: List[str], expected_ret: Optional[str] = None) -> str:
+def ensure_monomorph_for_call(base_name: str, actual_types: List[str]) -> str:
 	mangled_parts = [mangle_type(a) for a in actual_types]
-	if expected_ret is not None:
-		mangled_parts.append(mangle_type(expected_ret))
-	if mangled_parts:
-		mononame = f"{base_name}__mono__" + "_".join(mangled_parts)
-	else:
-		mononame = base_name
+	mononame = f"{base_name}_" + "_".join(mangled_parts)
 	if mononame not in func_table:
-		base_fn = next(
-			(f for f in all_funcs
-			 if f.name == base_name and (f.type_params or f.ret_type == '#')),
-			None
-		)
+		base_fn = next((f for f in all_funcs if f.name == base_name and f.type_params), None)
 		if base_fn is None:
-			orcat_report_error(None, None, f"Attempted to monomorph unknown function '{base_name}'")
+			return mononame
 		new_ret = base_fn.ret_type
 		if getattr(base_fn, "type_params", None) and new_ret in base_fn.type_params:
 			idx = base_fn.type_params.index(new_ret)
 			new_ret = actual_types[idx]
-		if new_ret == '#' and expected_ret is not None:
-			new_ret = expected_ret
-		if new_ret == '#':
-			orcat_report_error(None, None, f"Cannot monomorph '{base_name}' without concrete return type")
+		func_table[mononame] = type_map.get(new_ret, f"%struct.{new_ret}")
 		if getattr(base_fn, "is_async", False):
 			struct_ty = f"%async.{mononame}"
 			func_table[f"{mononame}_init"] = f"{struct_ty}*"
@@ -199,73 +182,46 @@ def ensure_monomorph_for_call(base_name: str, actual_types: List[str], expected_
 			func_table.setdefault(f"{base_name}_init", func_table[f"{mononame}_init"])
 			func_table.setdefault(f"{base_name}_resume", func_table[f"{mononame}_resume"])
 	return mononame
-def ensure_monomorph_call(call_expr: 'Call', out: List[str], expected_ret: Optional[str] = None) -> str:
+def ensure_monomorph_call(call_expr: 'Call', out: List[str]) -> str:
 	base_fn = next((f for f in all_funcs if f.name == call_expr.name), None)
-	if base_fn and base_fn.ret_type == '#':
-		if expected_ret is None:
-			orcat_report_error(None, None, f"Cannot infer return type for '{call_expr.name}' — no expected type provided")
-	if not base_fn:
+	if not base_fn or not getattr(base_fn, "type_params", None):
 		return call_expr.name
-	has_type_params = bool(getattr(base_fn, "type_params", None))
-	if not has_type_params and base_fn.ret_type != '#':
-		return call_expr.name
-	if has_type_params and not call_expr.args:
-		orcat_report_error(None, None, f"Generic function '{call_expr.name}' called with no arguments to infer type parameters")
-	arg_types = [infer_type(a) for a in (call_expr.args or [])]
-	actuals: List[str] = []
-	if has_type_params:
-		for tp in base_fn.type_params:
-			found = None
-			for param_idx, (param_typ, _) in enumerate(base_fn.params):
-				if param_typ == tp or tp in param_typ:
-					if param_idx < len(arg_types):
-						found = arg_types[param_idx]
-						break
-			if found is None and base_fn.ret_type == tp and len(arg_types) > 0:
-				found = arg_types[0]
-			if found is None:
-				orcat_report_error(None, None, f"Cannot infer type parameter '{tp}' for generic function '{call_expr.name}'")
-			actuals.append(found)
+	if not call_expr.args:
+		orcc_report_error(None, None, f"Generic function '{call_expr.name}' called with no arguments to infer type parameters")
+	arg_types = [infer_type(a) for a in call_expr.args]
+	actuals = []
+	for tp in base_fn.type_params:
+		found = None
+		for param_idx, (param_typ, _) in enumerate(base_fn.params):
+			if param_typ == tp or tp in param_typ:
+				if param_idx < len(arg_types):
+					found = arg_types[param_idx]
+					break
+		if found is None and base_fn.ret_type == tp and len(arg_types) > 0:
+			found = arg_types[0]
+		if found is None:
+			orcc_report_error(None, None, f"Cannot infer type parameter '{tp}' for generic function '{call_expr.name}'")
+		actuals.append(found)
 	mangled_parts = [mangle_type(a) for a in actuals]
-	if base_fn.ret_type == '#' and expected_ret is not None:
-		mangled_parts.append(mangle_type(expected_ret))
-	if not mangled_parts and base_fn.ret_type != '#':
-		return call_expr.name
-	if mangled_parts:
-		mononame = f"{call_expr.name}__mono__" + "_".join(mangled_parts)
-	else:
-		mononame = call_expr.name
-	mono_map[mononame] = base_fn.name
+	mononame = f"{call_expr.name}_" + "_".join(mangled_parts)
 	if mononame in func_table:
 		return mononame
 	subst_map: Dict[str, str] = {}
-	if has_type_params:
-		for (param_type, _), actual in zip(base_fn.params, arg_types):
-			for tp in base_fn.type_params:
-				if param_type == tp:
-					subst_map[tp] = actual
-				elif param_type.startswith(tp) and param_type[len(tp):] in ('*', '[]'):
-					subst_map[tp] = actual
-	if base_fn.ret_type == '#' and expected_ret is not None:
-		subst_map['#'] = expected_ret
-	def _subst_type(t: Optional[str], subst: Dict[str, str]) -> Optional[str]:
-		if t is None:
-			return None
-		for k, v in subst.items():
-			if t == k:
-				return v
-			if t.startswith(k) and t[len(k):] in ('*', '[]'):
-				return v + t[len(k):]
-		return t
+	for (param_type, _), actual in zip(base_fn.params, arg_types):
+		for tp in base_fn.type_params:
+			if param_type == tp:
+				subst_map[tp] = actual
+			elif param_type.startswith(tp) and param_type[len(tp):] in ('*', '[]'):
+				subst_map[tp] = actual
 	def replace_in_expr(e: Expr):
 		if e is None:
 			return None
 		if isinstance(e, Var):
 			return Var(e.name)
-		if isinstance(e, (IntLit, FloatLit, BoolLit, StrLit, CharLit, NullLit)):
+		if isinstance(e, IntLit) or isinstance(e, FloatLit) or isinstance(e, BoolLit) or isinstance(e, StrLit) or isinstance(e, CharLit) or isinstance(e, NullLit):
 			return e
 		if isinstance(e, Call):
-			return Call(e.name, [replace_in_expr(a) for a in (e.args or [])])
+			return Call(e.name, [replace_in_expr(a) for a in e.args])
 		if isinstance(e, UnaryOp):
 			return UnaryOp(e.op, replace_in_expr(e.expr))
 		if isinstance(e, BinOp):
@@ -278,78 +234,48 @@ def ensure_monomorph_call(call_expr: 'Call', out: List[str], expected_ret: Optio
 			return StructInit(e.name, [(fname, replace_in_expr(fexpr)) for fname, fexpr in e.fields])
 		if isinstance(e, AwaitExpr):
 			return AwaitExpr(replace_in_expr(e.expr))
-		if isinstance(e, VAwaitExpr):
-			return VAwaitExpr(replace_in_expr(e.expr))
 		if isinstance(e, UnaryDeref):
 			return UnaryDeref(replace_in_expr(e.ptr))
 		if isinstance(e, AddressOf):
 			return AddressOf(replace_in_expr(e.expr))
 		if isinstance(e, Cast):
-			return Cast(_subst_type(e.typ, subst_map), replace_in_expr(e.expr))
+			new_typ = _subst_type(e.typ, subst_map)
+			return Cast(new_typ, replace_in_expr(e.expr))
 		if isinstance(e, Ternary):
 			return Ternary(replace_in_expr(e.cond), replace_in_expr(e.then_expr), replace_in_expr(e.else_expr))
 		if isinstance(e, TypeofExpr):
-			if isinstance(e.expr, CallerType):
-				concrete = subst_map.get('#')
-				if concrete is not None:
-					return StrLit(concrete)
-				return TypeofExpr(e.kind, CallerType())
 			return TypeofExpr(e.kind, replace_in_expr(e.expr))
 		return e
-	def transform_stmt_list(stmt_list):
-		out = []
-		for st in (stmt_list or []):
-			r = replace_in_stmt(st)
-			if r is None:
-				continue
-			if isinstance(r, list):
-				out.extend(r)
-			else:
-				out.append(r)
-		return out
 	def replace_in_stmt(s: Stmt):
 		if s is None:
 			return None
 		if isinstance(s, VarDecl):
-			return VarDecl(s.access, _subst_type(s.typ, subst_map), s.name,
-				replace_in_expr(s.expr) if s.expr else None, s.nomd)
+			new_typ = _subst_type(s.typ, subst_map)
+			new_expr = replace_in_expr(s.expr) if s.expr else None
+			return VarDecl(s.access, new_typ, s.name, new_expr, s.nomd)
 		if isinstance(s, Assign):
-			name = s.name
-			if isinstance(name, UnaryDeref):
-				return Assign(UnaryDeref(replace_in_expr(name.ptr)), replace_in_expr(s.expr))
-			else:
-				return Assign(name, replace_in_expr(s.expr))
+			lhs = s.name
+			return Assign(lhs, replace_in_expr(s.expr))
 		if isinstance(s, IndexAssign):
 			return IndexAssign(s.array, replace_in_expr(s.index), replace_in_expr(s.value))
-		if isinstance(s, ExprStmt):
-			return ExprStmt(replace_in_expr(s.expr))
 		if isinstance(s, IfStmt):
 			cond0 = replace_in_expr(s.cond)
-			then_body0 = transform_stmt_list(s.then_body)
+			then_body0 = [replace_in_stmt(ss) for ss in s.then_body]
 			else_body0 = None
 			if s.else_body:
 				if isinstance(s.else_body, IfStmt):
 					else_body0 = replace_in_stmt(s.else_body)
 				else:
-					else_body0 = transform_stmt_list(s.else_body)
+					else_body0 = [replace_in_stmt(ss) for ss in s.else_body]
 			return IfStmt(cond0, then_body0, else_body0)
 		if isinstance(s, WhileStmt):
-			return WhileStmt(replace_in_expr(s.cond), transform_stmt_list(s.body))
-		if isinstance(s, ReturnStmt):
-			return ReturnStmt(replace_in_expr(s.expr) if s.expr else None)
-		if isinstance(s, Match):
-			new_expr0 = replace_in_expr(s.expr)
-			new_cases = []
-			for case in s.cases:
-				new_body0 = transform_stmt_list(case.body)
-				new_cases.append(MatchCase(case.variant, case.binding, new_body0))
-			return Match(new_expr0, new_cases)
+			return WhileStmt(replace_in_expr(s.cond), [replace_in_stmt(ss) for ss in s.body])
 		if isinstance(s, TypeSwitch):
 			subj = s.subject
 			actual = subst_map.get(subj)
 			def transform_body(body_list):
 				out_stmts = []
-				for ss in (body_list or []):
+				for ss in body_list:
 					r = replace_in_stmt(ss)
 					if r is None:
 						continue
@@ -374,79 +300,53 @@ def ensure_monomorph_call(call_expr: 'Call', out: List[str], expected_ret: Optio
 			for ct, body in processed_cases:
 				if ct == actual:
 					return transform_body(body)
-			if actual == 'int':
-				for ct, body in processed_cases:
-					if isinstance(ct, str) and ct.startswith('int'):
-						return transform_body(body)
-			for ct, body in processed_cases:
-				if unify_types(ct, actual) is not None:
-					return transform_body(body)
 			if s.fallback is not None:
 				return transform_body(s.fallback)
 			return []
+		if isinstance(s, ReturnStmt):
+			return ReturnStmt(replace_in_expr(s.expr) if s.expr else None)
+		if isinstance(s, ExprStmt):
+			return ExprStmt(replace_in_expr(s.expr))
+		if isinstance(s, Match):
+			new_expr0 = replace_in_expr(s.expr)
+			new_cases = []
+			for case in s.cases:
+				new_body0 = [replace_in_stmt(ss) for ss in case.body]
+				new_cases.append(MatchCase(case.variant, case.binding, new_body0))
+			return Match(new_expr0, new_cases)
 		return s
 	new_params = [(_subst_type(p[0], subst_map), p[1]) for p in base_fn.params]
 	new_ret = _subst_type(base_fn.ret_type, subst_map)
 	new_body = []
 	if base_fn.body:
 		for stmt in base_fn.body:
-			r = replace_in_stmt(stmt)
-			if r is None:
+			repl = replace_in_stmt(stmt)
+			if repl is None:
 				continue
-			if isinstance(r, list):
-				new_body.extend(r)
+			if isinstance(repl, list):
+				for s in repl:
+					new_body.append(s)
 			else:
-				new_body.append(r)
+				new_body.append(repl)
 	new_fn = Func(base_fn.access, mononame, [], new_params, new_ret, new_body, base_fn.is_extern, base_fn.is_async)
 	all_funcs.append(new_fn)
-	if new_ret == '#':
-		orcat_report_error(None, None, f"Cannot monomorph '{call_expr.name}' without concrete return type")
 	func_table[mononame] = llvm_ty_of(new_ret)
+	func_table.setdefault(call_expr.name, func_table[mononame])
 	generated_mono[mononame] = True
-	def all_paths_return(stmts):
-		if not stmts:
-			return False
-		i = 0
-		while i < len(stmts):
-			st = stmts[i]
-			if isinstance(st, ReturnStmt):
-				return True
-			if isinstance(st, IfStmt):
-				then_body = st.then_body or []
-				else_body = []
-				if st.else_body:
-					if isinstance(st.else_body, IfStmt):
-						else_body = [st.else_body]
-					else:
-						else_body = st.else_body
-				then_ret = all_paths_return(then_body)
-				else_ret = all_paths_return(else_body) if else_body else False
-				if then_ret and else_ret:
-					return True
-				i += 1
-				continue
-			i += 1
-		return False
-	if new_fn.ret_type is not None and new_fn.ret_type != 'void':
-		if not all_paths_return(new_fn.body or []):
-			orcat_report_error(
-				getattr(new_fn, 'lineno', None),
-				getattr(new_fn, 'col', None),
-				f"Function '{demangle_mononame(mononame)}' may not return a value of type '{new_fn.ret_type}' on all control paths. "
-				"Add a matching typecase, a fallback, or a return statement."
-			)
 	try:
 		llvm_lines = gen_func(new_fn)
-	except Exception as e:
+	except Exception:
 		generated_mono.pop(mononame, None)
 		func_table.pop(mononame, None)
+		if func_table.get(call_expr.name) == func_table.get(mononame):
+			func_table.pop(call_expr.name, None)
 		try:
 			all_funcs.remove(new_fn)
 		except ValueError:
 			pass
-		orcat_report_error(None, None, f"Codegen error while monomorphising '{demangle_mononame(mononame)}': {e}")
-	out.insert(0, "\n".join(llvm_lines) + "\n")
-	return mononame
+		raise
+	out.insert(0, "\n".join(llvm_lines))
+	return mononame if mononame in func_table else call_expr.name
 def _subst_type(typ: Optional[str], subst: Dict[str, str]) -> Optional[str]:
 	if typ is None:
 		return None
@@ -560,7 +460,7 @@ def int_type_info(typ: str) -> Tuple[int, bool]:
 def extract_array_base_type(llvm_ty: str) -> str:
 	match = re.match(r'\[\d+\s*x\s+(.+)]', llvm_ty)
 	if not match:
-		orcat_report_error(None, None, f"Cannot extract element type from: {llvm_ty}")
+		orcc_report_error(None, None, f"Cannot extract element type from: {llvm_ty}")
 	return match.group(1)
 def lex(source: str) -> List[Token]:
 	tokens: List[Token] = []
@@ -593,7 +493,7 @@ def lex(source: str) -> List[Token]:
 					col += 1
 				i += 1
 			else:
-				orcat_report_error(line, None, f"Unclosed multiline comment starting at line {line}")
+				orcc_report_error(line, None, f"Unclosed multiline comment starting at line {line}")
 			continue
 		matched = False
 		for mc, kind in MULTI_CHARS.items():
@@ -678,7 +578,7 @@ def lex(source: str) -> List[Token]:
 					i += 1
 					col += 1
 			if i >= len(source) or source[i] != '"':
-				orcat_report_error(line, start_col, f"Unclosed string literal")
+				orcc_report_error(line, start_col, f"Unclosed string literal")
 			i += 1
 			col += 1
 			tokens.append(Token('STRING', val, line, start_col))
@@ -706,9 +606,9 @@ def lex(source: str) -> List[Token]:
 					i += 1
 					col += 1
 				else:
-					orcat_report_error(line, start_col, f"Unclosed character literal")
+					orcc_report_error(line, start_col, f"Unclosed character literal")
 			if i >= len(source) or source[i] != "'":
-				orcat_report_error(line, start_col, f"Unclosed character literal")
+				orcc_report_error(line, start_col, f"Unclosed character literal")
 			i += 1
 			col += 1
 			tokens.append(Token('CHAR', val, line, start_col))
@@ -719,7 +619,7 @@ def lex(source: str) -> List[Token]:
 			col += 1
 			matched = True
 			continue
-		orcat_report_error(line, col, f"Unrecognized character '{c}'")
+		orcc_report_error(line, col, f"Unrecognized character '{c}'")
 	tokens.append(Token('EOF', '', line, col))
 	return tokens
 @dataclass
@@ -742,8 +642,6 @@ class StrLit(Expr): value: str
 class Var(Expr): name: str
 @dataclass
 class NullLit(Expr): pass
-@dataclass
-class CallerType(Expr): pass
 @dataclass
 class GlobalVar:
 	typ: str
@@ -901,7 +799,6 @@ class Func:
 	is_vasync: bool = False
 	vasync_except: List[str] = None
 	_vasync_captured: Optional[set] = None
-	is_variadic: bool = False
 	def __post_init__(self):
 		if self.vasync_except is None:
 			self.vasync_except = []
@@ -923,8 +820,6 @@ loop_stack: List[Dict[str, str]] = []
 crumb_runtime: Dict[str, Dict[str, Any]] = {}
 owned_vars: set = set()
 autoregion_stack: List[Dict[str, object]] = []
-unresolved_monos: Dict[str, bool] = {}
-mono_map: Dict[str, str] = {}
 class Parser:
 	def __init__(self, tokens: List[Token]):
 		self.declared_vars: Dict[str, VarDecl] = {}
@@ -939,7 +834,7 @@ class Parser:
 	def expect(self, kind: str) -> Token:
 		if self.peek().kind == kind:
 			return self.bump()
-		orcat_report_error(self.peek().line, self.peek().col, f"Expected {kind}, got {self.peek().kind}")
+		orcc_report_error(self.peek().line, self.peek().col, f"Expected {kind}, got {self.peek().kind}")
 	def match(self, kind: str) -> bool:
 		if self.peek().kind == kind:
 			self.bump()
@@ -955,7 +850,7 @@ class Parser:
 			if self.peek().kind == 'IDENT' and isinstance(self.peek().value, str) and self.peek().value.startswith('@'):
 				directive = self.bump().value
 				if not self.match('SEMI'):
-					orcat_report_error(self.peek().line, self.peek().col, f"Expected ';' after directive {directive}")
+					orcc_report_error(self.peek().line, self.peek().col, f"Expected ';' after directive {directive}")
 				if directive == '@nrt':
 					global no_runtime
 					no_runtime = True
@@ -965,7 +860,7 @@ class Parser:
 					no_main = True
 					continue
 				else:
-					orcat_report_error(self.peek().line, self.peek().col, f"Unknown directive {directive}")
+					orcc_report_error(self.peek().line, self.peek().col, f"Unknown directive {directive}")
 			if self.match('IMPORT'):
 				while True:
 					if self.peek().kind == 'STRING':
@@ -973,7 +868,7 @@ class Parser:
 					elif self.peek().kind == 'IDENT':
 						raw = self.bump().value
 					else:
-						orcat_report_error(self.peek().line, self.peek().col, f"Expected import path, got {self.peek().kind}")
+						orcc_report_error(self.peek().line, self.peek().col, f"Expected import path, got {self.peek().kind}")
 					imports.append(raw)
 					if self.peek().kind == 'SEMI':
 						self.bump()
@@ -982,7 +877,7 @@ class Parser:
 						self.bump()
 						continue
 					else:
-						orcat_report_error(self.peek().line, self.peek().col, f"Expected ',' or ';' in import list, got {self.peek().kind}")
+						orcc_report_error(self.peek().line, self.peek().col, f"Expected ',' or ';' in import list, got {self.peek().kind}")
 			elif self.peek().kind == 'EXTERN' and self.tokens[self.pos + 1].kind == 'FN':
 				funcs.append(self.parse_func())
 			elif self.peek().kind in {'EXTERN', 'NOMD', 'PIN'}:
@@ -996,7 +891,7 @@ class Parser:
 						continue
 					if self.peek().kind == 'PIN':
 						if seen_nomd:
-							orcat_report_error(self.peek().line, self.peek().col, "Invalid modifier order: 'pin' cannot follow 'nomd'. Use 'pin nomd' not 'nomd pin'.")
+							orcc_report_error(self.peek().line, self.peek().col, "Invalid modifier order: 'pin' cannot follow 'nomd'. Use 'pin nomd' not 'nomd pin'.")
 						self.bump()
 						pinned = True
 						continue
@@ -1007,7 +902,7 @@ class Parser:
 						continue
 				decl = self.parse_var_decl()
 				if is_extern and decl.expr is not None:
-					orcat_report_error(None, None, "extern globals cannot have initializers")
+					orcc_report_error(None, None, "extern globals cannot have initializers")
 				globals.append(GlobalVar(decl.typ, decl.name, decl.expr, nomd=nomd, pinned=pinned, is_extern=is_extern))
 			elif self.peek().kind == 'STRUCT':
 				structs.append(self.parse_struct_def())
@@ -1023,7 +918,7 @@ class Parser:
 			self.bump()
 			prefix_amp = True
 		if self.peek().kind not in TYPE_TOKENS and self.peek().kind != 'IDENT':
-			orcat_report_error(self.peek().line, self.peek().col, f"Expected type after 'pin', got {self.peek().kind}")
+			orcc_report_error(self.peek().line, self.peek().col, f"Expected type after 'pin', got {self.peek().kind}")
 		typ = self.bump().value
 		if prefix_amp or self.match('AMP'):
 			typ += '*'
@@ -1033,10 +928,7 @@ class Parser:
 			size_tok = self.expect('INT')
 			self.expect('RBRACKET')
 			typ += f"[{size_tok.value}]"
-		ident_tok = self.expect('IDENT')
-		name = ident_tok.value
-		if "__mono__" in name:
-			orcat_report_error(ident_tok.line, ident_tok.col, "Names containing '__mono__' are reserved for compiler-generated functions.")
+		name = self.expect('IDENT').value
 		expr = None
 		if self.match('EQUAL'):
 			expr = self.parse_expr()
@@ -1044,24 +936,15 @@ class Parser:
 		return GlobalVar(typ, name, expr)
 	def parse_enum_def(self) -> EnumDef:
 		self.expect('ENUM')
-		ident_tok = self.expect('IDENT')
-		name = ident_tok.value
-		if "__mono__" in name:
-			orcat_report_error(ident_tok.line, ident_tok.col, "Names containing '__mono__' are reserved for compiler-generated functions.")
+		name = self.expect('IDENT').value
 		type_param: Optional[str] = None
 		if self.match('LT'):
-			tp_tok = self.expect('IDENT')
-			if "__mono__" in tp_tok.value:
-				orcat_report_error(tp_tok.line, tp_tok.col, "Type parameter names cannot contain '__mono__'.")
-			type_param = tp_tok.value
+			type_param = self.expect('IDENT').value
 			self.expect('GT')
 		self.expect('LBRACE')
 		variants: List[EnumVariant] = []
 		while self.peek().kind != 'RBRACE':
-			v_tok = self.expect('IDENT')
-			variant_name = v_tok.value
-			if "__mono__" in variant_name:
-				orcat_report_error(v_tok.line, v_tok.col, "Enum variant names cannot contain '__mono__'.")
+			variant_name = self.expect('IDENT').value
 			variant_type: Optional[str] = None
 			prefix_amp = False
 			if self.peek().kind == 'AMP':
@@ -1094,7 +977,7 @@ class Parser:
 						self.expect('RBRACKET')
 						variant_type += f"[{size_tok.value}]"
 				else:
-					orcat_report_error(self.peek().line, self.peek().col, f"Expected type after ':', got {self.peek().kind}")
+					orcc_report_error(self.peek().line, self.peek().col, f"Expected type after ':', got {self.peek().kind}")
 				self.expect('SEMI')
 			elif self.match('LPAREN'):
 				prefix_amp = False
@@ -1112,7 +995,7 @@ class Parser:
 						self.expect('RBRACKET')
 						variant_type += f"[{size_tok.value}]"
 				else:
-					orcat_report_error(self.peek().line, self.peek().col, f"Expected type inside variant parentheses, got {self.peek().kind}")
+					orcc_report_error(self.peek().line, self.peek().col, f"Expected type inside variant parentheses, got {self.peek().kind}")
 				self.expect('RPAREN')
 				self.expect('SEMI')
 			else:
@@ -1122,10 +1005,7 @@ class Parser:
 		return EnumDef(name, type_param, variants)
 	def parse_struct_def(self) -> StructDef:
 		self.expect('STRUCT')
-		ident_tok = self.expect('IDENT')
-		name = ident_tok.value
-		if "__mono__" in name:
-			orcat_report_error(ident_tok.line, ident_tok.col, "Names containing '__mono__' are reserved for compiler-generated functions.")
+		name = self.expect('IDENT').value
 		self.expect('LBRACE')
 		fields = []
 		while self.peek().kind != 'RBRACE':
@@ -1143,12 +1023,9 @@ class Parser:
 					size_tok = self.expect('INT')
 					self.expect('RBRACKET')
 					typ += f"[{size_tok.value}]"
-				f_tok = self.expect('IDENT')
-				fname = f_tok.value
-				if "__mono__" in fname:
-					orcat_report_error(f_tok.line, f_tok.col, "Field names cannot contain '__mono__'.")
+				fname = self.expect('IDENT').value
 			else:
-				orcat_report_error(self.peek().line, self.peek().col, f"Expected type in struct field, got {self.peek().kind}")
+				orcc_report_error(self.peek().line, self.peek().col, f"Expected type in struct field, got {self.peek().kind}")
 			self.expect('SEMI')
 			fields.append(StructField(fname, typ))
 		self.expect('RBRACE')
@@ -1170,7 +1047,7 @@ class Parser:
 				continue
 			if tk == 'ASYNC':
 				if no_runtime:
-					orcat_report_error(None, None, "Cannot use async and/or runtime features with @nrt (No Run Time);")
+					orcc_report_error(None, None, "Cannot use async and/or runtime features with @nrt (No Run Time);")
 				else:
 					is_async = True
 					self.bump()
@@ -1188,18 +1065,11 @@ class Parser:
 		if self.peek().kind == 'LBRACKET':
 			self.bump()
 			while True:
-				tp_tok = self.expect('IDENT')
-				if "__mono__" in tp_tok.value:
-					orcat_report_error(tp_tok.line, tp_tok.col, "Type parameter names cannot contain '__mono__'.")
-				type_params.append(tp_tok.value)
+				type_params.append(self.expect('IDENT').value)
 				if not self.match('COMMA'):
 					break
 			self.expect('RBRACKET')
-		ident_tok = self.expect('IDENT')
-		name = ident_tok.value
-		if "__mono__" in name:
-			orcat_report_error(ident_tok.line, ident_tok.col, "Names containing '__mono__' are reserved for compiler-generated functions.")
-		variadic = False
+		name = self.expect('IDENT').value
 		self.expect('LPAREN')
 		params: List[Tuple[str, str]] = []
 		if self.peek().kind != 'RPAREN':
@@ -1218,21 +1088,12 @@ class Parser:
 						size_tok = self.expect('INT')
 						self.expect('RBRACKET')
 						typ += f"[{size_tok.value}]"
-					p_tok = self.expect('IDENT')
-					if "__mono__" in p_tok.value:
-						orcat_report_error(p_tok.line, p_tok.col, "Parameter names cannot contain '__mono__'.")
-					pname = p_tok.value
+					pname = self.expect('IDENT').value
 					params.append((typ, pname))
 				else:
-					orcat_report_error(self.peek().line, self.peek().col, f"Expected type, got {self.peek().kind}")
-				if self.match('COMMA'):
-					if self.peek().kind == 'RPAREN':
-						if not is_extern:
-							orcat_report_error(self.peek().line, self.peek().col, "Variadics are only allowed in external functions (use 'extern fn ...').")
-						variadic = True
-						break
-					continue
-				break
+					orcc_report_error(self.peek().line, self.peek().col, f"Expected type, got {self.peek().kind}")
+				if not self.match('COMMA'):
+					break
 		self.expect('RPAREN')
 		vasync_except: List[str] = []
 		if is_vasync and self.peek().kind == 'EXCEPT':
@@ -1240,7 +1101,7 @@ class Parser:
 			self.expect('LPAREN')
 			while True:
 				if self.peek().kind != 'IDENT':
-					orcat_report_error(self.peek().line, self.peek().col, "Expected identifier in except(...)")
+					orcc_report_error(self.peek().line, self.peek().col, "Expected identifier in except(...)")
 				vasync_except.append(self.bump().value)
 				if not self.match('COMMA'):
 					break
@@ -1258,11 +1119,11 @@ class Parser:
 		self.expect('GT')
 		if is_extern:
 			self.expect('SEMI')
-			return Func(access, name, type_params, params, ret_type, None, True, is_async, is_vasync, list(vasync_except), is_variadic=variadic)
+			return Func(access, name, type_params, params, ret_type, None, True, is_async, is_vasync, list(vasync_except))
 		self.expect('LBRACE')
 		body = self.parse_block()
 		self.expect('RBRACE')
-		return Func(access, name, type_params, params, ret_type, body, False, is_async, is_vasync, list(vasync_except), is_variadic=variadic)
+		return Func(access, name, type_params, params, ret_type, body, False, is_async, is_vasync, list(vasync_except))
 	def parse_block(self) -> List[Stmt]:
 		stmts = []
 		while self.peek().kind != 'RBRACE':
@@ -1313,8 +1174,8 @@ class Parser:
 	def parse_typeswitch(self) -> TypeSwitch:
 		self.expect('TYPESWITCH')
 		self.expect('LPAREN')
-		if self.peek().kind not in ('IDENT', 'HASH'):
-			orcat_report_error(self.peek().line, self.peek().col, "Expected type parameter identifier or '#' in typeswitch(.)")
+		if self.peek().kind != 'IDENT':
+			orcc_report_error(self.peek().line, self.peek().col, "Expected type parameter identifier in typeswitch(...)")
 		subject = self.bump().value
 		self.expect('RPAREN')
 		self.expect('LBRACE')
@@ -1325,7 +1186,7 @@ class Parser:
 				self.bump()
 				self.expect('LPAREN')
 				if self.peek().kind not in TYPE_TOKENS and self.peek().kind != 'IDENT':
-					orcat_report_error(self.peek().line, self.peek().col, "Expected type after typecase(")
+					orcc_report_error(self.peek().line, self.peek().col, "Expected type after typecase(")
 				case_typ = self.bump().value
 				if self.peek().kind == 'AMP' or self.peek().kind == 'STAR':
 					while self.match('STAR') or self.match('AMP'):
@@ -1346,7 +1207,7 @@ class Parser:
 				fallback_body = self.parse_block()
 				self.expect('RBRACE')
 				continue
-			orcat_report_error(self.peek().line, self.peek().col, f"Unexpected token in typeswitch: {self.peek().kind}")
+			orcc_report_error(self.peek().line, self.peek().col, f"Unexpected token in typeswitch: {self.peek().kind}")
 		self.expect('RBRACE')
 		return TypeSwitch(subject, cases, fallback_body)
 	def parse_compound_assign(self) -> Assign:
@@ -1369,7 +1230,7 @@ class Parser:
 			'RSHIFTEQ': '>>'
 		}
 		if op_token.kind not in compound_map:
-			orcat_report_error(getattr(op_token, "line", None), getattr(op_token, "col", None), f"Unknown compound assignment: {op_token.kind}")
+			orcc_report_error(getattr(op_token, "line", None), getattr(op_token, "col", None), f"Unknown compound assignment: {op_token.kind}")
 		op = compound_map[op_token.kind]
 		lhs_var = Var(name)
 		binop = BinOp(op, lhs_var, expr)
@@ -1382,7 +1243,7 @@ class Parser:
 			self.expect('LPAREN')
 			while True:
 				if self.peek().kind != 'IDENT':
-					orcat_report_error(self.peek().line, self.peek().col, "Expected identifier in except(...)")
+					orcc_report_error(self.peek().line, self.peek().col, "Expected identifier in except(...)")
 				except_list.append(self.bump().value)
 				if not self.match('COMMA'):
 					break
@@ -1405,7 +1266,7 @@ class Parser:
 			elif kw == 'w':
 				max_w = val
 			else:
-				orcat_report_error(None, None, f"Unknown crumb kind '!{kw}'")
+				orcc_report_error(None, None, f"Unknown crumb kind '!{kw}'")
 		self.expect('SEMI')
 		return CrumbleStmt(var_name, max_r, max_w)
 	def parse_ptr_assign(self) -> Stmt:
@@ -1430,16 +1291,10 @@ class Parser:
 		self.expect('LBRACE')
 		cases: List[MatchCase] = []
 		while self.peek().kind != 'RBRACE':
-			v_tok = self.expect('IDENT')
-			variant_name = v_tok.value
-			if "__mono__" in variant_name:
-				orcat_report_error(v_tok.line, v_tok.col, "Match variant names cannot contain '__mono__'.")
+			variant_name = self.expect('IDENT').value
 			binding_name: Optional[str] = None
 			if self.match('LPAREN'):
-				b_tok = self.expect('IDENT')
-				binding_name = b_tok.value
-				if "__mono__" in binding_name:
-					orcat_report_error(b_tok.line, b_tok.col, "Binding names cannot contain '__mono__'.")
+				binding_name = self.expect('IDENT').value
 				self.expect('RPAREN')
 			self.expect('COLON')
 			self.expect('LBRACE')
@@ -1473,11 +1328,8 @@ class Parser:
 				self.expect('RBRACKET')
 				typ += f"[{size_tok.value}]"
 		else:
-			orcat_report_error(self.peek().line, self.peek().col, f"Expected type (one of {TYPE_TOKENS} or user-defined), got {self.peek().kind}")
-		ident_tok = self.expect('IDENT')
-		name = ident_tok.value
-		if "__mono__" in name:
-			orcat_report_error(ident_tok.line, ident_tok.col, "Names containing '__mono__' are reserved for compiler-generated symbols.")
+			orcc_report_error(self.peek().line, self.peek().col, f"Expected type (one of {TYPE_TOKENS} or user-defined), got {self.peek().kind}")
+		name = self.expect('IDENT').value
 		expr = None
 		if self.match('EQUAL'):
 			expr = self.parse_expr()
@@ -1498,12 +1350,12 @@ class Parser:
 		name = self.expect('IDENT').value
 		decl = self.declared_vars.get(name)
 		if decl and decl.nomd:
-			orcat_report_error(None, None, f"Cannot assign to local 'nomd' variable '{name}'")
+			orcc_report_error(None, None, f"Cannot assign to local 'nomd' variable '{name}'")
 		if not decl and hasattr(self, "program"):
 			for g in self.program.globals:
 				if g.name == name:
 					if g.nomd:
-						orcat_report_error(None, None, f"Cannot assign to global 'nomd' variable '{name}'")
+						orcc_report_error(None, None, f"Cannot assign to global 'nomd' variable '{name}'")
 					break
 		self.expect('EQUAL')
 		expr = self.parse_expr()
@@ -1588,7 +1440,7 @@ class Parser:
 	def parse_primary(self) -> Expr:
 		if self.peek().kind in {'RPAREN', 'RBRACE', 'RBRACKET', 'COMMA', 'SEMI', 'COLON'}:
 			t = self.peek()
-			orcat_report_error(t.line, t.col, f"Unexpected token while parsing expression: {t.kind}")
+			orcc_report_error(t.line, t.col, f"Unexpected token while parsing expression: {t.kind}")
 		if self.peek().kind == 'AWAIT':
 			self.bump()
 			inner = self.parse_primary()
@@ -1608,7 +1460,7 @@ class Parser:
 		if self.peek().kind == 'BANG':
 			self.bump()
 			inner = self.parse_primary()
-			return UnaryOp('!', inner)
+			return Call("!", [inner])
 		if self.peek().kind == 'MINUS':
 			self.bump()
 			inner = self.parse_primary()
@@ -1644,7 +1496,7 @@ class Parser:
 				try:
 					return IntLit(int(t.value, 0))
 				except Exception:
-					orcat_report_error(t.line, t.col, f"Invalid integer literal: {t.value}")
+					orcc_report_error(t.line, t.col, f"Invalid integer literal: {t.value}")
 			if t.kind == 'FLOAT':
 				return FloatLit(float(t.value), bits=64)
 			if t.kind == 'FLOAT32':
@@ -1663,8 +1515,8 @@ class Parser:
 				expr = self.parse_expr()
 				self.expect('RPAREN')
 				return expr
-			if t.kind == 'IDENT' and t.value == 'ORCC.get_args':
-				return Call('ORCC.get_args', [])
+			if t.kind == 'IDENT' and t.value == 'BHC.get_args':
+				return Call('BHC.get_args', [])
 			if t.kind == 'IDENT':
 				base = Var(t.value)
 				if self.peek().kind == 'LBRACE':
@@ -1694,9 +1546,7 @@ class Parser:
 					self.expect('RBRACKET')
 					return Index(base, index_expr)
 				return base
-			if t.kind == 'HASH':
-				return CallerType()
-			orcat_report_error(t.line, t.col, f"Unexpected token: {t.kind}")
+			orcc_report_error(t.line, t.col, f"Unexpected token: {t.kind}")
 		expr: Expr = parse_atom()
 		while self.peek().kind == 'DOT':
 			self.bump()
@@ -1759,10 +1609,7 @@ type_map = {
 struct_llvm_defs: List[str] = []
 symbol_table = SymbolTable()
 func_table: Dict[str, str] = {}
-ssa_value_types: Dict[str, str] = {}
-def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str | None:
-	if isinstance(expr, CallerType):
-		orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "Internal compiler error: unresolved caller-placeholder '#' reached codegen (missing monomorphisation)")
+def gen_expr(expr: Expr, out: List[str]) -> str | None:
 	def format_float(val: float) -> str:
 		return f"{val:.8e}"
 	def _maybe_flush_deferred(e: Expr, ssa_name: str) -> None:
@@ -1847,7 +1694,7 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 					out.append(f"  {tmp} = add {dst_llvm} 0, {ival}")
 					return tmp
 				except Exception:
-					orcat_report_error(None, None, f"Cannot convert string '{inner.value}' to integer")
+					orcc_report_error(None, None, f"Cannot convert string '{inner.value}' to integer")
 			if dst_t == 'float':
 				try:
 					fval = float(inner.value)
@@ -1856,7 +1703,7 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 					out.append(f"  {tmp} = fadd double 0.0, {fstr}")
 					return tmp
 				except Exception:
-					orcat_report_error(None, None, f"Cannot convert string '{inner.value}' to float")
+					orcc_report_error(None, None, f"Cannot convert string '{inner.value}' to float")
 		val = gen_expr(inner, out)
 		src_t = infer_type(inner)
 		src_llvm = llvm_ty_of(src_t)
@@ -1915,7 +1762,7 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 			cast_tmp = new_tmp()
 			out.append(f"  {cast_tmp} = ptrtoint {src_llvm} {val} to {dst_llvm}")
 			return cast_tmp
-		orcat_report_error(None, None, f"Unsupported cast from {src_t} -> {dst_t}")
+		orcc_report_error(None, None, f"Unsupported cast from {src_t} -> {dst_t}")
 	if isinstance(expr, AwaitExpr):
 		inner = expr.expr
 		if isinstance(inner, Call):
@@ -1958,8 +1805,8 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 			out.append(f"  {resume_ptr_tmp} = bitcast i1 ({struct_name}*)* @{call_target}_resume to i8*")
 			handle_b_tmp = new_tmp()
 			out.append(f"  {handle_b_tmp} = bitcast {struct_name}* {handle_tmp} to i8*")
-			out.append(f"  call void @orcat_register_async(i8* {resume_ptr_tmp}, i8* {handle_b_tmp})")
-			out.append(f"  call void @orcat_block_until_complete(i8* {handle_b_tmp})")
+			out.append(f"  call void @orcc_register_async(i8* {resume_ptr_tmp}, i8* {handle_b_tmp})")
+			out.append(f"  call void @orcc_block_until_complete(i8* {handle_b_tmp})")
 			out.append(f"  br label %{cont_lbl}")
 			out.append(f"{cont_lbl}:")
 			base_fn = next((f for f in all_funcs if f.name == call_target), None)
@@ -1986,13 +1833,6 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 			return tmp
 		elif expr.op == '+':
 			return val
-		elif expr.op == '!':
-			if llvm_ty == 'i1':
-				out.append(f"  {tmp} = xor i1 {val}, 1")
-				_maybe_flush_deferred(expr.expr, val)
-				return tmp
-			else:
-				orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Unary '!' requires bool operand, found {ty}")
 		elif expr.op == '~':
 			if llvm_ty.startswith('i'):
 				if llvm_ty == 'i1':
@@ -2002,17 +1842,17 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 				_maybe_flush_deferred(expr.expr, val)
 				return tmp
 			else:
-				orcat_report_error(None, None, f"Unary '~' requires integer operand, found {ty}")
+				orcc_report_error(None, None, f"Unary '~' requires integer operand, found {ty}")
 		else:
-			orcat_report_error(None, None, f"Unsupported unary operator: {expr.op}")
+			orcc_report_error(None, None, f"Unsupported unary operator: {expr.op}")
 	if isinstance(expr, UnaryDeref):
 		ptr_val = gen_expr(expr.ptr, out)
 		ptr_type = infer_type(expr.ptr)
 		if not ptr_type.endswith("*"):
-			orcat_report_error(None, None, f"Dereferencing non-pointer type '{ptr_type}'")
+			orcc_report_error(None, None, f"Dereferencing non-pointer type '{ptr_type}'")
 		pointee_lang = ptr_type[:-1]
 		if pointee_lang == "void":
-			orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "Cannot generate code to dereference 'void*' without an explicit cast ...")
+			orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "Cannot generate code to dereference 'void*' without an explicit cast ...")
 		llvm_pointee = llvm_ty_of(pointee_lang)
 		null_cmp = new_tmp()
 		fail_lbl = new_label("null_fail")
@@ -2020,7 +1860,7 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 		out.append(f"  {null_cmp} = icmp eq {llvm_pointee}* {ptr_val}, null")
 		out.append(f"  br i1 {null_cmp}, label %{fail_lbl}, label %{ok_lbl}")
 		out.append(f"{fail_lbl}:")
-		out.append(f"  call void @orcat_null_abort()")
+		out.append(f"  call void @orcc_null_abort()")
 		out.append(f"  unreachable")
 		out.append(f"{ok_lbl}:")
 		tmp = new_tmp()
@@ -2034,7 +1874,7 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 		if isinstance(inner, Var):
 			res = symbol_table.lookup(inner.name)
 			if res is None:
-				orcat_report_error(getattr(inner, "lineno", None), getattr(inner, "col", None), f"Undefined variable: {inner.name}")
+				orcc_report_error(getattr(inner, "lineno", None), getattr(inner, "col", None), f"Undefined variable: {inner.name}")
 			_, ir_name = res
 			if ir_name.startswith('@'):
 				return ir_name
@@ -2049,16 +1889,16 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 			if base_name.startswith("%struct."):
 				base_name = base_name[len("%struct."):]
 			if base_name not in struct_field_map:
-				orcat_report_error(getattr(base, "lineno", None), getattr(base, "col", None), f"Struct type '{base_name}' not found")
+				orcc_report_error(getattr(base, "lineno", None), getattr(base, "col", None), f"Struct type '{base_name}' not found")
 			fields = struct_field_map[base_name]
 			field_dict = dict(fields)
 			if field not in field_dict:
-				orcat_report_error(getattr(inner, "lineno", None), getattr(inner, "col", None), f"Field '{field}' not in struct '{base_name}'")
+				orcc_report_error(getattr(inner, "lineno", None), getattr(inner, "col", None), f"Field '{field}' not in struct '{base_name}'")
 			index = list(field_dict.keys()).index(field)
 			if isinstance(base, Var):
 				res = symbol_table.lookup(base.name)
 				if res is None:
-					orcat_report_error(getattr(base, "lineno", None), getattr(base, "col", None), f"Undefined variable: {base.name}")
+					orcc_report_error(getattr(base, "lineno", None), getattr(base, "col", None), f"Undefined variable: {base.name}")
 				_, base_ir_name = res
 				base_ty = infer_type(base)
 				if base_ty.endswith("*"):
@@ -2075,7 +1915,7 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 					out.append(f"  {is_null} = icmp eq {llvm_base_llvm_ty} {base_val}, null")
 					out.append(f"  br i1 {is_null}, label %{fail_lbl}, label %{ok_lbl}")
 					out.append(f"{fail_lbl}:")
-					out.append(f"  call void @orcat_null_abort()")
+					out.append(f"  call void @orcc_null_abort()")
 					out.append(f"  unreachable")
 					out.append(f"{ok_lbl}:")
 					ptr = new_tmp()
@@ -2097,7 +1937,7 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 				base_val = gen_expr(base, out)
 				base_ty = infer_type(base)
 				if not base_ty.endswith("*"):
-					orcat_report_error(None, None, "Taking address of a field on an rvalue struct is not supported")
+					orcc_report_error(None, None, "Taking address of a field on an rvalue struct is not supported")
 				if base_val.startswith('%') and not base_val.endswith('_addr') and not base_val.startswith('%struct.'):
 					tmp_addr = new_tmp()
 					out.append(f"  {tmp_addr} = alloca %struct.{base_name}")
@@ -2112,7 +1952,7 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 				out.append(f"  {is_null} = icmp eq {llvm_base_llvm_ty} {base_val_ptr}, null")
 				out.append(f"  br i1 {is_null}, label %{fail_lbl}, label %{ok_lbl}")
 				out.append(f"{fail_lbl}:")
-				out.append(f"  call void @orcat_null_abort()")
+				out.append(f"  call void @orcc_null_abort()")
 				out.append(f"  unreachable")
 				out.append(f"{ok_lbl}:")
 				ptr = new_tmp()
@@ -2122,12 +1962,12 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 				return ptr
 		if isinstance(inner, Index):
 			if not isinstance(inner.array, Var):
-				orcat_report_error(getattr(inner, "lineno", None), getattr(inner, "col", None), f"Only direct variable array indexing is supported for address-of, got: {inner.array}")
+				orcc_report_error(getattr(inner, "lineno", None), getattr(inner, "col", None), f"Only direct variable array indexing is supported for address-of, got: {inner.array}")
 			var_name = inner.array.name
 			idx_val = gen_expr(inner.index, out)
 			arr_info = symbol_table.lookup(var_name)
 			if not arr_info:
-				orcat_report_error(getattr(inner.array, "lineno", None), getattr(inner.array, "col", None), f"Undefined array: {var_name}")
+				orcc_report_error(getattr(inner.array, "lineno", None), getattr(inner.array, "col", None), f"Undefined array: {var_name}")
 			llvm_ty, name = arr_info
 			idx_ty = infer_type(inner.index)
 			idx_llvm = llvm_ty_of(idx_ty)
@@ -2154,7 +1994,7 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 				ok_lbl = new_label("oob_ok")
 				out.append(f"  br i1 {ok}, label %{ok_lbl}, label %{fail_lbl}")
 				out.append(f"{fail_lbl}:")
-				out.append(f"  call void @orcat_oob_abort()")
+				out.append(f"  call void @orcc_oob_abort()")
 				out.append(f"  unreachable")
 				out.append(f"{ok_lbl}:")
 				gep_tmp = new_tmp()
@@ -2175,7 +2015,7 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 				null_ok = new_label("null_ptr_ok")
 				out.append(f"  br i1 {is_null_tmp}, label %{null_fail}, label %{null_ok}")
 				out.append(f"{null_fail}:")
-				out.append(f"  call void @orcat_null_abort()")
+				out.append(f"  call void @orcc_null_abort()")
 				out.append(f"  unreachable")
 				out.append(f"{null_ok}:")
 				idx_i64 = new_tmp()
@@ -2193,14 +2033,14 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 				bit_tmp = new_tmp()
 				out.append(f"  {bit_tmp} = bitcast {llvm_ty} {ptr_load} to i8*")
 				size_i64 = new_tmp()
-				out.append(f"  {size_i64} = call i64 @orcat_alloc_size(i8* {bit_tmp})")
+				out.append(f"  {size_i64} = call i64 @orcc_alloc_size(i8* {bit_tmp})")
 				ok64 = new_tmp()
 				out.append(f"  {ok64} = icmp ult i64 {idx_i64}, {size_i64}")
 				fail_lbl = new_label("oob_fail")
 				ok_lbl = new_label("oob_ok")
 				out.append(f"  br i1 {ok64}, label %{ok_lbl}, label %{fail_lbl}")
 				out.append(f"{fail_lbl}:")
-				out.append(f"  call void @orcat_oob_abort()")
+				out.append(f"  call void @orcc_oob_abort()")
 				out.append(f"  unreachable")
 				out.append(f"{ok_lbl}:")
 				gep_tmp = new_tmp()
@@ -2210,8 +2050,8 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 				)
 				return gep_tmp
 			else:
-				orcat_report_error(getattr(inner, "lineno", None), getattr(inner, "col", None), "Address-of index not supported for this array kind")
-		orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "Address-of not supported for this expression form")
+				orcc_report_error(getattr(inner, "lineno", None), getattr(inner, "col", None), "Address-of index not supported for this array kind")
+		orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "Address-of not supported for this expression form")
 	if isinstance(expr, IntLit):
 		tmp = new_tmp()
 		inferred = infer_type(expr)
@@ -2222,7 +2062,7 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 		tmp = new_tmp()
 		out.append(f"  {tmp} = bitcast i8* null to i8*")
 		return tmp
-	if isinstance(expr, Call) and expr.name == 'ORCC.get_args':
+	if isinstance(expr, Call) and expr.name == 'BHC.get_args':
 		tmp = new_tmp()
 		out.append(f"  {tmp} = load i8**, i8*** @__argv_ptr")
 		return tmp
@@ -2244,7 +2084,7 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 			else:
 				out_str = raw
 		else:
-			orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"{expr.kind} is not a supported typeof variant")
+			orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"{expr.kind} is not a supported typeof variant")
 		label = f"@.str{len(string_constants)}"
 		esc = out_str.replace('"', r'\"')
 		byte_len = len(out_str.encode("utf-8")) + 1
@@ -2293,12 +2133,12 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 		return phi_tmp
 	if isinstance(expr, Index):
 		if not isinstance(expr.array, Var):
-			orcat_report_error(getattr(expr.array, "lineno", None), getattr(expr.array, "col", None), f"Only direct variable array indexing is supported, got: {expr.array}")
+			orcc_report_error(getattr(expr.array, "lineno", None), getattr(expr.array, "col", None), f"Only direct variable array indexing is supported, got: {expr.array}")
 		var_name = expr.array.name
 		idx = gen_expr(expr.index, out)
 		arr_info = symbol_table.lookup(var_name)
 		if not arr_info:
-			orcat_report_error(getattr(expr.array, "lineno", None), getattr(expr.array, "col", None), f"Undefined array: {var_name}")
+			orcc_report_error(getattr(expr.array, "lineno", None), getattr(expr.array, "col", None), f"Undefined array: {var_name}")
 		llvm_ty, name = arr_info
 		base_ty = extract_array_base_type(llvm_ty)
 		tmp_ptr = new_tmp()
@@ -2328,7 +2168,7 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 			ok_lbl = new_label("oob_ok")
 			out.append(f"  br i1 {ok}, label %{ok_lbl}, label %{fail_lbl}")
 			out.append(f"{fail_lbl}:")
-			out.append(f"  call void @orcat_oob_abort()")
+			out.append(f"  call void @orcc_oob_abort()")
 			out.append(f"  unreachable")
 			out.append(f"{ok_lbl}:")
 			out.append(
@@ -2346,13 +2186,13 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 			null_ok = new_label("null_ptr_ok")
 			out.append(f"  br i1 {is_null_tmp}, label %{null_fail}, label %{null_ok}")
 			out.append(f"{null_fail}:")
-			out.append(f"  call void @orcat_null_abort()")
+			out.append(f"  call void @orcc_null_abort()")
 			out.append(f"  unreachable")
 			out.append(f"{null_ok}:")
 			bit_tmp = new_tmp()
 			out.append(f"  {bit_tmp} = bitcast {llvm_ty} {ptr_load} to i8*")
 			size_i64 = new_tmp()
-			out.append(f"  {size_i64} = call i64 @orcat_alloc_size(i8* {bit_tmp})")
+			out.append(f"  {size_i64} = call i64 @orcc_alloc_size(i8* {bit_tmp})")
 			if idx_llvm != "i64":
 				idx_i64 = new_tmp()
 				if idx_llvm.startswith("i"):
@@ -2374,12 +2214,12 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 			ok_lbl = new_label("oob_ok")
 			out.append(f"  br i1 {ok64}, label %{ok_lbl}, label %{fail_lbl}")
 			out.append(f"{fail_lbl}:")
-			out.append(f"  call void @orcat_oob_abort()")
+			out.append(f"  call void @orcc_oob_abort()")
 			out.append(f"  unreachable")
 			out.append(f"{ok_lbl}:")
 			out.append(f"  {tmp_ptr} = getelementptr inbounds {base_ty}, {base_ty}* {ptr_load}, i32 {idx_cast}")
 		else:
-			out.append(f"  call void @orcat_oob_abort()")
+			out.append(f"  call void @orcc_oob_abort()")
 			out.append(f"  unreachable")
 		out.append(f"  {tmp_val} = load {base_ty}, {base_ty}* {tmp_ptr}")
 		_maybe_flush_deferred(expr.index, idx)
@@ -2417,7 +2257,7 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 	if isinstance(expr, Var):
 		result = symbol_table.lookup(expr.name)
 		if result is None:
-			orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Undefined variable: {expr.name}")
+			orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Undefined variable: {expr.name}")
 		typ, name = result
 		tmp = new_tmp()
 		if name.startswith('@'):
@@ -2472,7 +2312,7 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 		if common_t is None:
 			lt = infer_type(expr.left)
 			rt = infer_type(expr.right)
-			orcat_report_error(None, None, f"Cannot unify operand types for '{expr.op}': left={lt}, right={rt}")
+			orcc_report_error(None, None, f"Cannot unify operand types for '{expr.op}': left={lt}, right={rt}")
 		llvm_ty = llvm_ty_of(common_t)
 		tmp = new_tmp()
 		if expr.op == '%':
@@ -2497,7 +2337,7 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 			}
 			op = op_map.get(expr.op)
 			if not op:
-				orcat_report_error(None, None, f"Unsupported float operator '{expr.op}' for type {common_t}")
+				orcc_report_error(None, None, f"Unsupported float operator '{expr.op}' for type {common_t}")
 			out.append(f"  {tmp} = {op} {llvm_ty} {lhs}, {rhs}")
 			_maybe_flush_deferred(expr.left, lhs)
 			_maybe_flush_deferred(expr.right, rhs)
@@ -2524,14 +2364,14 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 			elif expr.op == '>>':
 				op = 'lshr' if unsigned else 'ashr'
 			else:
-				orcat_report_error(None, None, f"Unsupported integer operator '{expr.op}' for type {common_t}")
+				orcc_report_error(None, None, f"Unsupported integer operator '{expr.op}' for type {common_t}")
 			out.append(f"  {tmp} = {op} {llvm_ty} {lhs}, {rhs}")
 			_maybe_flush_deferred(expr.left, lhs)
 			_maybe_flush_deferred(expr.right, rhs)
 			return tmp
 		lt = infer_type(expr.left)
 		rt = infer_type(expr.right)
-		orcat_report_error(None, None, f"Unsupported binary operator '{expr.op}' for operand types: left={lt}, right={rt}, common={common_t}")
+		orcc_report_error(None, None, f"Unsupported binary operator '{expr.op}' for operand types: left={lt}, right={rt}, common={common_t}")
 	if isinstance(expr, Call):
 		args_ir: List[str] = []
 		arg_types: List[str] = []
@@ -2541,6 +2381,8 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 			ty2 = infer_type(arg)
 			arg_types.append(ty2)
 			arg_vals.append(a)
+			llvm_ty = llvm_ty_of(ty2)
+			args_ir.append(f"{llvm_ty} {a}")
 		found_enum = None
 		found_variant_idx = None
 		found_variant_payload = None
@@ -2558,14 +2400,13 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 			if found_variant_payload is None:
 				if llvm_enum_ty.startswith('i'):
 					if len(expr.args) != 0:
-						orcat_report_error(None, None, f"Enum variant {expr.name} for {found_enum} takes no arguments")
+						orcc_report_error(None, None, f"Enum variant {expr.name} for {found_enum} takes no arguments")
 					tmp = new_tmp()
 					out.append(f"  {tmp} = add {llvm_enum_ty} 0, {found_variant_idx}")
 					return tmp
 				else:
 					szptr = new_tmp()
-					out.append(
-						f"  {szptr} = getelementptr inbounds %enum.{found_enum}, %enum.{found_enum}* null, i32 1")
+					out.append(f"  {szptr} = getelementptr inbounds %enum.{found_enum}, %enum.{found_enum}* null, i32 1")
 					sz64 = new_tmp()
 					out.append(f"  {sz64} = ptrtoint %enum.{found_enum}* {szptr} to i64")
 					raw = new_tmp()
@@ -2573,13 +2414,12 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 					struct_ptr = new_tmp()
 					out.append(f"  {struct_ptr} = bitcast i8* {raw} to %enum.{found_enum}*")
 					tag_ptr = new_tmp()
-					out.append(
-						f"  {tag_ptr} = getelementptr inbounds %enum.{found_enum}, %enum.{found_enum}* {struct_ptr}, i32 0, i32 0")
+					out.append(f"  {tag_ptr} = getelementptr inbounds %enum.{found_enum}, %enum.{found_enum}* {struct_ptr}, i32 0, i32 0")
 					out.append(f"  store i32 {found_variant_idx}, i32* {tag_ptr}")
 					return struct_ptr
 			if found_variant_payload is not None:
 				if len(expr.args) != 1:
-					orcat_report_error(None, None, f"Enum constructor '{expr.name}' requires exactly one argument")
+					orcc_report_error(None, None, f"Enum constructor '{expr.name}' requires exactly one argument")
 				payload_val = arg_vals[0]
 				payload_ty = found_variant_payload
 				llvm_payload_ty = llvm_ty_of(payload_ty)
@@ -2598,64 +2438,30 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 				out.append(f"  {payload_ptr} = getelementptr inbounds %enum.{found_enum}, %enum.{found_enum}* {struct_ptr}, i32 0, i32 1")
 				out.append(f"  store {llvm_payload_ty} {payload_val}, {llvm_payload_ty}* {payload_ptr}")
 				return struct_ptr
-			orcat_report_error(None, None, f"Enum variant '{expr.name}' mismatches enum '{found_enum}' payload specification")
+			orcc_report_error(None, None, f"Enum variant '{expr.name}' mismatches enum '{found_enum}' payload specification")
 		if expr.name == "!" and len(expr.args) == 1:
 			arg = gen_expr(expr.args[0], out)
 			arg_ty = infer_type(expr.args[0])
 			if arg_ty != "bool":
-				orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Unary ! requires bool, got {arg_ty}")
+				orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Unary ! requires bool, got {arg_ty}")
 			tmp = new_tmp()
 			out.append(f"  {tmp} = xor i1 {arg}, true")
 			return tmp
-		call_target = ensure_monomorph_call(expr, out, expected_ret=expected)
+		call_target = ensure_monomorph_call(expr, out)
 		concrete_fn = next((f for f in all_funcs if f.name == call_target), None)
 		if concrete_fn and concrete_fn.is_async:
-			orcat_report_error(None, None, f"async function '{expr.name}' must be awaited")
-		def _promote_variadic_and_emit(a_val, a_ty, out):
-			if a_ty in ("float", "float32"):
-				target_orcat_ty = "double"
-				llvm_ty = llvm_ty_of(target_orcat_ty)
-				if a_val is None:
-					return llvm_ty, zero_const_for_llvm(llvm_ty)
-				promoted = emit_cast_value(a_val, a_ty, target_orcat_ty, out)
-				return llvm_ty, promoted
-			small_int_names = {
-				"i8", "i16", "int8", "int16", "u8", "u16",
-				"uint8", "uint16", "char", "signed char", "unsigned char",
-				"short", "short int", "unsigned short", "i32", "int32"
-			}
-			if a_ty in small_int_names:
-				target_orcat_ty = "int"
-				llvm_ty = llvm_ty_of(target_orcat_ty)
-				if a_val is None:
-					return llvm_ty, zero_const_for_llvm(llvm_ty)
-				promoted = emit_cast_value(a_val, a_ty, target_orcat_ty, out)
-				return llvm_ty, promoted
-			llvm_ty = llvm_ty_of(a_ty)
-			if a_val is None:
-				return llvm_ty, zero_const_for_llvm(llvm_ty)
-			return llvm_ty, a_val
+			orcc_report_error(None, None, f"async function '{expr.name}' must be awaited")
 		args_ir = []
 		if concrete_fn:
-			for (param_typ, _), a_val, a_ty in zip(concrete_fn.params, arg_vals, arg_types):
+			for a_val, a_ty, (param_typ, _) in zip(arg_vals, arg_types, concrete_fn.params):
 				llvm_param_ty = llvm_ty_of(param_typ)
 				if a_val is None:
 					args_ir.append(f"{llvm_param_ty} {zero_const_for_llvm(llvm_param_ty)}")
 				else:
 					cast_tmp = emit_cast_value(a_val, a_ty, param_typ, out)
 					args_ir.append(f"{llvm_param_ty} {cast_tmp}")
-			if getattr(concrete_fn, "is_variadic", False):
-				fixed_count = len(concrete_fn.params)
-				for idx in range(fixed_count, len(arg_vals)):
-					a_val = arg_vals[idx]
-					a_ty = arg_types[idx]
-					llvm_ty, ssa_or_const = _promote_variadic_and_emit(a_val, a_ty, out)
-					args_ir.append(f"{llvm_ty} {ssa_or_const}")
 		else:
 			for a_val, a_ty in zip(arg_vals, arg_types):
-				if a_ty == '#':
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None),
-									   f"Cannot determine argument LLVM type for call '{expr.name}': argument type is '#'.")
 				llvm_ty = llvm_ty_of(a_ty)
 				if a_val is None:
 					args_ir.append(f"{llvm_ty} {zero_const_for_llvm(llvm_ty)}")
@@ -2663,28 +2469,15 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 					args_ir.append(f"{llvm_ty} {a_val}")
 		ret_ty = func_table.get(call_target, None)
 		if ret_ty is None:
-			if expected is not None:
-				call_target = ensure_monomorph_call(expr, out, expected_ret=expected)
-				ret_ty = func_table.get(call_target, None)
-		if ret_ty is None:
-			orcat_report_error(None, None, f"Call to undefined function or unresolved monomorph '{expr.name}'")
+			orcc_report_error(None, None, f"Call to undefined function '{expr.name}'")
 		if ret_ty == 'void':
 			out.append(f"  call void @{call_target}({', '.join(args_ir)})")
 			for arg_expr, arg_val in zip(expr.args, arg_vals):
 				_maybe_flush_deferred(arg_expr, arg_val)
-				try:
-					if arg_val is not None and infer_type(arg_expr) == 'string' and isinstance(arg_expr, BinOp) and arg_expr.op == '+':
-						cast_tmp = new_tmp()
-						out.append(f"  {cast_tmp} = bitcast i8* {arg_val} to i8*")
-						out.append(f"  call void @free(i8* {cast_tmp})")
-				except Exception:
-					pass
 			return ''
 		else:
 			tmp2 = new_tmp()
 			out.append(f"  {tmp2} = call {ret_ty} @{call_target}({', '.join(args_ir)})")
-			if isinstance(tmp2, str) and tmp2.startswith('%'):
-				ssa_value_types[tmp2] = ret_ty
 			for arg_expr, arg_val in zip(expr.args, arg_vals):
 				_maybe_flush_deferred(arg_expr, arg_val)
 			return tmp2
@@ -2699,8 +2492,8 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 						tmp = new_tmp()
 						out.append(f"  {tmp} = add {llvm_enum_ty} 0, {idx}")
 						return tmp
-				orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Enum '{base_name}' has no variant '{expr.field}'")
-			orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Cannot access variant {expr.field} on enum type {base_name} (tagged enums require constructors like Some(...))")
+				orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Enum '{base_name}' has no variant '{expr.field}'")
+			orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Cannot access variant {expr.field} on enum type {base_name} (tagged enums require constructors like Some(...))")
 		field_base = expr.base
 		base_raw = infer_type(field_base)
 		base_name = base_raw
@@ -2709,20 +2502,20 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 		if base_name.startswith("%struct."):
 			base_name = base_name[len("%struct."):]
 		if base_name in enum_variant_map and type_map.get(base_name, "").startswith('i'):
-			orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "Field access on an enum value is not supported; use match or constructors")
+			orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "Field access on an enum value is not supported; use match or constructors")
 		if base_name not in struct_field_map:
-			orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Struct type '{base_name}' not found")
+			orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Struct type '{base_name}' not found")
 		fields = struct_field_map[base_name]
 		field_dict = dict(fields)
 		if expr.field not in field_dict:
-			orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Struct '{base_name}' has no field '{expr.field}'")
+			orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Struct '{base_name}' has no field '{expr.field}'")
 		index = list(field_dict.keys()).index(expr.field)
 		field_typ = field_dict[expr.field]
 		field_llvm = llvm_ty_of(field_typ)
 		if isinstance(field_base, Var):
 			res = symbol_table.lookup(field_base.name)
 			if res is None:
-				orcat_report_error(getattr(field_base, "lineno", None), getattr(field_base, "col", None), f"Undefined variable: {field_base.name}")
+				orcc_report_error(getattr(field_base, "lineno", None), getattr(field_base, "col", None), f"Undefined variable: {field_base.name}")
 			llvm_var_ty, name = res
 			if llvm_var_ty.endswith('*'):
 				if name.startswith('@'):
@@ -2740,7 +2533,7 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 				null_ok = new_label("null_ptr_ok")
 				out.append(f"  br i1 {is_null_tmp}, label %{null_fail}, label %{null_ok}")
 				out.append(f"{null_fail}:")
-				out.append(f"  call void @orcat_null_abort()")
+				out.append(f"  call void @orcc_null_abort()")
 				out.append(f"  unreachable")
 				out.append(f"{null_ok}:")
 				base_ptr = ptr_load
@@ -2762,11 +2555,12 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 					out.append(f"  store %struct.{base_name} {base_val}, %struct.{base_name}* {tmp_addr}")
 					base_ptr = tmp_addr
 				else:
-					orcat_report_error(None, None, "Taking address of a field on an rvalue struct is not supported")
+					orcc_report_error(None, None, "Taking address of a field on an rvalue struct is not supported")
 			else:
 				base_ptr = base_val
 		ptr = new_tmp()
-		out.append(f"  {ptr} = getelementptr inbounds %struct.{base_name}, %struct.{base_name}* {base_ptr}, i32 0, i32 {index}")
+		out.append(
+			f"  {ptr} = getelementptr inbounds %struct.{base_name}, %struct.{base_name}* {base_ptr}, i32 0, i32 {index}")
 		tmp = new_tmp()
 		out.append(f"  {tmp} = load {field_llvm}, {field_llvm}* {ptr}")
 		_maybe_flush_deferred(field_base, base_ptr)
@@ -2775,7 +2569,9 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 		struct_name = expr.name
 		struct_ty = f"%struct.{struct_name}"
 		size_tmp = new_tmp()
-		out.append(f"  {size_tmp} = ptrtoint {struct_ty}* getelementptr ({struct_ty}, {struct_ty}* null, i32 1) to i64")
+		out.append(
+			f"  {size_tmp} = ptrtoint {struct_ty}* getelementptr ({struct_ty}, {struct_ty}* null, i32 1) to i64"
+		)
 		malloc_tmp = new_tmp()
 		out.append(f"  {malloc_tmp} = call i8* @malloc(i64 {size_tmp})")
 		tmp_ptr = new_tmp()
@@ -2783,7 +2579,7 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 		field_dict = dict(struct_field_map[struct_name])
 		for field_name, field_expr in expr.fields:
 			if field_name not in field_dict:
-				orcat_report_error(None, None, f"Field '{field_name}' not in struct '{struct_name}'")
+				orcc_report_error(None, None, f"Field '{field_name}' not in struct '{struct_name}'")
 			field_type = field_dict[field_name]
 			field_llvm = llvm_ty_of(field_type)
 			field_val = gen_expr(field_expr, out)
@@ -2795,7 +2591,7 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 	if isinstance(expr, ArrayInit):
 		count = len(expr.elements)
 		if count == 0:
-			orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "Empty array literal must have explicit type")
+			orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "Empty array literal must have explicit type")
 		elem_t = infer_type(expr.elements[0])
 		elem_llvm = llvm_ty_of(elem_t)
 		arr_llvm_ty = f"[{count} x {elem_llvm}]"
@@ -2807,21 +2603,19 @@ def gen_expr(expr: Expr, out: List[str], expected: Optional[str] = None) -> str 
 			out.append(f"  {gep} = getelementptr inbounds {arr_llvm_ty}, {arr_llvm_ty}* {tmp_ptr}, i32 0, i32 {i}")
 			out.append(f"  store {elem_llvm} {val}, {elem_llvm}* {gep}")
 		return tmp_ptr
-	orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Unhandled expr: {expr}")
+	orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Unhandled expr: {expr}")
 def infer_type(expr: Expr) -> str:
-	if isinstance(expr, CallerType):
-		return '#'
 	if isinstance(expr, UnaryDeref):
 		if isinstance(expr.ptr, NullLit):
-			orcat_report_error(getattr(expr.ptr, "lineno", None), getattr(expr.ptr, "col", None), "[ORCC-ERR]: dereference of literal null pointer")
+			orcc_report_error(getattr(expr.ptr, "lineno", None), getattr(expr.ptr, "col", None), "[BHC-ERR]: dereference of literal null pointer")
 		ptr_type = infer_type(expr.ptr)
 		if ptr_type == 'null' or ptr_type == 'void*':
-			orcat_report_error(getattr(expr.ptr, "lineno", None), getattr(expr.ptr, "col", None), "[ORCC-ERR]: dereference of an expression known to be null")
+			orcc_report_error(getattr(expr.ptr, "lineno", None), getattr(expr.ptr, "col", None), "[BHC-ERR]: dereference of an expression known to be null")
 		if not ptr_type.endswith('*'):
-			orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Dereferencing non-pointer type '{ptr_type}'")
+			orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Dereferencing non-pointer type '{ptr_type}'")
 		pointee = ptr_type[:-1]
 		if pointee == "void":
-			orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "Cannot dereference 'void*' without an explicit cast to a concrete pointer type")
+			orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "Cannot dereference 'void*' without an explicit cast to a concrete pointer type")
 		return pointee
 	if isinstance(expr, UnaryOp):
 		return infer_type(expr.expr)
@@ -2844,14 +2638,14 @@ def infer_type(expr: Expr) -> str:
 		if isinstance(inner, Call):
 			base_fn = next((f for f in all_funcs if f.name == inner.name), None)
 			if base_fn is None:
-				orcat_report_error(getattr(inner, "lineno", None), getattr(inner, "col", None), f"Await of unknown function '{inner.name}'")
+				orcc_report_error(getattr(inner, "lineno", None), getattr(inner, "col", None), f"Await of unknown function '{inner.name}'")
 			return base_fn.ret_type
 		else:
-			orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "Await supports only direct Call(...) expressions in type checking")
+			orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "Await supports only direct Call(...) expressions in type checking")
 	if isinstance(expr, Var):
 		result = symbol_table.lookup(expr.name)
 		if result is None:
-			orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Undefined variable: {expr.name}")
+			orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Undefined variable: {expr.name}")
 		llvm_ty, _ = result
 		if llvm_ty.startswith('[') and ' x ' in llvm_ty and llvm_ty.endswith(']'):
 			inside = llvm_ty[1:-1]
@@ -2881,32 +2675,27 @@ def infer_type(expr: Expr) -> str:
 		if base_name in enum_variant_map:
 			return 'int'
 		if base_name not in struct_field_map:
-			orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Struct type '{base_name}' not found")
+			orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Struct type '{base_name}' not found")
 		fields = struct_field_map[base_name]
 		field_dict = dict(fields)
 		if expr.field not in field_dict:
-			orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Field '{expr.field}' not in struct '{base_name}'")
+			orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Field '{expr.field}' not in struct '{base_name}'")
 		return field_dict[expr.field]
 	if isinstance(expr, StructInit):
 		return expr.name + "*"
 	if isinstance(expr, ArrayInit):
-		elem_type = None
-		for e in expr.elements:
-			t = infer_type(e)
-			if elem_type is None:
-				elem_type = t
-				continue
-			common_int = unify_int_types(elem_type, t)
-			if common_int is not None:
-				elem_type = common_int
-				continue
-			if t != elem_type:
-				orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Array literal element types do not match: {elem_type} vs {t}")
+		if not expr.elements:
+			orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "Cannot infer type for empty array literal")
+		elem_type = infer_type(expr.elements[0])
+		for el in expr.elements[1:]:
+			t = infer_type(el)
+			if unify_types(elem_type, t) is None:
+				orcc_report_error(getattr(el, "lineno", None), getattr(el, "col", None), f"Array literal element types do not match: {elem_type} vs {t}")
 		return f"{elem_type}[{len(expr.elements)}]"
 	if isinstance(expr, Call) and expr.name == "!" and len(expr.args) == 1:
 		arg_t = infer_type(expr.args[0])
 		if arg_t != "bool":
-			orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Unary ! requires bool, got {arg_t}")
+			orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Unary ! requires bool, got {arg_t}")
 		return "bool"
 	if isinstance(expr, BinOp):
 		left_type = infer_type(expr.left)
@@ -2914,7 +2703,7 @@ def infer_type(expr: Expr) -> str:
 		common = unify_int_types(left_type, right_type)
 		if not common:
 			if left_type != right_type:
-				orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Type mismatch in binary op '{expr.op}': {left_type} vs {right_type}")
+				orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Type mismatch in binary op '{expr.op}': {left_type} vs {right_type}")
 			common = left_type
 		if expr.op in {'==', '!=', '<', '<=', '>', '>='}:
 			return 'bool'
@@ -2929,9 +2718,6 @@ def infer_type(expr: Expr) -> str:
 					if type_map.get(ename, "").startswith('i') and payload is None:
 						return ename
 					return ename + "*"
-		for fn in all_funcs:
-			if fn.name == expr.name and fn.ret_type == '#':
-				return '#'
 		if expr.name in func_table:
 			ret_llvm_ty = func_table[expr.name]
 			for k, v in type_map.items():
@@ -2943,7 +2729,7 @@ def infer_type(expr: Expr) -> str:
 		for fn in all_funcs:
 			if fn.name == expr.name and fn.type_params:
 				if not expr.args:
-					orcat_report_error(None, None, f"Generic function '{expr.name}' called with no arguments")
+					orcc_report_error(None, None, f"Generic function '{expr.name}' called with no arguments")
 				arg_types = [infer_type(a) for a in expr.args]
 				actuals: List[str] = []
 				for tp in fn.type_params:
@@ -2957,7 +2743,7 @@ def infer_type(expr: Expr) -> str:
 						if fn.ret_type == tp and len(arg_types) > 0:
 							found = arg_types[0]
 					if found is None:
-						orcat_report_error(None, None, f"Cannot infer type parameter '{tp}' for generic function '{expr.name}'")
+						orcc_report_error(None, None, f"Cannot infer type parameter '{tp}' for generic function '{expr.name}'")
 					actuals.append(found)
 				mononame = ensure_monomorph_for_call(expr.name, actuals)
 				new_ret = fn.ret_type
@@ -2967,14 +2753,14 @@ def infer_type(expr: Expr) -> str:
 				return new_ret
 	if isinstance(expr, Index):
 		if not isinstance(expr.array, Var):
-			orcat_report_error(None, None, f"Only direct variable array indexing is supported, got: {expr.array}")
+			orcc_report_error(None, None, f"Only direct variable array indexing is supported, got: {expr.array}")
 		arr_name = expr.array.name
 		arr_info = symbol_table.lookup(arr_name)
 		if not arr_info:
-			orcat_report_error(None, None, f"Undefined array: {arr_name}")
+			orcc_report_error(None, None, f"Undefined array: {arr_name}")
 		llvm_ty, _ = arr_info
 		if not (llvm_ty.startswith('[') and ' x ' in llvm_ty and llvm_ty.endswith(']')):
-			orcat_report_error(None, None, f"Attempting to index non-array type '{llvm_ty}'")
+			orcc_report_error(None, None, f"Attempting to index non-array type '{llvm_ty}'")
 		inside = llvm_ty[1:-1]
 		elem_llvm = inside.split(' x ')[1]
 		for high, low in type_map.items():
@@ -2985,13 +2771,13 @@ def infer_type(expr: Expr) -> str:
 		then_t = infer_type(expr.then_expr)
 		else_t = infer_type(expr.else_expr)
 		if then_t != else_t:
-			orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Ternary branches must match: {then_t} vs {else_t}")
+			orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Ternary branches must match: {then_t} vs {else_t}")
 		return then_t
 	if hasattr(expr, '__dict__'):
 		possible = expr.__dict__.get("name", "")
 		if isinstance(possible, str) and possible.endswith("*"):
 			return possible
-	orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Cannot infer type for expression: {expr}")
+	orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Cannot infer type for expression: {expr}")
 def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 	promoted = globals().get('current_async_promoted', None)
 	if isinstance(stmt, VarDecl):
@@ -3019,11 +2805,11 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 				symbol_table.declare(stmt.name, llvm_ty, ir_name)
 			if promoted is not None and stmt.name in promoted:
 				if stmt.expr:
-					val = gen_expr(stmt.expr, out, expected=stmt.typ)
+					val = gen_expr(stmt.expr, out)
 					out.append(f"  store {llvm_ty} {val}, {llvm_ty}* %{ir_name}_addr")
 				return
 			if stmt.expr:
-				val = gen_expr(stmt.expr, out, expected=stmt.typ)
+				val = gen_expr(stmt.expr, out)
 				src_cast = new_tmp()
 				dst_cast = new_tmp()
 				out.append(f"  {src_cast} = bitcast {llvm_ty}* {val} to i8*")
@@ -3047,12 +2833,8 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 			symbol_table.declare(stmt.name, llvm_ty, ir_name)
 		if promoted is not None and stmt.name in promoted:
 			if stmt.expr:
-				val = gen_expr(stmt.expr, out, expected=stmt.typ)
-				if isinstance(stmt.expr, Call):
-					call_target = ensure_monomorph_call(stmt.expr, out, expected_ret=stmt.typ)
-					src_llvm = func_table.get(call_target) or llvm_ty_of(infer_type(stmt.expr))
-				else:
-					src_llvm = llvm_ty_of(infer_type(stmt.expr))
+				val = gen_expr(stmt.expr, out)
+				src_llvm = llvm_ty_of(infer_type(stmt.expr))
 				if src_llvm != llvm_ty:
 					cast_tmp = new_tmp()
 					bits_src = llvm_int_bitsize(src_llvm)
@@ -3072,12 +2854,8 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 							crumb_runtime[stmt.name]['owned'] = True
 			return
 		if stmt.expr:
-			val = gen_expr(stmt.expr, out, expected=stmt.typ)
-			if isinstance(stmt.expr, Call):
-				call_target = ensure_monomorph_call(stmt.expr, out, expected_ret=stmt.typ)
-				src_llvm = func_table.get(call_target) or llvm_ty_of(infer_type(stmt.expr))
-			else:
-				src_llvm = llvm_ty_of(infer_type(stmt.expr))
+			val = gen_expr(stmt.expr, out)
+			src_llvm = llvm_ty_of(infer_type(stmt.expr))
 			if llvm_ty.endswith('*') and src_llvm.endswith('*'):
 				if src_llvm != llvm_ty:
 					cast_tmp = new_tmp()
@@ -3094,9 +2872,6 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 			if src_llvm.endswith('*') and not llvm_ty.endswith('*'):
 				src_cast = new_tmp()
 				dst_cast = new_tmp()
-				if isinstance(val, str) and val.startswith('%'):
-					ssatok = val[1:]
-					orcat_report_error(None, None, f"MEMCPY attempt: src_llvm={src_llvm}, val={val}")
 				out.append(f"  {src_cast} = bitcast {src_llvm} {val} to i8*")
 				out.append(f"  {dst_cast} = bitcast {llvm_ty}* %{ir_name}_addr to i8*")
 				size_tmp = new_tmp()
@@ -3128,32 +2903,19 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 	elif isinstance(stmt, Assign):
 		if isinstance(stmt.name, UnaryDeref):
 			ptr_val = gen_expr(stmt.name.ptr, out)
-			ptr_type = infer_type(stmt.name.ptr)
-			val_expected = None
-			if isinstance(ptr_type, str) and ptr_type.endswith('*'):
-				val_expected = ptr_type[:-1]
-			val = gen_expr(stmt.expr, out, expected=val_expected)
+			val = gen_expr(stmt.expr, out)
 			val_ty = infer_type(stmt.expr)
 			llvm_ty = type_map.get(val_ty, f"%struct.{val_ty}")
 			out.append(f"  store {llvm_ty} {val}, {llvm_ty}* {ptr_val}")
 		else:
+			val = gen_expr(stmt.expr, out)
 			llvm_ty, ir_name = symbol_table.lookup(stmt.name)
 			if ir_name.startswith('@'):
 				addr_token = ir_name
 			else:
 				addr_token = f"%{ir_name}_addr"
-			expected_lang = None
-			if llvm_ty is not None:
-				for high, low in type_map.items():
-					if low == llvm_ty:
-						expected_lang = high
-						break
-				if expected_lang is None and isinstance(llvm_ty, str) and llvm_ty.startswith("%struct."):
-					expected_lang = llvm_ty[len("%struct."):]
-			val = gen_expr(stmt.expr, out, expected=expected_lang)
 			vn = stmt.name
 			cr = crumb_runtime.get(vn)
-			handled_write_exhaustion_new_alloc = False
 			if cr is not None:
 				cr['wc'] = (cr.get('wc', 0) or 0) + 1
 				if cr.get('wmax') is not None and cr['wc'] == cr['wmax'] and cr.get('owned'):
@@ -3164,26 +2926,15 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 					out.append(f"  call void @free(i8* {cast_tmp})")
 					cr['owned'] = False
 					owned_vars.discard(vn)
-				elif (cr.get('wmax') is not None and cr['wc'] == cr['wmax'] and not cr.get('owned') and isinstance(
-						stmt.expr, Call)):
-					cast_tmp2 = new_tmp()
-					out.append(f"  {cast_tmp2} = bitcast {llvm_ty} {val} to i8*")
-					out.append(f"  call void @free(i8* {cast_tmp2})")
-					out.append(f"  store {llvm_ty} null, {llvm_ty}* {addr_token}")
-					cr['owned'] = False
-					owned_vars.discard(vn)
-					handled_write_exhaustion_new_alloc = True
-			curfn = globals().get('__orcat_current_codegen_fn', None)
+			curfn = globals().get('__orcc_current_codegen_fn', None)
 			if curfn is not None and getattr(curfn, "is_vasync", False):
 				cap = getattr(curfn, "_vasync_captured", set()) or set()
 				exc = set(getattr(curfn, "vasync_except", []) or [])
 				target_name = stmt.name if isinstance(stmt.name, str) else getattr(stmt.name, "name", None)
 				if isinstance(target_name, str) and target_name in cap and target_name not in exc:
-					out.append("  call void @orcat_vvolatile_abort()")
+					out.append("  call void @orcc_vvolatile_abort()")
 					out.append("  unreachable")
 					return
-			if handled_write_exhaustion_new_alloc:
-				return
 			out.append(f"  store {llvm_ty} {val}, {llvm_ty}* {addr_token}")
 			if isinstance(stmt.expr, Call):
 				ret_t = infer_type(stmt.expr)
@@ -3193,7 +2944,7 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 						crumb_runtime[vn]['owned'] = True
 	elif isinstance(stmt, ContinueStmt):
 		if not loop_stack:
-			orcat_report_error(None, None, "`continue` used outside of a loop")
+			orcc_report_error(None, None, "`continue` used outside of a loop")
 		head_lbl = loop_stack[-1]['continue']
 		out.append(f"  br label %{head_lbl}")
 		out.append("  unreachable")
@@ -3205,7 +2956,7 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 		return
 	elif isinstance(stmt, BreakStmt):
 		if not loop_stack:
-			orcat_report_error(None, None, "`break` used outside of a loop")
+			orcc_report_error(None, None, "`break` used outside of a loop")
 		break_lbl = loop_stack[-1]['break']
 		out.append(f"  br label %{break_lbl}")
 		out.append("  unreachable")
@@ -3235,10 +2986,10 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 		ok = new_tmp()
 		out.append(f"  {ok} = icmp ult i32 {idx_cast}, {len_val}")
 		fail_lbl = new_label("oob_fail")
-		ok_lbl = new_label("oob_ok")
+		ok_lbl   = new_label("oob_ok")
 		out.append(f"  br i1 {ok}, label %{ok_lbl}, label %{fail_lbl}")
 		out.append(f"{fail_lbl}:")
-		out.append(f"  call void @orcat_oob_abort()")
+		out.append(f"  call void @orcc_oob_abort()")
 		out.append(f"  unreachable")
 		out.append(f"{ok_lbl}:")
 		ptr_tmp = new_tmp()
@@ -3247,14 +2998,13 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 	elif isinstance(stmt, AutoRegion):
 		symbol_table.push()
 		ctx = {
-			'scope_snapshot': dict(symbol_table.scopes[-1]),
+			'scope_index': len(symbol_table.scopes) - 1,
 			'except': set(stmt.except_vars)
 		}
 		autoregion_stack.append(ctx)
 		for s in stmt.body:
 			gen_stmt(s, out, ret_ty)
-		scope_snapshot = ctx.get('scope_snapshot', {})
-		names_in_scope = list(scope_snapshot.keys())
+		names_in_scope = list(symbol_table.scopes[ctx['scope_index']].keys())
 		for nm in names_in_scope:
 			if nm in ctx['except']:
 				continue
@@ -3262,42 +3012,24 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 			owned_here = (nm in owned_vars) or (cr is not None and cr.get('owned'))
 			if not owned_here:
 				continue
-			try:
-				llvm_ty, llvm_name = scope_snapshot[nm]
-			except Exception:
-				continue
-			if not (isinstance(llvm_name, str) and (
-					llvm_name.startswith('@') or llvm_name in (val[1] for val in scope_snapshot.values()))):
-				continue
+			llvm_ty, llvm_name = symbol_table.lookup(nm)
 			if not llvm_ty.endswith('*'):
 				continue
 			ptr_tmp = new_tmp()
 			out.append(f"  {ptr_tmp} = load {llvm_ty}, {llvm_ty}* %{llvm_name}_addr")
 			cast_tmp = new_tmp()
 			out.append(f"  {cast_tmp} = bitcast {llvm_ty} {ptr_tmp} to i8*")
-			asize_tmp = new_tmp()
-			out.append(f"  {asize_tmp} = call i64 @orcat_alloc_size(i8* {cast_tmp})")
-			is_zero_tmp = new_tmp()
-			out.append(f"  {is_zero_tmp} = icmp eq i64 {asize_tmp}, 0")
-			skip_lbl = new_label('free_skip')
-			do_lbl = new_label('do_free')
-			out.append(f"  br i1 {is_zero_tmp}, label %{skip_lbl}, label %{do_lbl}")
-			out.append(f"{do_lbl}:")
-			cast_tmp2 = new_tmp()
-			out.append(f"  {cast_tmp2} = bitcast {llvm_ty} {ptr_tmp} to i8*")
-			out.append(f"  call void @orcat_free(i8* {cast_tmp2})")
+			out.append(f"  call void @free(i8* {cast_tmp})")
 			out.append(f"  store {llvm_ty} null, {llvm_ty}* %{llvm_name}_addr")
 			if nm in crumb_runtime:
 				crumb_runtime[nm]['owned'] = False
 			if nm in owned_vars:
 				owned_vars.discard(nm)
-			out.append(f"  br label %{skip_lbl}")
-			out.append(f"{skip_lbl}:")
 		autoregion_stack.pop()
 		symbol_table.pop()
 		return
 	elif isinstance(stmt, IfStmt):
-		cond = gen_expr(stmt.cond, out, expected='bool')
+		cond = gen_expr(stmt.cond, out)
 		then_lbl = new_label('then')
 		else_lbl = new_label('else') if stmt.else_body else None
 		end_lbl = new_label('endif')
@@ -3330,7 +3062,7 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 		loop_stack.append({'continue': head_lbl, 'break': end_lbl})
 		out.append(f"  br label %{head_lbl}")
 		out.append(f"{head_lbl}:")
-		cond = gen_expr(stmt.cond, out, expected='bool')
+		cond = gen_expr(stmt.cond, out)
 		out.append(f"  br i1 {cond}, label %{body_lbl}, label %{end_lbl}")
 		out.append(f"{body_lbl}:")
 		symbol_table.push()
@@ -3343,12 +3075,9 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 		out.append(f"{end_lbl}:")
 		loop_stack.pop()
 	elif isinstance(stmt, TypeSwitch):
-		orcat_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), "Internal compiler error: typeswitch remained in codegen (should be resolved at monomorphization)")
+		orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), "Internal compiler error: typeswitch remained in codegen (should be resolved at monomorphization)")
 	elif isinstance(stmt, ReturnStmt):
-		val = None
-		if stmt.expr:
-			dst_lang = llvm_to_lang(ret_ty)
-			val = gen_expr(stmt.expr, out, expected=dst_lang)
+		val = gen_expr(stmt.expr, out) if stmt.expr else None
 		if autoregion_stack:
 			for ctx in reversed(autoregion_stack):
 				scope_idx = ctx.get('scope_index')
@@ -3364,33 +3093,18 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 					if not owned_here:
 						continue
 					llvm_ty, llvm_name = symbol_table.lookup(nm)
-					if not (isinstance(llvm_name, str) and (llvm_name.startswith('@') or any(val[1] == llvm_name for val in symbol_table.scopes[scope_idx].values()))):
-						continue
 					if not llvm_ty.endswith('*'):
 						continue
 					ptr_tmp = new_tmp()
 					out.append(f"  {ptr_tmp} = load {llvm_ty}, {llvm_ty}* %{llvm_name}_addr")
-					asize_tmp = new_tmp()
 					cast_tmp = new_tmp()
 					out.append(f"  {cast_tmp} = bitcast {llvm_ty} {ptr_tmp} to i8*")
-					asize_tmp = new_tmp()
-					out.append(f"  {asize_tmp} = call i64 @orcat_alloc_size(i8* {cast_tmp})")
-					is_zero_tmp = new_tmp()
-					out.append(f"  {is_zero_tmp} = icmp eq i64 {asize_tmp}, 0")
-					skip_lbl = new_label('free_skip')
-					do_lbl   = new_label('do_free')
-					out.append(f"  br i1 {is_zero_tmp}, label %{skip_lbl}, label %{do_lbl}")
-					out.append(f"{do_lbl}:")
-					cast_tmp = new_tmp()
-					out.append(f"  {cast_tmp} = bitcast {llvm_ty} {ptr_tmp} to i8*")
-					out.append(f"  call void @orcat_free(i8* {cast_tmp})")
+					out.append(f"  call void @free(i8* {cast_tmp})")
 					out.append(f"  store {llvm_ty} null, {llvm_ty}* %{llvm_name}_addr")
 					if nm in crumb_runtime:
 						crumb_runtime[nm]['owned'] = False
 					if nm in owned_vars:
 						owned_vars.discard(nm)
-					out.append(f"  br label %{skip_lbl}")
-					out.append(f"{skip_lbl}:")
 		if val:
 			src_lang = infer_type(stmt.expr)
 			dst_lang = llvm_to_lang(ret_ty)
@@ -3404,31 +3118,18 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 		gen_expr(stmt.expr, out)
 	elif isinstance(stmt, ForgetStmt):
 		llvm_ty, llvm_name = symbol_table.lookup(stmt.varname)
-		if not llvm_ty.endswith("*"):
-			orcat_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Cannot forget non-pointer type '{llvm_ty}'")
 		ptr_tmp = new_tmp()
 		out.append(f"  {ptr_tmp} = load {llvm_ty}, {llvm_ty}* %{llvm_name}_addr")
-		asize_tmp = new_tmp()
+		if not llvm_ty.endswith("*"):
+			orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Cannot forget non-pointer type '{llvm_ty}'")
 		cast_tmp = new_tmp()
 		out.append(f"  {cast_tmp} = bitcast {llvm_ty} {ptr_tmp} to i8*")
-		asize_tmp = new_tmp()
-		out.append(f"  {asize_tmp} = call i64 @orcat_alloc_size(i8* {cast_tmp})")
-		is_zero_tmp = new_tmp()
-		out.append(f"  {is_zero_tmp} = icmp eq i64 {asize_tmp}, 0")
-		skip_lbl = new_label('free_skip')
-		do_lbl   = new_label('do_free')
-		out.append(f"  br i1 {is_zero_tmp}, label %{skip_lbl}, label %{do_lbl}")
-		out.append(f"{do_lbl}:")
-		cast_tmp = new_tmp()
-		out.append(f"  {cast_tmp} = bitcast {llvm_ty} {ptr_tmp} to i8*")
-		out.append(f"  call void @orcat_free(i8* {cast_tmp})")
+		out.append(f"  call void @free(i8* {cast_tmp})")
 		out.append(f"  store {llvm_ty} null, {llvm_ty}* %{llvm_name}_addr")
 		if stmt.varname in crumb_runtime:
 			crumb_runtime[stmt.varname]['owned'] = False
 		if stmt.varname in owned_vars:
 			owned_vars.discard(stmt.varname)
-		out.append(f"  br label %{skip_lbl}")
-		out.append(f"{skip_lbl}:")
 	elif isinstance(stmt, Match):
 		raw_ty = infer_type(stmt.expr)
 		enum_name = None
@@ -3445,24 +3146,16 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 			enum_name = base
 		else:
 			raw_llvm = type_map.get(raw_ty, raw_ty)
-			candidates = [high for high, low in type_map.items() if low == raw_llvm and high in enum_variant_map]
-			if len(candidates) == 1:
-				enum_name = candidates[0]
-			elif candidates:
-				case_variant_names = {case.variant for case in stmt.cases}
-				chosen = None
-				for cand in candidates:
-					cand_variants = {v[0] for v in enum_variant_map[cand]}
-					if case_variant_names.issubset(cand_variants):
-						chosen = cand
-						break
-				enum_name = chosen if chosen is not None else candidates[0]
+			for high, low in type_map.items():
+				if low == raw_llvm and high in enum_variant_map:
+					enum_name = high
+					break
 		if enum_name is None:
-			orcat_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Match expression is not an enum type: {raw_ty}")
+			orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Match expression is not an enum type: {raw_ty}")
 		llvm_enum_ty = type_map.get(enum_name, None)
 		has_payloads = any(p is not None for (_, p) in enum_variant_map[enum_name])
 		if llvm_enum_ty and llvm_enum_ty.startswith("i") and not has_payloads:
-			val = gen_expr(stmt.expr, out, expected=enum_name)
+			val = gen_expr(stmt.expr, out)
 			end_lbl = new_label("match_end")
 			variant_labels = {vname: new_label(f"case_{vname}") for vname, _ in enum_variant_map[enum_name]}
 			out.append(f"  switch {llvm_enum_ty} {val}, label %{end_lbl} [")
@@ -3472,7 +3165,7 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 			for case in stmt.cases:
 				lbl = variant_labels.get(case.variant)
 				if not lbl:
-					orcat_report_error(getattr(case, "lineno", None), getattr(case, "col", None), f"Unknown variant {case.variant} for enum {enum_name}")
+					orcc_report_error(getattr(case, "lineno", None), getattr(case, "col", None), f"Unknown variant {case.variant} for enum {enum_name}")
 				out.append(f"{lbl}:")
 				for s in case.body:
 					gen_stmt(s, out, ret_ty)
@@ -3481,7 +3174,7 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 					out.append(f"  br label %{end_lbl}")
 			out.append(f"{end_lbl}:")
 			return
-		enum_ptr = gen_expr(stmt.expr, out, expected=enum_name)
+		enum_ptr = gen_expr(stmt.expr, out)
 		tag_ptr = new_tmp()
 		out.append(f"  {tag_ptr} = getelementptr inbounds %enum.{enum_name}, %enum.{enum_name}* {enum_ptr}, i32 0, i32 0")
 		loaded_tag = new_tmp()
@@ -3495,11 +3188,11 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 		for case in stmt.cases:
 			lbl = variant_labels.get(case.variant)
 			if not lbl:
-				orcat_report_error(getattr(case, "lineno", None), getattr(case, "col", None), f"Unknown variant {case.variant} for enum {enum_name}")
+				orcc_report_error(getattr(case, "lineno", None), getattr(case, "col", None), f"Unknown variant {case.variant} for enum {enum_name}")
 			out.append(f"{lbl}:")
 			variant_info = next((v for v in enum_variant_map[enum_name] if v[0] == case.variant), None)
 			if variant_info is None:
-				orcat_report_error(getattr(case, "lineno", None), getattr(case, "col", None), f"Unknown variant {case.variant} for enum {enum_name}")
+				orcc_report_error(getattr(case, "lineno", None), getattr(case, "col", None), f"Unknown variant {case.variant} for enum {enum_name}")
 			payload_type = variant_info[1]
 			if payload_type is not None:
 				payload_ptr = new_tmp()
@@ -3519,14 +3212,8 @@ def gen_stmt(stmt: Stmt, out: List[str], ret_ty: str):
 				out.append(f"  br label %{end_lbl}")
 		out.append(f"{end_lbl}:")
 def gen_func(fn: Func) -> List[str]:
-	ssa_value_types.clear()
-	unresolved_monos.clear()
 	if fn.type_params:
 		return []
-	if fn.ret_type == '#':
-		return []
-	if fn.is_extern and fn.ret_type == '#':
-		orcat_report_error(getattr(fn, "lineno", None), getattr(fn, "col", None), "extern functions cannot use '#' as a return type")
 	if fn.is_extern:
 		param_sig = ", ".join(f"{llvm_ty_of(t)} %{n}" for t, n in fn.params)
 		ret_ty = llvm_ty_of(fn.ret_type)
@@ -3534,7 +3221,7 @@ def gen_func(fn: Func) -> List[str]:
 		return [f"declare {ret_ty} @{fn.name}({param_sig})"]
 	if fn.is_async:
 		if fn.body is None or len(fn.body) == 0:
-			orcat_report_error(getattr(fn, "lineno", None), getattr(fn, "col", None), f"Async function '{fn.name}' has an empty body, cannot generate async state machine.")
+			orcc_report_error(getattr(fn, "lineno", None), getattr(fn, "col", None), f"Async function '{fn.name}' has an empty body, cannot generate async state machine.")
 		generated_mono[fn.name] = True
 		func_table[fn.name] = llvm_ty_of(fn.ret_type)
 		symbol_table.push()
@@ -3552,7 +3239,7 @@ def gen_func(fn: Func) -> List[str]:
 		return lines
 	symbol_table.push()
 	generated_mono[fn.name] = True
-	globals()['__orcat_current_codegen_fn'] = fn
+	globals()['__orcc_current_codegen_fn'] = fn
 	if fn.name == "main":
 		ret_ty = "i32"
 		out = [f"define i32 @main(i32 %argc, i8** %argv) {{", "entry:"]
@@ -3634,7 +3321,7 @@ def gen_func(fn: Func) -> List[str]:
 		else:
 			out.append(f"  ret {ret_ty} null")
 	out.append("}")
-	globals()['__orcat_current_codegen_fn'] = None
+	globals()['__orcc_current_codegen_fn'] = None
 	symbol_table.pop()
 	return out
 def compile_program(prog: Program) -> str:
@@ -3645,8 +3332,6 @@ def compile_program(prog: Program) -> str:
 	for fn in prog.funcs:
 		if fn.type_params:
 			continue
-		if fn.ret_type == '#':
-			continue
 		llvm_ret_ty = llvm_ty_of(fn.ret_type)
 		func_table[fn.name] = llvm_ret_ty
 	func_table["exit"] = "void"
@@ -3654,8 +3339,8 @@ def compile_program(prog: Program) -> str:
 	func_table["free"] = "void"
 	func_table["puts"] = "i32"
 	func_table["strlen"] = "i64"
-	func_table["orcat_argc"] = "i64"
-	func_table["orcat_argv"] = "i8*"
+	func_table["orcc_argc"] = "i64"
+	func_table["orcc_argv"] = "i8*"
 	has_user_main = False
 	for fn in prog.funcs:
 		if fn.name == "main":
@@ -3664,10 +3349,9 @@ def compile_program(prog: Program) -> str:
 			llvm_ret_ty = llvm_ty_of(fn.ret_type)
 			func_table.pop("main", None)
 			func_table["user_main"] = llvm_ret_ty
-			func_table["main"] = func_table["user_main"]
 			break
 	lines: List[str] = [
-		"; ModuleID = 'orcat'",
+		"; ModuleID = 'orcc'",
 		f"source_filename = \"{compiled}\"",
 		"@__argv_ptr = global i8** null",
 		"declare i8* @malloc(i64)",
@@ -3682,23 +3366,23 @@ def compile_program(prog: Program) -> str:
 		"",
 	]
 	runtime_block = """
-@.oob_msg = private unnamed_addr constant [52 x i8] c"[OrcatCompiler-RT-CHCK]: Index out of bounds error.\\00"
-@.null_msg = private unnamed_addr constant [45 x i8] c"[OrcatCompiler-RT-CHCK]: Null pointer deref.\\00"
-@.heap_msg = private unnamed_addr constant [67 x i8] c"[OrcatCompiler-RT-HEAP]: Invalid free or heap corruption detected.\\00"
+@.oob_msg = private unnamed_addr constant [52 x i8] c"[ORCCompiler-RT-CHCK]: Index out of bounds error.\\00"
+@.null_msg = private unnamed_addr constant [45 x i8] c"[ORCCompiler-RT-CHCK]: Null pointer deref.\\00"
+@.heap_msg = private unnamed_addr constant [67 x i8] c"[ORCCompiler-RT-HEAP]: Invalid free or heap corruption detected.\\00"
 @.alloc_magic = global i64 0
-define void @orcat_oob_abort() {
+define void @orcc_oob_abort() {
 entry:
   %tmp_puts = call i32 @puts(i8* getelementptr inbounds ([52 x i8], [52 x i8]* @.oob_msg, i32 0, i32 0))
   call void @exit(i32 1)
   unreachable
 }
-define void @orcat_null_abort() {
+define void @orcc_null_abort() {
 entry:
   %tmp_puts1 = call i32 @puts(i8* getelementptr inbounds ([45 x i8], [45 x i8]* @.null_msg, i32 0, i32 0))
   call void @exit(i32 1)
   unreachable
 }
-define void @orcat_init_runtime() {
+define void @orcc_init_runtime() {
 entry:
   %t = call i64 @time(i64* null)
   %t32 = trunc i64 %t to i32
@@ -3709,7 +3393,7 @@ entry:
   store i64 %xor_magic, i64* @.alloc_magic
   ret void
 }
-define i8* @orcat_malloc(i64 %usize) {
+define i8* @orcc_malloc(i64 %usize) {
 entry:
   %hdr_sz = add i64 %usize, 24
   %ovf = icmp ult i64 %hdr_sz, %usize
@@ -3739,7 +3423,7 @@ ok_alloc:
   store i64 %global_magic, i64* %footer_ptr_i64
   ret i8* %user_ptr
 }
-define void @orcat_free(i8* %userptr) nounwind {
+define void @orcc_free(i8* %userptr) {
 entry:
   %is_null = icmp eq i8* %userptr, null
   br i1 %is_null, label %ret_void, label %check_hdr
@@ -3758,31 +3442,31 @@ free_ok:
   %size_slot = getelementptr i8, i8* %raw_hdr, i64 8
   %size_i64 = bitcast i8* %size_slot to i64*
   %sz = load i64, i64* %size_i64
-  %is_neg = icmp slt i64 %sz, 0
-  br i1 %is_neg, label %free_fail, label %check_footer
-check_footer:
   %footer_loc = getelementptr i8, i8* %userptr, i64 %sz
   %footer_i64 = bitcast i8* %footer_loc to i64*
   %footer_val = load i64, i64* %footer_i64
   %ok2 = icmp eq i64 %footer_val, %global_magic_cmp
-  br i1 %ok2, label %free_ok2, label %free_fail
+  br i1 %ok2, label %free_ok2, label %free_fail2
+free_fail2:
+  %tmp_puts3 = call i32 @puts(i8* getelementptr inbounds ([67 x i8], [67 x i8]* @.heap_msg, i32 0, i32 0))
+  call void @exit(i32 1)
+  unreachable
 free_ok2:
   store i64 0, i64* %hdr_i64
-  store i64 0, i64* %footer_i64
   %rawptr = bitcast i8* %raw_hdr to i8*
   call void @free(i8* %rawptr)
   ret void
 ret_void:
   ret void
 }
-@.vvolatile_msg = private unnamed_addr constant [69 x i8] c"[OrcatCompiler-RT-CHCK]: Volatile write attempted in vasync (panic).\\00"
-define void @orcat_vvolatile_abort() {
+@.vvolatile_msg = private unnamed_addr constant [69 x i8] c"[ORCCompiler-RT-CHCK]: Volatile write attempted in vasync (panic).\\00"
+define void @orcc_vvolatile_abort() {
 entry:
   %tmp_puts_vv = call i32 @puts(i8* getelementptr inbounds ([69 x i8], [69 x i8]* @.vvolatile_msg, i32 0, i32 0))
   call void @exit(i32 1)
   unreachable
 }
-define i64 @orcat_alloc_size(i8* %userptr) readonly nounwind willreturn {
+define i64 @orcc_alloc_size(i8* %userptr) {
 entry:
   %is_null = icmp eq i8* %userptr, null
   br i1 %is_null, label %ret_zero, label %cont
@@ -3797,114 +3481,108 @@ ok2:
   %size_slot = getelementptr i8, i8* %raw_hdr, i64 8
   %size_i64 = bitcast i8* %size_slot to i64*
   %sz = load i64, i64* %size_i64
-  %footer_loc = getelementptr i8, i8* %userptr, i64 %sz
-  %footer_i64 = bitcast i8* %footer_loc to i64*
-  %footer_val = load i64, i64* %footer_i64
-  %ok_footer = icmp eq i64 %footer_val, %global_magic_cmp
-  br i1 %ok_footer, label %ret_sz, label %ret_zero
-ret_sz:
   ret i64 %sz
 ret_zero:
   ret i64 0
 }
-%orcat_node = type { i8*, i8*, %orcat_node* }
-@orcat_buckets = global [1024 x %orcat_node*] zeroinitializer
-define void @orcat_register_async(i8* %resume, i8* %handle) {
+%orcc_node = type { i8*, i8*, %orcc_node* }
+@orcc_buckets = global [1024 x %orcc_node*] zeroinitializer
+define void @orcc_register_async(i8* %resume, i8* %handle) {
 entry:
-  %szptr = getelementptr %orcat_node, %orcat_node* null, i32 1
-  %sz = ptrtoint %orcat_node* %szptr to i64
+  %szptr = getelementptr %orcc_node, %orcc_node* null, i32 1
+  %sz = ptrtoint %orcc_node* %szptr to i64
   %raw = call i8* @malloc(i64 %sz)
-  %node = bitcast i8* %raw to %orcat_node*
-  %rptr = getelementptr %orcat_node, %orcat_node* %node, i32 0, i32 0
-  %hptr = getelementptr %orcat_node, %orcat_node* %node, i32 0, i32 1
-  %nptr = getelementptr %orcat_node, %orcat_node* %node, i32 0, i32 2
+  %node = bitcast i8* %raw to %orcc_node*
+  %rptr = getelementptr %orcc_node, %orcc_node* %node, i32 0, i32 0
+  %hptr = getelementptr %orcc_node, %orcc_node* %node, i32 0, i32 1
+  %nptr = getelementptr %orcc_node, %orcc_node* %node, i32 0, i32 2
   store i8* %resume, i8** %rptr
   store i8* %handle, i8** %hptr
   %h_addr = ptrtoint i8* %handle to i64
   %bucket_idx64 = and i64 %h_addr, 1023
   %bucket_idx = trunc i64 %bucket_idx64 to i32
-  %slot = getelementptr [1024 x %orcat_node*], [1024 x %orcat_node*]* @orcat_buckets, i32 0, i32 %bucket_idx
+  %slot = getelementptr [1024 x %orcc_node*], [1024 x %orcc_node*]* @orcc_buckets, i32 0, i32 %bucket_idx
   br label %insert_loop
 insert_loop:
-  %old_head = load atomic %orcat_node*, %orcat_node** %slot seq_cst, align 8
-  store %orcat_node* %old_head, %orcat_node** %nptr
-  %pair = cmpxchg %orcat_node** %slot, %orcat_node* %old_head, %orcat_node* %node seq_cst seq_cst
-  %succ = extractvalue { %orcat_node*, i1 } %pair, 1
+  %old_head = load atomic %orcc_node*, %orcc_node** %slot seq_cst, align 8
+  store %orcc_node* %old_head, %orcc_node** %nptr
+  %pair = cmpxchg %orcc_node** %slot, %orcc_node* %old_head, %orcc_node* %node seq_cst seq_cst
+  %succ = extractvalue { %orcc_node*, i1 } %pair, 1
   br i1 %succ, label %insert_done, label %insert_loop
 insert_done:
   ret void
 }
-define void @orcat_remove_and_free_node(%orcat_node* %target, %orcat_node** %slot) {
+define void @orcc_remove_and_free_node(%orcc_node* %target, %orcc_node** %slot) {
 entry:
   br label %try_head
 try_head:
-  %head = load atomic %orcat_node*, %orcat_node** %slot seq_cst, align 8
-  %is_head = icmp eq %orcat_node* %head, %target
+  %head = load atomic %orcc_node*, %orcc_node** %slot seq_cst, align 8
+  %is_head = icmp eq %orcc_node* %head, %target
   br i1 %is_head, label %remove_head, label %scan_pred
 remove_head:
-  %t_nptr = getelementptr %orcat_node, %orcat_node* %target, i32 0, i32 2
-  %t_next = load atomic %orcat_node*, %orcat_node** %t_nptr seq_cst, align 8
-  %pair = cmpxchg %orcat_node** %slot, %orcat_node* %target, %orcat_node* %t_next seq_cst seq_cst
-  %succ = extractvalue { %orcat_node*, i1 } %pair, 1
+  %t_nptr = getelementptr %orcc_node, %orcc_node* %target, i32 0, i32 2
+  %t_next = load atomic %orcc_node*, %orcc_node** %t_nptr seq_cst, align 8
+  %pair = cmpxchg %orcc_node** %slot, %orcc_node* %target, %orcc_node* %t_next seq_cst seq_cst
+  %succ = extractvalue { %orcc_node*, i1 } %pair, 1
   br i1 %succ, label %freed, label %try_head
 scan_pred:
-  %pred0 = load atomic %orcat_node*, %orcat_node** %slot seq_cst, align 8
+  %pred0 = load atomic %orcc_node*, %orcc_node** %slot seq_cst, align 8
   br label %scan_loop
 scan_loop:
-  %pred = phi %orcat_node* [ %pred0, %scan_pred ], [ %pred_next, %advance_pred ]
-  %pred_is_null = icmp eq %orcat_node* %pred, null
+  %pred = phi %orcc_node* [ %pred0, %scan_pred ], [ %pred_next, %advance_pred ]
+  %pred_is_null = icmp eq %orcc_node* %pred, null
   br i1 %pred_is_null, label %notfound, label %check_pred_next
 check_pred_next:
-  %pred_nptr = getelementptr %orcat_node, %orcat_node* %pred, i32 0, i32 2
-  %pred_next = load atomic %orcat_node*, %orcat_node** %pred_nptr seq_cst, align 8
-  %cmp_pred = icmp eq %orcat_node* %pred_next, %target
+  %pred_nptr = getelementptr %orcc_node, %orcc_node* %pred, i32 0, i32 2
+  %pred_next = load atomic %orcc_node*, %orcc_node** %pred_nptr seq_cst, align 8
+  %cmp_pred = icmp eq %orcc_node* %pred_next, %target
   br i1 %cmp_pred, label %try_remove_mid, label %advance_pred
 try_remove_mid:
-  %target_nptr = getelementptr %orcat_node, %orcat_node* %target, i32 0, i32 2
-  %target_next = load atomic %orcat_node*, %orcat_node** %target_nptr seq_cst, align 8
-  %pair2 = cmpxchg %orcat_node** %pred_nptr, %orcat_node* %target, %orcat_node* %target_next seq_cst seq_cst
-  %succ2 = extractvalue { %orcat_node*, i1 } %pair2, 1
+  %target_nptr = getelementptr %orcc_node, %orcc_node* %target, i32 0, i32 2
+  %target_next = load atomic %orcc_node*, %orcc_node** %target_nptr seq_cst, align 8
+  %pair2 = cmpxchg %orcc_node** %pred_nptr, %orcc_node* %target, %orcc_node* %target_next seq_cst seq_cst
+  %succ2 = extractvalue { %orcc_node*, i1 } %pair2, 1
   br i1 %succ2, label %freed, label %scan_pred
 advance_pred:
   br label %scan_loop
 notfound:
   ret void
 freed:
-  %rawptr = bitcast %orcat_node* %target to i8*
+  %rawptr = bitcast %orcc_node* %target to i8*
   call void @free(i8* %rawptr)
   ret void
 }
-define void @orcat_block_until_complete(i8* %handle) {
+define void @orcc_block_until_complete(i8* %handle) {
 entry:
   %h_addr = ptrtoint i8* %handle to i64
   %bucket_idx64 = and i64 %h_addr, 1023
   %bucket_idx = trunc i64 %bucket_idx64 to i32
-  %slot = getelementptr [1024 x %orcat_node*], [1024 x %orcat_node*]* @orcat_buckets, i32 0, i32 %bucket_idx
+  %slot = getelementptr [1024 x %orcc_node*], [1024 x %orcc_node*]* @orcc_buckets, i32 0, i32 %bucket_idx
   br label %scan
 scan:
-  %head = load atomic %orcat_node*, %orcat_node** %slot seq_cst, align 8
+  %head = load atomic %orcc_node*, %orcc_node** %slot seq_cst, align 8
   br label %scan_loop
 scan_loop:
-  %cur = phi %orcat_node* [ %head, %scan ], [ %next, %advance ]
-  %isnull = icmp eq %orcat_node* %cur, null
+  %cur = phi %orcc_node* [ %head, %scan ], [ %next, %advance ]
+  %isnull = icmp eq %orcc_node* %cur, null
   br i1 %isnull, label %sleep, label %checknode
 checknode:
-  %hptr = getelementptr %orcat_node, %orcat_node* %cur, i32 0, i32 1
+  %hptr = getelementptr %orcc_node, %orcc_node* %cur, i32 0, i32 1
   %hval = load atomic i8*, i8** %hptr seq_cst, align 8
   %cmp = icmp eq i8* %hval, %handle
   br i1 %cmp, label %invoke, label %advance
 invoke:
-  %rptr = getelementptr %orcat_node, %orcat_node* %cur, i32 0, i32 0
+  %rptr = getelementptr %orcc_node, %orcc_node* %cur, i32 0, i32 0
   %rval = load atomic i8*, i8** %rptr seq_cst, align 8
   %resume_fn = bitcast i8* %rval to i1 (i8*)*
   %res = call i1 %resume_fn(i8* %handle)
   br i1 %res, label %remove_node, label %scan
 remove_node:
-  call void @orcat_remove_and_free_node(%orcat_node* %cur, %orcat_node** %slot)
+  call void @orcc_remove_and_free_node(%orcc_node* %cur, %orcc_node** %slot)
   br label %done
 advance:
-  %nptr2 = getelementptr %orcat_node, %orcat_node* %cur, i32 0, i32 2
-  %next = load atomic %orcat_node*, %orcat_node** %nptr2 seq_cst, align 8
+  %nptr2 = getelementptr %orcc_node, %orcc_node* %cur, i32 0, i32 2
+  %next = load atomic %orcc_node*, %orcc_node** %nptr2 seq_cst, align 8
   br label %scan_loop
 sleep:
   %tmp_usleep = call i32 @usleep(i32 1000)
@@ -3912,54 +3590,54 @@ sleep:
 done:
   ret void
 }
-"""
+	"""
 	runtime_block_noop = """
 @.alloc_magic = global i64 0
-define void @orcat_oob_abort() {
+define void @orcc_oob_abort() {
 entry:
   ret void
 }
-define void @orcat_null_abort() {
+define void @orcc_null_abort() {
 entry:
   ret void
 }
-define void @orcat_init_runtime() {
+define void @orcc_init_runtime() {
 entry:
   ret void
 }
-define void @orcat_vvolatile_abort() {
+define void @orcc_vvolatile_abort() {
 entry:
   ret void
 }
-define i8* @orcat_malloc(i64 %usize) {
+define i8* @orcc_malloc(i64 %usize) {
 entry:
   %p = call i8* @malloc(i64 %usize)
   ret i8* %p
 }
-define void @orcat_free(i8* %userptr) {
+define void @orcc_free(i8* %userptr) {
 entry:
   call void @free(i8* %userptr)
   ret void
 }
-define i64 @orcat_alloc_size(i8* %userptr) {
+define i64 @orcc_alloc_size(i8* %userptr) {
 entry:
   ret i64 0
 }
-%orcat_node = type { i8*, i8*, %orcat_node* }
-@orcat_buckets = global [1024 x %orcat_node*] zeroinitializer
-define void @orcat_register_async(i8* %resume, i8* %handle) {
+%orcc_node = type { i8*, i8*, %orcc_node* }
+@orcc_buckets = global [1024 x %orcc_node*] zeroinitializer
+define void @orcc_register_async(i8* %resume, i8* %handle) {
 entry:
   ret void
 }
-define void @orcat_remove_and_free_node(%orcat_node* %target, %orcat_node** %slot) {
+define void @orcc_remove_and_free_node(%orcc_node* %target, %orcc_node** %slot) {
 entry:
   ret void
 }
-define void @orcat_block_until_complete(i8* %handle) {
+define void @orcc_block_until_complete(i8* %handle) {
 entry:
   ret void
 }
-"""
+	"""
 	struct_llvm_defs: List[str] = []
 	for sdef in prog.structs:
 		field_tys: List[str] = []
@@ -4040,27 +3718,27 @@ entry:
 		m_f = re.match(r'\s*define\s+[^(]+\s+@(\w+)\s*\(', line)
 		if m_f:
 			existing_funcs.add(m_f.group(1))
-	if not builtins_emitted and "orcat_argc_global" not in existing_globals:
-		lines.append("@orcat_argc_global = global i64 0")
-		lines.append("@orcat_argv_global = global i8** null")
+	if not builtins_emitted and "orcc_argc_global" not in existing_globals:
+		lines.append("@orcc_argc_global = global i64 0")
+		lines.append("@orcc_argv_global = global i8** null")
 		lines.append("")
-		lines.append("define i64 @orcat_argc() {")
+		lines.append("define i64 @orcc_argc() {")
 		lines.append("entry:")
-		lines.append("  %t0 = load i64, i64* @orcat_argc_global")
+		lines.append("  %t0 = load i64, i64* @orcc_argc_global")
 		lines.append("  ret i64 %t0")
 		lines.append("}")
 		lines.append("")
 		string_constants.append('@.str_null = private unnamed_addr constant [5 x i8] c"null\\00"')
-		lines.append("define i8* @orcat_argv(i64 %idx) {")
+		lines.append("define i8* @orcc_argv(i64 %idx) {")
 		lines.append("entry:")
-		lines.append("  %argvp = load i8**, i8*** @orcat_argv_global")
+		lines.append("  %argvp = load i8**, i8*** @orcc_argv_global")
 		lines.append("  %isnull = icmp eq i8** %argvp, null")
 		lines.append("  br i1 %isnull, label %null_case, label %check_bounds")
 		lines.append("null_case:")
 		lines.append('  %src = getelementptr inbounds [5 x i8], [5 x i8]* @.str_null, i32 0, i32 0')
 		lines.append("  ret i8* %src")
 		lines.append("check_bounds:")
-		lines.append("  %argc = load i64, i64* @orcat_argc_global")
+		lines.append("  %argc = load i64, i64* @orcc_argc_global")
 		lines.append("  %neg = icmp slt i64 %idx, 0")
 		lines.append("  %uge = icmp uge i64 %idx, %argc")
 		lines.append("  %oob = or i1 %neg, %uge")
@@ -4093,10 +3771,10 @@ entry:
 		lines.append("define i32 @main(i32 %argc, i8** %argv) {")
 		lines.append("entry:")
 		lines.append("  %argc64 = sext i32 %argc to i64")
-		lines.append("  store i64 %argc64, i64* @orcat_argc_global")
-		lines.append("  store i8** %argv, i8*** @orcat_argv_global")
+		lines.append("  store i64 %argc64, i64* @orcc_argc_global")
+		lines.append("  store i8** %argv, i8*** @orcc_argv_global")
 		if not no_runtime:
-			lines.append("  call void @orcat_init_runtime()")
+			lines.append("  call void @orcc_init_runtime()")
 		user_ret = func_table.get("user_main", "i64")
 		if user_ret == "void":
 			lines.append("  call void @user_main()")
@@ -4110,10 +3788,8 @@ entry:
 			lines.append(f"  %rettmp = call {user_ret} @user_main()")
 			if bits > 32:
 				lines.append(f"  %ret32 = trunc {user_ret} %rettmp to i32")
-			elif bits < 32:
-				lines.append(f"  %ret32 = sext {user_ret} %rettmp to i32")
 			else:
-				lines.append(f"  %ret32 = add i32 %rettmp, 0")
+				lines.append(f"  %ret32 = sext {user_ret} %rettmp to i32")
 			lines.append("  ret i32 %ret32")
 		elif user_ret == "double":
 			lines.append("  %retf = call double @user_main()")
@@ -4127,10 +3803,10 @@ entry:
 	module_text = "\n".join(lines)
 	def _replace_call_malloc(m):
 		s = m.group(0)
-		return s.replace('@malloc(', '@orcat_malloc(')
+		return s.replace('@malloc(', '@orcc_malloc(')
 	def _replace_call_free(m):
 		s = m.group(0)
-		return s.replace('@free(', '@orcat_free(')
+		return s.replace('@free(', '@orcc_free(')
 	module_text = re.sub(r'\bcall\b[^\n]*@malloc\(', _replace_call_malloc, module_text)
 	module_text = re.sub(r'\bcall\b[^\n]*@free\(', _replace_call_free, module_text)
 	if not no_runtime:
@@ -4223,11 +3899,7 @@ def check_types(prog: Program):
 			except Exception:
 				return None
 		return None
-	def check_expr(expr: Expr, expected: Optional[str] = None) -> str:
-		if isinstance(expr, CallerType):
-			if expected is not None:
-				return expected
-			return '#'
+	def check_expr(expr: Expr) -> str:
 		if isinstance(expr, AwaitExpr):
 			return check_expr(expr.expr)
 		if isinstance(expr, UnaryOp):
@@ -4235,16 +3907,16 @@ def check_types(prog: Program):
 			if expr.op in {'-', '+'}:
 				if inner_t == 'float' or inner_t.startswith('int') or inner_t == 'int':
 					return inner_t
-				orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Unary '{expr.op}' requires integer or float operand, got '{inner_t}'")
+				orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Unary '{expr.op}' requires integer or float operand, got '{inner_t}'")
 			if expr.op == '!':
 				if inner_t != 'bool':
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Unary '!' requires bool operand, got '{inner_t}'")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Unary '!' requires bool operand, got '{inner_t}'")
 				return 'bool'
 			if expr.op == '~':
 				if inner_t.startswith('int') or inner_t == 'int':
 					return inner_t
-				orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Unary '~' requires integer operand, got '{inner_t}'")
-			orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Unsupported unary operator: {expr.op}")
+				orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Unary '~' requires integer operand, got '{inner_t}'")
+			orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Unsupported unary operator: {expr.op}")
 		if isinstance(expr, IntLit):
 			return 'int'
 		if isinstance(expr, FloatLit):
@@ -4269,23 +3941,23 @@ def check_types(prog: Program):
 				return "float"
 			common = unify_types(inner_type, expr.typ)
 			if inner_type != expr.typ and (not common or common != expr.typ):
-				orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Cannot cast {inner_type} to {expr.typ}")
+				orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Cannot cast {inner_type} to {expr.typ}")
 			return expr.typ
 		if isinstance(expr, AddressOf):
 			if isinstance(expr.expr, Var):
 				typ = env.lookup(expr.expr.name)
 				if not typ:
-					orcat_report_error(getattr(expr.expr, "lineno", None), getattr(expr.expr, "col", None), f"Use of undeclared variable '{expr.expr.name}'")
+					orcc_report_error(getattr(expr.expr, "lineno", None), getattr(expr.expr, "col", None), f"Use of undeclared variable '{expr.expr.name}'")
 				return typ + '*'
 			inner_t = check_expr(expr.expr)
 			return inner_t + '*'
 		if isinstance(expr, Var):
 			typ = env.lookup(expr.name)
 			if not typ:
-				orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Use of undeclared variable '{expr.name}'")
+				orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Use of undeclared variable '{expr.name}'")
 			if typ == "undefined":
-				orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Use of variable '{expr.name}' after deref (use-after-free)")
-			_inc_read(expr.name, node_desc=f"Var@{getattr(expr, 'lineno', '?')}")
+				orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Use of variable '{expr.name}' after deref (use-after-free)")
+			_inc_read(expr.name, node_desc=f"Var@{getattr(expr,'lineno','?')}")
 			return typ
 		if isinstance(expr, TypeofExpr):
 			inner_type = check_expr(expr.expr)
@@ -4294,11 +3966,11 @@ def check_types(prog: Program):
 		if isinstance(expr, Ternary):
 			cond_type = check_expr(expr.cond)
 			if cond_type != 'bool':
-				orcat_report_error(getattr(expr.cond, "lineno", None), getattr(expr.cond, "col", None), "Ternary condition must be bool")
+				orcc_report_error(getattr(expr.cond, "lineno", None), getattr(expr.cond, "col", None), "Ternary condition must be bool")
 			then_t = check_expr(expr.then_expr)
 			else_t = check_expr(expr.else_expr)
 			if then_t != else_t:
-				orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Ternary branches must match: {then_t} vs {else_t}")
+				orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Ternary branches must match: {then_t} vs {else_t}")
 			return then_t
 		if isinstance(expr, BinOp):
 			left = check_expr(expr.left)
@@ -4306,12 +3978,12 @@ def check_types(prog: Program):
 			if expr.op in {'/', '%'}:
 				cval = eval_const_int(expr.right)
 				if cval is not None and cval == 0:
-					orcat_report_error(getattr(expr.right, "lineno", None), getattr(expr.right, "col", None), f"[ORCC-ERR]: division or modulo by constant 0 ('{expr.op}')")
+					orcc_report_error(getattr(expr.right, "lineno", None), getattr(expr.right, "col", None), f"[BHC-ERR]: division or modulo by constant 0 ('{expr.op}')")
 			if expr.op == "+" and left == "string" and right == "string":
 				return "string"
 			if expr.op in {"&&", "||"}:
 				if left != "bool" or right != "bool":
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Logical '{expr.op}' requires both operands to be bool, got {left} and {right}")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Logical '{expr.op}' requires both operands to be bool, got {left} and {right}")
 				return "bool"
 			if expr.op == "%":
 				if left == "int" and right == "int":
@@ -4319,128 +3991,126 @@ def check_types(prog: Program):
 				elif left == "float" and right == "float":
 					return "float"
 				else:
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Modulo '%' requires int or float, got {left} and {right}")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Modulo '%' requires int or float, got {left} and {right}")
 			common = unify_types(left, right)
 			if not common:
-				orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Type mismatch: {left} {expr.op} {right}")
+				orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Type mismatch: {left} {expr.op} {right}")
 			if expr.op in {"==", "!=", "<", ">", "<=", ">="}:
 				return "bool"
 			return common
 		if isinstance(expr, Call):
 			arg_types = [check_expr(a) for a in expr.args]
-			if expr.name in ("free", "orcat_free"):
+			if expr.name in ("free", "orcc_free"):
 				if len(expr.args) != 1:
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"'free' expects one argument")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"'free' expects one argument")
 				a0 = expr.args[0]
 				if isinstance(a0, Var):
 					vname = a0.name
 					v_typ = env.lookup(vname)
 					if v_typ is None:
-						orcat_report_error(getattr(a0, "lineno", None), getattr(a0, "col", None), f"free() of undeclared variable '{vname}'")
-					global_decl = next((g for g in prog.globals if g.name == vname), None)
-					is_extern_global = bool(global_decl and getattr(global_decl, "is_extern", False))
-					if not (v_typ.endswith('*') or v_typ == 'void*' or v_typ == 'string' or is_extern_global):
-						orcat_report_error(getattr(a0, "lineno", None), getattr(a0, "col", None), f"free() argument must be a pointer or string (or extern global). got '{v_typ}' — this looks like a stack/local variable")
+						orcc_report_error(getattr(a0, "lineno", None), getattr(a0, "col", None), f"free() of undeclared variable '{vname}'")
+					if not v_typ.endswith('*') and v_typ != 'void*':
+						orcc_report_error(getattr(a0, "lineno", None), getattr(a0, "col", None), f"free() argument must be a pointer, got '{v_typ}'")
 					if v_typ == "undefined":
-						orcat_report_error(getattr(a0, "lineno", None), getattr(a0, "col", None), f"[ORCC-ERR]: double free detected on variable '{vname}'")
+						orcc_report_error(getattr(a0, "lineno", None), getattr(a0, "col", None), f"[BHC-ERR]: double free detected on variable '{vname}'")
 					env.declare(vname, "undefined")
 				return "void"
 			if expr.name == '!' and len(arg_types) == 1:
 				if arg_types[0] != 'bool':
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Unary '!' requires bool operand, got '{arg_types[0]}'")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Unary '!' requires bool operand, got '{arg_types[0]}'")
 				return 'bool'
 			if expr.name == '~' and len(arg_types) == 1:
 				if arg_types[0].startswith('int') or arg_types[0] == 'int':
 					return arg_types[0]
-				orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Unary '~' requires integer operand, got '{arg_types[0]}'")
+				orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Unary '~' requires integer operand, got '{arg_types[0]}'")
 			if expr.name == 'not' and len(arg_types) == 1:
 				if arg_types[0] != 'bool':
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"'not' requires bool operand, got '{arg_types[0]}'")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"'not' requires bool operand, got '{arg_types[0]}'")
 				return 'bool'
 			if expr.name == "exit":
 				if len(arg_types) != 1:
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "exit() takes exactly one int argument")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "exit() takes exactly one int argument")
 				arg_ty = arg_types[0]
 				if not arg_ty.startswith("int"):
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "exit() expects an integer argument")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "exit() expects an integer argument")
 				return "void"
 			if expr.name == "malloc":
 				if len(arg_types) != 1:
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "malloc() takes exactly one int argument")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "malloc() takes exactly one int argument")
 				arg_ty = arg_types[0]
 				if not arg_ty.startswith("int"):
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "malloc() expects an integer argument")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "malloc() expects an integer argument")
 				return "int*"
 			if expr.name == "free":
 				if len(arg_types) != 1:
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "free() takes exactly one pointer (or string) argument")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "free() takes exactly one pointer argument")
 				arg_ty = arg_types[0]
-				if not (arg_ty.endswith("*") or arg_ty == "void*" or arg_ty == "string"):
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "free() expects a pointer or string argument")
+				if not arg_ty.endswith("*"):
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "free() expects a pointer argument")
 				return "void"
 			if expr.name == "puts":
 				if len(arg_types) != 1:
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "puts() takes exactly one string argument")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "puts() takes exactly one string argument")
 				arg_ty = arg_types[0]
 				if arg_ty != "string" and not arg_ty.endswith("*"):
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "puts() expects a string (or pointer) argument")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "puts() expects a string (or pointer) argument")
 				return "void"
 			if expr.name == "strlen":
 				if len(arg_types) != 1:
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "strlen() takes exactly one string argument")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "strlen() takes exactly one string argument")
 				arg_ty = arg_types[0]
 				if arg_ty != "string" and not arg_ty.endswith("*"):
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "strlen() expects a string (or pointer) argument")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "strlen() expects a string (or pointer) argument")
 				return "int"
-			if expr.name == "orcat_argc":
+			if expr.name == "orcc_argc":
 				if len(arg_types) != 0:
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "orcat_argc() takes no arguments")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "orcc_argc() takes no arguments")
 				return "int"
-			if expr.name == "orcat_argv":
+			if expr.name == "orcc_argv":
 				if len(arg_types) != 1:
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "orcat_argv() takes exactly one int argument")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "orcc_argv() takes exactly one int argument")
 				if not arg_types[0].startswith("int"):
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "orcat_argv() expects an int index")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "orcc_argv() expects an int index")
 				return "string"
 			if expr.name == "time":
 				if len(arg_types) != 1:
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "time() takes exactly one pointer argument (or null)")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "time() takes exactly one pointer argument (or null)")
 				a = arg_types[0]
 				if a != "int" and not a.endswith("*"):
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "time() expects a pointer or null")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "time() expects a pointer or null")
 				return "int"
 			if expr.name == "srand":
 				if len(arg_types) != 1:
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "srand() takes exactly one int argument")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "srand() takes exactly one int argument")
 				if not arg_types[0].startswith("int"):
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "srand() expects an integer")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "srand() expects an integer")
 				return "void"
 			if expr.name == "rand":
 				if len(arg_types) != 0:
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "rand() takes no arguments")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "rand() takes no arguments")
 				return "int"
 			if expr.name == "usleep":
 				if len(arg_types) != 1:
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "usleep() takes exactly one int argument")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "usleep() takes exactly one int argument")
 				if not arg_types[0].startswith("int"):
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "usleep() expects an integer argument")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "usleep() expects an integer argument")
 				return "int"
 			vm = variant_map.get(expr.name)
 			if vm is not None:
 				enum_name, payload = vm
 				if payload is None:
 					if len(arg_types) != 0:
-						orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Enum variant '{expr.name}' takes no arguments")
+						orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Enum variant '{expr.name}' takes no arguments")
 					return enum_name
 				else:
 					if len(arg_types) != 1:
-						orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Enum variant '{expr.name}' requires one payload of type '{payload}'")
+						orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Enum variant '{expr.name}' requires one payload of type '{payload}'")
 					if arg_types[0] != payload:
-						orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Enum variant '{expr.name}' payload type mismatch: expected {payload}, got {arg_types[0]}")
+						orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Enum variant '{expr.name}' payload type mismatch: expected {payload}, got {arg_types[0]}")
 					return enum_name
 			fn = funcs.get(expr.name)
 			if fn is None:
-				orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Call to undeclared function '{expr.name}'")
+				orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Call to undeclared function '{expr.name}'")
 			type_subst: Dict[str, str] = {}
 			if getattr(fn, "type_params", None):
 				for (param_type, _), actual in zip(fn.params, arg_types):
@@ -4452,45 +4122,32 @@ def check_types(prog: Program):
 				if fn.type_params and not any(tp in type_subst for tp in fn.type_params):
 					if arg_types:
 						type_subst[fn.type_params[0]] = arg_types[0]
-			if fn.is_extern and getattr(fn, "is_variadic", False):
-				if len(arg_types) < len(fn.params):
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Too few arguments in call to '{expr.name}'; expected at least {len(fn.params)}")
-			else:
+			if not fn.is_extern:
 				if len(arg_types) != len(fn.params):
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Arity mismatch in call to '{expr.name}'")
-			for actual_type, (expected_type, _) in zip(arg_types, fn.params):
-				expected_concrete = _subst_type(expected_type, type_subst)
-				if isinstance(actual_type, str) and re.fullmatch(r'[A-Z]\w*', actual_type):
-					if expected_concrete is not None and not re.fullmatch(r'[A-Z]\w*', expected_concrete):
-						env.declare(actual_type, expected_concrete)
-						actual_type = expected_concrete
-				common = unify_int_types(actual_type, expected_concrete)
-				if expected_concrete != "void" and actual_type != expected_concrete and (
-						not common or common != expected_concrete):
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Argument type mismatch in call to '{expr.name}': expected {expected_concrete}, got {actual_type}")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Arity mismatch in call to '{expr.name}'")
+				for actual_type, (expected_type, _) in zip(arg_types, fn.params):
+					expected_concrete = _subst_type(expected_type, type_subst)
+					common = unify_int_types(actual_type, expected_concrete)
+					if expected_concrete != "void" and actual_type != expected_concrete and (not common or common != expected_concrete):
+						orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Argument type mismatch in call to '{expr.name}': expected {expected_concrete}, got {actual_type}")
 			ret = fn.ret_type
 			if getattr(fn, "type_params", None) and isinstance(ret, str):
 				ret = _subst_type(ret, type_subst)
-			if ret == '#':
-				if expected is not None:
-					return expected
-				else:
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Call to '{expr.name}' returns '#', but call context does not provide required expected type")
 			return ret
 		if isinstance(expr, Index):
 			if not isinstance(expr.array, Var):
-				orcat_report_error(getattr(expr.array, "lineno", None), getattr(expr.array, "col", None), f"Only direct variable array indexing is supported, got: {expr.array}")
+				orcc_report_error(getattr(expr.array, "lineno", None), getattr(expr.array, "col", None), f"Only direct variable array indexing is supported, got: {expr.array}")
 			arr_name = expr.array.name
-			_inc_read(arr_name, node_desc=f"Index@{getattr(expr, 'lineno', '?')}")
+			_inc_read(arr_name, node_desc=f"Index@{getattr(expr,'lineno','?')}")
 			var_typ = env.lookup(arr_name)
 			if not var_typ:
-				orcat_report_error(getattr(expr.array, "lineno", None), getattr(expr.array, "col", None), f"Indexing undeclared variable '{arr_name}'")
+				orcc_report_error(getattr(expr.array, "lineno", None), getattr(expr.array, "col", None), f"Indexing undeclared variable '{arr_name}'")
 			if '[' not in var_typ or not var_typ.endswith(']'):
-				orcat_report_error(getattr(expr.array, "lineno", None), getattr(expr.array, "col", None), f"Attempting to index non-array type '{var_typ}'")
+				orcc_report_error(getattr(expr.array, "lineno", None), getattr(expr.array, "col", None), f"Attempting to index non-array type '{var_typ}'")
 			base_type = var_typ.split('[', 1)[0]
 			idx_type = check_expr(expr.index)
 			if idx_type != 'int':
-				orcat_report_error(getattr(expr.index, "lineno", None), getattr(expr.index, "col", None), f"Array index must be 'int', got '{idx_type}'")
+				orcc_report_error(getattr(expr.index, "lineno", None), getattr(expr.index, "col", None), f"Array index must be 'int', got '{idx_type}'")
 			try:
 				inside = var_typ.split('[', 1)[1][:-1]
 				array_len = int(inside) if inside.isdigit() else None
@@ -4500,7 +4157,7 @@ def check_types(prog: Program):
 				cval = eval_const_int(expr.index)
 				if cval is not None:
 					if cval < 0 or cval >= array_len:
-						orcat_report_error(getattr(expr.index, "lineno", None), getattr(expr.index, "col", None), f"Array index constant {cval} out of bounds for array of length {array_len}")
+						orcc_report_error(getattr(expr.index, "lineno", None), getattr(expr.index, "col", None), f"Array index constant {cval} out of bounds for array of length {array_len}")
 			return base_type
 		if isinstance(expr, FieldAccess):
 			base_type = check_expr(expr.base).rstrip('*')
@@ -4509,61 +4166,61 @@ def check_types(prog: Program):
 				for (fname, ftyp) in fields:
 					if fname == expr.field:
 						return ftyp
-				orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Struct '{base_type}' has no field '{expr.field}'")
+				orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Struct '{base_type}' has no field '{expr.field}'")
 			if base_type in enum_defs:
 				vars = enum_variant_map[base_type]
 				for (vname, vtyp) in vars:
 					if vname == expr.field:
 						if vtyp is not None:
-							orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Enum variant '{expr.field}' carries payload; use constructor call")
+							orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Enum variant '{expr.field}' carries payload; use constructor call")
 						return base_type
-				orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Enum '{base_type}' has no variant '{expr.field}'")
-			orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Attempting field access on non-struct/enum type '{base_type}'")
+				orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Enum '{base_type}' has no variant '{expr.field}'")
+			orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Attempting field access on non-struct/enum type '{base_type}'")
 		if isinstance(expr, StructInit):
 			if expr.name not in struct_defs:
-				orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Unknown struct type '{expr.name}' in initializer")
+				orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Unknown struct type '{expr.name}' in initializer")
 			expected_fields = struct_field_map[expr.name][:]
 			seen_fields = set()
 			for (fname, fexpr) in expr.fields:
 				match_list = [ft for (fn, ft) in expected_fields if fn == fname]
 				if not match_list:
-					orcat_report_error(getattr(fexpr, "lineno", None), getattr(fexpr, "col", None), f"Struct '{expr.name}' has no field '{fname}'")
+					orcc_report_error(getattr(fexpr, "lineno", None), getattr(fexpr, "col", None), f"Struct '{expr.name}' has no field '{fname}'")
 				declared_type = match_list[0]
-				actual_type = check_expr(fexpr, expected=declared_type)
+				actual_type = check_expr(fexpr)
 				if actual_type != declared_type:
-					orcat_report_error(getattr(fexpr, "lineno", None), getattr(fexpr, "col", None), f"Struct '{expr.name}' field '{fname}': expected '{declared_type}', got '{actual_type}'")
+					orcc_report_error(getattr(fexpr, "lineno", None), getattr(fexpr, "col", None), f"Struct '{expr.name}' field '{fname}': expected '{declared_type}', got '{actual_type}'")
 				seen_fields.add(fname)
 			all_field_names = {fn for (fn, _) in expected_fields}
 			if seen_fields != all_field_names:
 				missing = all_field_names - seen_fields
-				orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Struct '{expr.name}' initializer missing fields {missing}")
+				orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Struct '{expr.name}' initializer missing fields {missing}")
 			return expr.name + "*"
 		if isinstance(expr, ArrayInit):
 			if len(expr.elements) == 0:
-				orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "Cannot infer type for empty array literal; give it a type")
+				orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), "Cannot infer type for empty array literal; give it a type")
 			first_t = infer_type(expr.elements[0])
 			for el in expr.elements[1:]:
 				el_t = infer_type(el)
 				if unify_types(first_t, el_t) is None:
-					orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Array literal element types do not match: {first_t} vs {el_t}")
+					orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Array literal element types do not match: {first_t} vs {el_t}")
 			return f"{first_t}[{len(expr.elements)}]"
-		orcat_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Unsupported expression: {expr}")
+		orcc_report_error(getattr(expr, "lineno", None), getattr(expr, "col", None), f"Unsupported expression: {expr}")
 	def check_stmt(stmt: Stmt, expected_ret: str, func: Optional[Func] = None):
 		nonlocal alias_creation_counter
 		if isinstance(stmt, VarDecl):
 			if env.lookup(stmt.name):
-				orcat_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Variable '{stmt.name}' already declared")
+				orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Variable '{stmt.name}' already declared")
 			raw_typ = stmt.typ
 			base_type = raw_typ.rstrip('*')
 			if '[' in base_type and base_type.endswith(']'):
 				base_type = base_type.split('[', 1)[0]
 			if base_type not in type_map and base_type not in struct_defs and base_type not in enum_defs:
-				orcat_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Unknown type '{raw_typ}'")
+				orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Unknown type '{raw_typ}'")
 			env.declare(stmt.name, raw_typ)
 			if stmt.expr:
-				expr_type = check_expr(stmt.expr, expected=raw_typ)
-				_inc_write(stmt.name, node_desc=f"VarInit@{getattr(stmt, 'lineno', '?')}")
-				if isinstance(stmt.expr, AddressOf) and (raw_typ.endswith('*') or raw_typ == 'string'):
+				expr_type = check_expr(stmt.expr)
+				_inc_write(stmt.name, node_desc=f"VarInit@{getattr(stmt,'lineno','?')}")
+				if isinstance(stmt.expr, AddressOf) and raw_typ.endswith('*'):
 					inner = stmt.expr.expr
 					if isinstance(inner, Var):
 						original_name = inner.name
@@ -4582,59 +4239,19 @@ def check_types(prog: Program):
 					expr_type = 'float'
 				common = unify_types(expr_type, raw_typ)
 				if expr_type != raw_typ and (not common or common != raw_typ):
-					orcat_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Type mismatch in variable init '{stmt.name}': expected {raw_typ}, got {expr_type}")
+					orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Type mismatch in variable init '{stmt.name}': expected {raw_typ}, got {expr_type}")
 			return
 		if isinstance(stmt, ContinueStmt) or isinstance(stmt, BreakStmt):
 			return
 		if isinstance(stmt, Assign):
 			if isinstance(stmt.name, UnaryDeref):
-				def _find_var_in_expr(node, _depth=0, _max_depth=10):
-					if node is None or _depth > _max_depth:
-						return None
-					if isinstance(node, Var):
-						return node.name
-					maybe_name = getattr(node, "name", None)
-					if isinstance(maybe_name, str):
-						return maybe_name
-					child_attrs = ("expr", "value", "arg", "target", "ptr", "base", "operand", "inner", "v", "var", "lhs", "rhs", "obj")
-					for attr in child_attrs:
-						if hasattr(node, attr):
-							child = getattr(node, attr)
-							if isinstance(child, (list, tuple)) and child:
-								for c in child:
-									vn = _find_var_in_expr(c, _depth + 1, _max_depth)
-									if vn:
-										return vn
-								continue
-							vn = _find_var_in_expr(child, _depth + 1, _max_depth)
-							if vn:
-								return vn
-					for k, v in getattr(node, "__dict__", {}).items():
-						if k.startswith("_"):
-							continue
-						if isinstance(v, (list, tuple)):
-							for c in v:
-								vn = _find_var_in_expr(c, _depth + 1, _max_depth)
-								if vn:
-									return vn
-						else:
-							vn = _find_var_in_expr(v, _depth + 1, _max_depth)
-							if vn:
-								return vn
-					return None
-				base_var = _find_var_in_expr(stmt.name.ptr)
 				ptr_type = check_expr(stmt.name.ptr)
 				if not ptr_type.endswith('*'):
-					orcat_report_error(getattr(stmt, "lineno", None), None, f"Dereferencing non-pointer type '{ptr_type}'")
+					orcc_report_error(getattr(stmt, "lineno", None), None, f"Dereferencing non-pointer type '{ptr_type}'")
 				pointee = ptr_type[:-1]
-				expr_type = check_expr(stmt.expr, expected=pointee)
+				expr_type = check_expr(stmt.expr)
 				if expr_type != pointee:
-					orcat_report_error(getattr(stmt, "lineno", None), getattr(stmt, 'col', None), f"Type mismatch: attempted to store '{expr_type}' into '{ptr_type}'")
-				if base_var is not None and base_var in crumb_map:
-					rmax, wmax, rc, wc = crumb_map[base_var]
-					if rc > 0:
-						crumb_map[base_var] = (rmax, wmax, rc - 1, wc)
-					_inc_write(base_var, node_desc=f"UnaryDerefWrite@{getattr(stmt, 'lineno', None)}")
+					orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Pointer-assign type mismatch: attempted to store '{expr_type}' into '{ptr_type}'")
 				return
 			var_type = env.lookup(stmt.name)
 			if isinstance(stmt.expr, AddressOf) and (var_type is not None and var_type.endswith('*')):
@@ -4649,10 +4266,10 @@ def check_types(prog: Program):
 					alias_targets.setdefault(original_name, set()).add(alias_name)
 					alias_set.add(alias_name)
 			if not var_type:
-				orcat_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Assign to undeclared variable '{stmt.name}'")
+				orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Assign to undeclared variable '{stmt.name}'")
 			global_decl = next((g for g in prog.globals if g.name == stmt.name), None)
 			if global_decl and global_decl.nomd:
-				orcat_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Cannot assign to 'nomd' global variable '{stmt.name}'")
+				orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Cannot assign to 'nomd' global variable '{stmt.name}'")
 			if isinstance(stmt.expr, BinOp) and isinstance(stmt.expr.left, Var) and stmt.expr.left.name == stmt.name:
 				right_type = check_expr(stmt.expr.right)
 				left_type = var_type
@@ -4662,12 +4279,12 @@ def check_types(prog: Program):
 					common = unify_int_types(left_type, right_type)
 					if not common:
 						if left_type != right_type:
-							orcat_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Type mismatch in compound assignment '{stmt.expr.op}': {left_type} vs {right_type}")
+							orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Type mismatch in compound assignment '{stmt.expr.op}': {left_type} vs {right_type}")
 						common = left_type
 					expr_type = common
-				_inc_read(stmt.name, node_desc=f"CompoundAssignRead@{getattr(stmt, 'lineno', '?')}")
+				_inc_read(stmt.name, node_desc=f"CompoundAssignRead@{getattr(stmt,'lineno','?')}")
 			else:
-				expr_type = check_expr(stmt.expr, expected=var_type)
+				expr_type = check_expr(stmt.expr)
 			if expr_type == 'float' and var_type == 'float32':
 				stmt.expr = Cast('float32', stmt.expr)
 				expr_type = 'float32'
@@ -4675,14 +4292,14 @@ def check_types(prog: Program):
 				stmt.expr = Cast('float', stmt.expr)
 				expr_type = 'float'
 			if expr_type != var_type:
-				orcat_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Assign type mismatch: {var_type} = {expr_type}")
+				orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Assign type mismatch: {var_type} = {expr_type}")
 			if func is not None and getattr(func, "is_vasync", False):
 				cap = getattr(func, "_vasync_captured", set()) or set()
 				exc = set(getattr(func, "vasync_except", []) or [])
 				target_name = stmt.name if isinstance(stmt.name, str) else getattr(stmt.name, "name", None)
 				if isinstance(target_name, str) and target_name in cap and target_name not in exc:
-					orcat_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f'Variable "{target_name}" was accessed in a context where its value is volatile/unsure.')
-			_inc_write(stmt.name, node_desc=f"AssignWrite@{getattr(stmt, 'lineno', '?')}")
+					orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f'Variable "{target_name}" was accessed in a context where its value is volatile/unsure.')
+			_inc_write(stmt.name, node_desc=f"AssignWrite@{getattr(stmt,'lineno','?')}")
 			if isinstance(stmt.expr, Var) and var_type.endswith('*'):
 				src_name = stmt.expr.name
 				if src_name != stmt.name:
@@ -4697,18 +4314,18 @@ def check_types(prog: Program):
 		if isinstance(stmt, ForgetStmt):
 			ptr_typ = env.lookup(stmt.varname)
 			if ptr_typ is None:
-				orcat_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Cannot forget undeclared variable '{stmt.varname}'")
-			if not (ptr_typ.endswith('*') or ptr_typ == 'string'):
-				orcat_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Cannot forget non-pointer variable '{stmt.varname}' of type '{ptr_typ}'")
+				orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Cannot forget undeclared variable '{stmt.varname}'")
+			if not ptr_typ.endswith('*'):
+				orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Cannot forget non-pointer variable '{stmt.varname}' of type '{ptr_typ}'")
 			if ptr_typ == "undefined":
-				orcat_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Compile-time error: double free / forget on variable '{stmt.varname}'")
+				orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Compile-time error: double free / forget on variable '{stmt.varname}'")
 			env.declare(stmt.varname, "undefined")
 			return
 		if isinstance(stmt, CrumbleStmt):
 			if env.lookup(stmt.name) is None:
-				orcat_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Cannot crumble undeclared variable '{stmt.name}'")
+				orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Cannot crumble undeclared variable '{stmt.name}'")
 			if stmt.name in crumb_map:
-				orcat_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Variable '{stmt.name}' already crumbled")
+				orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Variable '{stmt.name}' already crumbled")
 			crumb_map[stmt.name] = (stmt.max_reads, stmt.max_writes, 0, 0)
 			crumb_order[stmt.name] = getattr(stmt, "lineno", -1)
 			return
@@ -4716,14 +4333,14 @@ def check_types(prog: Program):
 			arr_name = stmt.array
 			var_type = env.lookup(arr_name)
 			if not var_type:
-				orcat_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Index-assign to undeclared variable '{arr_name}'")
+				orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Index-assign to undeclared variable '{arr_name}'")
 			if '[' not in var_type or not var_type.endswith(']'):
-				orcat_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Index-assign to non-array variable '{var_type}'")
+				orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Index-assign to non-array variable '{var_type}'")
 			base_type = var_type.split('[', 1)[0]
-			_inc_write(arr_name, node_desc=f"IndexAssign@{getattr(stmt, 'lineno', '?')}")
+			_inc_write(arr_name, node_desc=f"IndexAssign@{getattr(stmt,'lineno','?')}")
 			idx_type = check_expr(stmt.index)
 			if idx_type != 'int':
-				orcat_report_error(getattr(stmt.index, "lineno", None), getattr(stmt.index, "col", None), f"Array index must be 'int', got '{idx_type}'")
+				orcc_report_error(getattr(stmt.index, "lineno", None), getattr(stmt.index, "col", None), f"Array index must be 'int', got '{idx_type}'")
 			try:
 				inside = var_type.split('[', 1)[1][:-1]
 				array_len = int(inside) if inside.isdigit() else None
@@ -4733,15 +4350,15 @@ def check_types(prog: Program):
 				cval = eval_const_int(stmt.index)
 				if cval is not None:
 					if cval < 0 or cval >= array_len:
-						orcat_report_error(getattr(stmt.index, "lineno", None), getattr(stmt.index, "col", None), f"Array index constant {cval} out of bounds for array of length {array_len}")
-			val_type = check_expr(stmt.value, expected=base_type)
+						orcc_report_error(getattr(stmt.index, "lineno", None), getattr(stmt.index, "col", None), f"Array index constant {cval} out of bounds for array of length {array_len}")
+			val_type = check_expr(stmt.value)
 			if val_type != base_type:
-				orcat_report_error(getattr(stmt.value, "lineno", None), getattr(stmt.value, "col", None), f"Index-assign type mismatch: array of {base_type}, got {val_type}")
+				orcc_report_error(getattr(stmt.value, "lineno", None), getattr(stmt.value, "col", None), f"Index-assign type mismatch: array of {base_type}, got {val_type}")
 			return
 		if isinstance(stmt, IfStmt):
 			cond_type = check_expr(stmt.cond)
 			if cond_type != 'bool':
-				orcat_report_error(getattr(stmt.cond, "lineno", None), getattr(stmt.cond, "col", None), f"If condition must be bool, got {cond_type}")
+				orcc_report_error(getattr(stmt.cond, "lineno", None), getattr(stmt.cond, "col", None), f"If condition must be bool, got {cond_type}")
 			env.push()
 			for s in stmt.then_body:
 				check_stmt(s, expected_ret, func)
@@ -4758,33 +4375,25 @@ def check_types(prog: Program):
 		if isinstance(stmt, WhileStmt):
 			cond_type = check_expr(stmt.cond)
 			if cond_type != 'bool':
-				orcat_report_error(getattr(stmt.cond, "lineno", None), getattr(stmt.cond, "col", None), f"While condition must be bool, got {cond_type}")
+				orcc_report_error(getattr(stmt.cond, "lineno", None), getattr(stmt.cond, "col", None), f"While condition must be bool, got {cond_type}")
 			env.push()
 			for s in stmt.body:
 				check_stmt(s, expected_ret, func)
 			env.pop()
 			return
 		if isinstance(stmt, TypeSwitch):
-			if stmt.subject == '#':
-				if func is None or func.ret_type != '#':
-					orcat_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None),
-						"typeswitch subject '#' is only allowed in functions whose declared return type is the caller-placeholder '<#>'.\n "
-						"Either change the function to return '<#>' (e.g. `fn foo() <#> { ... }`) or switch on a type parameter instead (e.g. `typeswitch(T)`)."
-					)
-			else:
-				if func is not None and stmt.subject not in (func.type_params or []):
-					orcat_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"typeswitch subject '{stmt.subject}' is not a type parameter")
+			if func is not None:
+				if stmt.subject not in (func.type_params or []):
+					orcc_report_error(None, None, f"typeswitch subject '{stmt.subject}' is not a type parameter")
 			for case in stmt.cases:
 				base_type = case.typ.rstrip('*')
 				if '[' in base_type and base_type.endswith(']'):
 					base_type = base_type.split('[', 1)[0]
-				if base_type not in type_map and base_type not in struct_defs and base_type not in enum_defs and base_type not in (
-						func.type_params if func else []):
-					orcat_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Unknown type in typeswitch case: {case.typ}")
+				if base_type not in type_map and base_type not in struct_defs and base_type not in enum_defs and base_type not in (func.type_params if func else []):
+					orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Unknown type in typeswitch case: {case.typ}")
 				env.push()
-				case_expected = case.typ if stmt.subject == '#' else expected_ret
 				for s in case.body:
-					check_stmt(s, case_expected, func)
+					check_stmt(s, expected_ret, func)
 				env.pop()
 			if stmt.fallback:
 				env.push()
@@ -4794,22 +4403,19 @@ def check_types(prog: Program):
 			return
 		if isinstance(stmt, ReturnStmt):
 			if stmt.expr:
-				actual = check_expr(stmt.expr, expected=expected_ret)
+				actual = check_expr(stmt.expr)
 				if actual == 'float' and expected_ret == 'float32':
 					stmt.expr = Cast('float32', stmt.expr)
 					actual = 'float32'
 				elif actual == 'float32' and expected_ret == 'float':
 					stmt.expr = Cast('float', stmt.expr)
 					actual = 'float'
-				if func is not None and (getattr(func, "type_params", None) or func.ret_type == '#'):
-					return
 				common = unify_int_types(actual, expected_ret)
 				if actual != expected_ret and (not common or common != expected_ret):
-					orcat_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Return type mismatch: expected {expected_ret}, got {actual}")
+					orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Return type mismatch: expected {expected_ret}, got {actual}")
 			else:
-				if not (func is not None and (getattr(func, "type_params", None) or func.ret_type == '#')):
-					if expected_ret != 'void':
-						orcat_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Return without value in function returning {expected_ret}")
+				if expected_ret != 'void':
+					orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Return without value in function returning {expected_ret}")
 			return
 		if isinstance(stmt, ExprStmt):
 			check_expr(stmt.expr)
@@ -4823,19 +4429,19 @@ def check_types(prog: Program):
 		if isinstance(stmt, Match):
 			enum_typ = check_expr(stmt.expr)
 			if enum_typ not in enum_defs:
-				orcat_report_error(getattr(stmt.expr, "lineno", None), getattr(stmt.expr, "col", None), f"Cannot match on non-enum type '{enum_typ}'")
+				orcc_report_error(getattr(stmt.expr, "lineno", None), getattr(stmt.expr, "col", None), f"Cannot match on non-enum type '{enum_typ}'")
 			enum_def = enum_defs[enum_typ]
 			defined_variants = {v.name for v in enum_def.variants}
 			seen_variants = set()
 			for case in stmt.cases:
 				if case.variant not in defined_variants:
-					orcat_report_error(getattr(case, "lineno", None), getattr(case, "col", None), f"Enum '{enum_typ}' has no variant '{case.variant}'")
+					orcc_report_error(getattr(case, "lineno", None), getattr(case, "col", None), f"Enum '{enum_typ}' has no variant '{case.variant}'")
 				variant_info = next(v for v in enum_def.variants if v.name == case.variant)
 				payload_type = variant_info.typ
 				if payload_type is None and case.binding is not None:
-					orcat_report_error(getattr(case, "lineno", None), getattr(case, "col", None), f"Variant '{case.variant}' carries no payload; remove binding")
+					orcc_report_error(getattr(case, "lineno", None), getattr(case, "col", None), f"Variant '{case.variant}' carries no payload; remove binding")
 				if payload_type is not None and case.binding is None:
-					orcat_report_error(getattr(case, "lineno", None), getattr(case, "col", None), f"Variant '{case.variant}' requires binding of type '{payload_type}'")
+					orcc_report_error(getattr(case, "lineno", None), getattr(case, "col", None), f"Variant '{case.variant}' requires binding of type '{payload_type}'")
 				env.push()
 				if case.binding is not None:
 					env.declare(case.binding, payload_type)
@@ -4845,9 +4451,9 @@ def check_types(prog: Program):
 				seen_variants.add(case.variant)
 			if seen_variants != defined_variants:
 				missing = defined_variants - seen_variants
-				orcat_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Non-exhaustive match on '{enum_typ}', missing {missing}")
+				orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Non-exhaustive match on '{enum_typ}', missing {missing}")
 			return
-		orcat_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Unsupported statement: {stmt}")
+		orcc_report_error(getattr(stmt, "lineno", None), getattr(stmt, "col", None), f"Unsupported statement: {stmt}")
 	for g in prog.globals:
 		env.declare(g.name, g.typ)
 		if g.nomd:
@@ -4916,21 +4522,21 @@ def check_types(prog: Program):
 		reachable = True
 		for i, s in enumerate((func.body or [])):
 			if not reachable:
-				print(f"[ORCC-WARN-Reachability]: unreachable code in function '{func.name}' at statement index {i}")
+				print(f"[BHC-WARN-Reachability]: unreachable code in function '{func.name}' at statement index {i}")
 				check_stmt(s, func.ret_type, func)
 				continue
 			check_stmt(s, func.ret_type, func)
 			if isinstance(s, ReturnStmt):
 				reachable = False
-			elif isinstance(s, ExprStmt) and isinstance(s.expr, Call) and s.expr.name in ("exit", "orcat_oob_abort", "orcat_null_abort", "orcat_vvolatile_abort"):
+			elif isinstance(s, ExprStmt) and isinstance(s.expr, Call) and s.expr.name in ("exit", "orcc_oob_abort", "orcc_null_abort", "orcc_vvolatile_abort"):
 				reachable = False
 		env.pop()
 	over_errors = []
 	for (alias_name, original_name, lineno, col, idx) in alias_creations:
 		if alias_name is None:
-			orcat_report_error(lineno, col, f"Internal alias error: alias name is None (original='{original_name}')")
+			orcc_report_error(lineno, col, f"Internal alias error: alias name is None (original='{original_name}')")
 		if alias_name not in crumb_map:
-			orcat_report_error(lineno, col, f"Alias '{alias_name}' must have a corresponding crumble({alias_name}) statement to declare mutability (e.g. crumble({alias_name})!r=<read_count>!w=<write_count>;)")
+			orcc_report_error(lineno, col, f"Alias '{alias_name}' must have a corresponding crumble({alias_name}) statement to declare mutability (e.g. crumble({alias_name})!r=...!w=...;)")
 	for original, aliases in alias_targets.items():
 		mutable_aliases = []
 		for a in aliases:
@@ -4961,7 +4567,7 @@ def check_types(prog: Program):
 		msgs = []
 		for (name, rmax, wmax, rc, wc, orr, ow) in over_errors:
 			msgs.append(f"'Var \"{name}\"': reads {rc} (limit {rmax}, over {orr}), writes {wc} (limit {wmax}, over {ow})")
-		orcat_report_error(None, None, "[Crawl-Checker]-[ERR] Crumble limits exceeded: " + "; ".join(msgs))
+		orcc_report_error(None, None, "[Crawl-Checker]-[ERR] Crumble limits exceeded: " + "; ".join(msgs))
 	for name, (rmax, wmax, rc, wc) in list(crumb_map.items()):
 		if rmax is not None and rc < rmax:
 			print(f"[Crawl-Checker]-[WARN]: unused read crumbs on '{name}': {rmax - rc} left. [This is not an error but a security warning!]")
@@ -5339,8 +4945,8 @@ def main():
 	struct_field_map.clear()
 	string_constants.clear()
 	generated_mono.clear()
-	parser = argparse.ArgumentParser(description="Orcat Compiler")
-	parser.add_argument("input", help="Input source file (.orcat or .sorcat)")
+	parser = argparse.ArgumentParser(description="ORC Compiler")
+	parser.add_argument("input", help="Input source file (.orcc or .sorcc)")
 	parser.add_argument("-o", "--output", required=True, help="Output LLVM IR file (.ll)")
 	args = parser.parse_args()
 	global compiled
@@ -5382,7 +4988,7 @@ def main():
 					if resolved_path:
 						break
 			if not resolved_path:
-				orcat_report_error(None, None, f"Import '{imp}' not found. Tried: {candidates} + ...")
+				orcc_report_error(None, None, f"Import '{imp}' not found. Tried: {candidates} + ...")
 			if resolved_path in seen_imports:
 				continue
 			seen_imports.add(resolved_path)
@@ -5416,14 +5022,14 @@ def main():
 	for idx, fn in enumerate(final_prog.funcs):
 		if fn.name in seen_names:
 			prev_idx = seen_names[fn.name]
-			orcat_report_error(None, None, f"Duplicate function definition: '{fn.name}', remove or rename the duplicate.")
+			orcc_report_error(None, None, f"Duplicate function definition: '{fn.name}', remove or rename the duplicate.")
 		seen_names[fn.name] = idx
 	has_main = any(fn.name == "main" for fn in final_prog.funcs)
 	if not has_main and not no_main:
-		orcat_report_error(None, None, "No startpoint: no main function found. Add a 'fn main(...) <...>' function, or use @nomain; to suppress emission of the wrapper startpoint.")
+		orcc_report_error(None, None, "No startpoint: no main function found. Add a 'fn main(...) <...>' function, or use @nomain; to suppress emission of the wrapper startpoint.")
 	for fn in final_prog.funcs:
 		if getattr(fn, "is_async", False) and (fn.body is None or len(fn.body) == 0):
-			orcat_report_error(None, None, f"Async function '{fn.name}' has an empty body; async functions must contain at least one statement or be removed.")
+			orcc_report_error(None, None, f"Async function '{fn.name}' has an empty body; async functions must contain at least one statement or be removed.")
 	check_types(final_prog)
 	llvm = compile_program(final_prog)
 	with open(args.output, 'w', encoding="utf-8", errors="ignore") as f:
